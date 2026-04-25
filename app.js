@@ -2,7 +2,7 @@
 // CONFIG — replace with your actual values
 // ============================================================
 const CONFIG = {
-  GAS_URL: 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec',
+  GAS_URL: 'https://script.google.com/macros/s/AKfycbwCPJnrh6kNvhsLw8YAE_4O6nwSQNi4fNX8c_UbTksmtPelirWQeVwi3t33UKCQsCVuTA/exec',
   APP_NAME: 'Alliance-Hub',
 };
 
