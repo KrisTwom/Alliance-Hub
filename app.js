@@ -3,7 +3,7 @@
 // ============================================================
 const CONFIG = {
   GAS_URL: 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec',
-  APP_NAME: 'MyApp',
+  APP_NAME: 'Alliance-Hub',
 };
 
 // ============================================================
