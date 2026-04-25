@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#6c63ff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="MyApp" />
+
+  <!-- iOS home screen icons (generate these at https://realfavicongenerator.net) -->
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png" />
+
+  <link rel="manifest" href="manifest.json" />
+  <title>MyApp</title>
+
+  <style>
+    /* ---- RESET & BASE ---- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f0f13;
+      --surface: #1a1a24;
+      --surface2: #22222f;
+      --border: #2e2e40;
+      --accent: #6c63ff;
+      --accent2: #ff6584;
+      --text: #f0f0f5;
+      --text-muted: #888898;
+      --success: #3ecf8e;
+      --danger: #ff4d6d;
+      --warning: #ffb020;
+      --radius: 16px;
+      --radius-sm: 10px;
+      --nav-h: 56px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'SF Pro Display', -apple-system, 'Segoe UI', sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overscroll-behavior: none;
+    }
+
+    #app {
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ---- NAV BAR ---- */
+    .nav-bar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: calc(var(--safe-top) + 12px) 16px 12px;
+      background: rgba(15, 15, 19, 0.85);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      min-height: var(--nav-h);
+    }
+
+    .nav-title {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .nav-back, .nav-menu {
+      background: none;
+      border: none;
+      color: var(--accent);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 8px;
+      transition: background 0.15s;
+      min-width: 36px;
+    }
+    .nav-back:active, .nav-menu:active { background: var(--surface); }
+
+    /* ---- PAGES ---- */
+    .page { flex: 1; display: flex; flex-direction: column; }
+    .content {
+      flex: 1;
+      padding: 20px 16px calc(var(--safe-bottom) + 20px);
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* ---- LOGIN PAGE ---- */
+    .login-page {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100dvh;
+      padding: 24px;
+      background: radial-gradient(ellipse at 50% 0%, #1a1540 0%, var(--bg) 60%);
+    }
+
+    .login-card {
+      width: 100%;
+      max-width: 360px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .logo {
+      font-size: 48px;
+      line-height: 1;
+      filter: drop-shadow(0 0 20px var(--accent));
+    }
+
+    .login-card h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+
+    /* ---- BUTTONS ---- */
+    .btn {
+      width: 100%;
+      padding: 14px 20px;
+      border-radius: var(--radius);
+      border: none;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .btn:active { transform: scale(0.97); }
+
+    .btn-google {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-biometric {
+      background: var(--accent);
+      color: white;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+      margin-top: 8px;
+    }
+
+    .btn-small {
+      width: auto;
+      padding: 8px 14px;
+      font-size: 14px;
+      border-radius: var(--radius-sm);
+    }
+
+    .btn-success { background: var(--success); color: #000; }
+    .btn-danger  { background: var(--danger);  color: #fff; }
+
+    .divider {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* ---- DASHBOARD ---- */
+    .greeting { margin-bottom: 24px; }
+    .greeting h2 { font-size: 24px; font-weight: 700; letter-spacing: -0.4px; }
+    .greeting p  { color: var(--text-muted); font-size: 15px; margin-top: 4px; }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .action-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      transition: all 0.15s;
+      color: var(--text);
+    }
+
+    .action-card:active { transform: scale(0.96); background: var(--surface2); }
+
+    .card-icon { font-size: 28px; }
+    .card-label { font-size: 14px; font-weight: 600; }
+
+    .admin-card {
+      background: linear-gradient(135deg, #1f1540, #1a1a24);
+      border-color: var(--accent);
+    }
+
+    /* ---- FORMS ---- */
+    .form-card { display: flex; flex-direction: column; gap: 16px; }
+
+    .field { display: flex; flex-direction: column; gap: 6px; }
+
+    label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    input, select, textarea {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 16px;
+      padding: 12px 14px;
+      outline: none;
+      transition: border-color 0.15s;
+      -webkit-appearance: none;
+      font-family: inherit;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent);
+    }
+
+    textarea { resize: vertical; }
+
+    select option { background: var(--surface); }
+
+    .reward-input {
+      width: 100px;
+      padding: 8px 10px;
+      font-size: 14px;
+    }
+
+    /* ---- LISTS ---- */
+    .list-container { display: flex; flex-direction: column; gap: 10px; }
+
+    .list-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+
+    .item-title   { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+    .item-meta    { color: var(--text-muted); font-size: 13px; }
+    .item-desc    { color: var(--text-muted); font-size: 14px; margin: 8px 0; }
+
+    .item-status {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+    .status-pending  { background: rgba(255,176,32,0.15); color: var(--warning); }
+    .status-approved { background: rgba(62,207,142,0.15); color: var(--success); }
+    .status-rejected { background: rgba(255,77,109,0.15); color: var(--danger); }
+
+    .item-reward {
+      margin-top: 8px;
+      font-weight: 700;
+      color: var(--success);
+    }
+
+    .admin-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    /* ---- REWARDS TOTAL ---- */
+    .rewards-total {
+      background: linear-gradient(135deg, var(--accent), #9b59b6);
+      border-radius: var(--radius);
+      padding: 24px;
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    .total-label { font-size: 13px; opacity: 0.8; text-transform: uppercase; letter-spacing: 1px; }
+    .total-value { font-size: 48px; font-weight: 800; letter-spacing: -2px; }
+
+    /* ---- STATUS / FEEDBACK ---- */
+    .status-msg {
+      text-align: center;
+      font-size: 14px;
+      padding: 10px;
+      border-radius: var(--radius-sm);
+      min-height: 20px;
+    }
+    .status-info    { background: rgba(108,99,255,0.15); color: var(--accent); }
+    .status-success { background: rgba(62,207,142,0.15); color: var(--success); }
+    .status-error   { background: rgba(255,77,109,0.15); color: var(--danger); }
+
+    .loading, .empty-state {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 40px;
+    }
+
+    /* ---- SAFE AREA PADDING FOR STANDALONE MODE ---- */
+    @media (display-mode: standalone) {
+      .login-page { padding-top: calc(var(--safe-top) + 24px); }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="app.js"></script>
+</body>
+</html>
