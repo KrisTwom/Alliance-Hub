@@ -1,9 +1,9 @@
 const CACHE_NAME = 'myapp-v1';
 const STATIC_ASSETS = [
-  '/Alliance-Hub/',
-  '/Alliance-Hub/index.html',
-  '/Alliance-Hub/app.js',
-  '/Alliance-Hub/manifest.json'
+  '/',
+  '/index.html',
+  '/app.js',
+  '/manifest.json'
 ];
 
 // Install: cache static assets
