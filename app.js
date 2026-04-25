@@ -2,8 +2,8 @@
 // CONFIG — replace with your actual values
 // ============================================================
 const CONFIG = {
-  GAS_URL: 'https://script.google.com/macros/s/AKfycbwCPJnrh6kNvhsLw8YAE_4O6nwSQNi4fNX8c_UbTksmtPelirWQeVwi3t33UKCQsCVuTA/exec',
-  APP_NAME: 'Alliance-Hub',
+  GAS_URL: 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec',
+  APP_NAME: 'MyApp',
 };
 
 // ============================================================
@@ -539,7 +539,7 @@ function showStatus(elementId, message, type) {
 async function init() {
   // Register service worker
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/Alliance-Hub/sw.js', { scope: '/Alliance-Hub/' }).catch(console.error);
+    navigator.serviceWorker.register('/sw.js').catch(console.error);
   }
 
   Router.init();
