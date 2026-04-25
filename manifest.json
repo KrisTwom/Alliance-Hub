@@ -2,7 +2,7 @@
   "name": "MyApp",
   "short_name": "MyApp",
   "description": "Form submission and rewards app",
-  "start_url": "/Alliance-Hub/",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#0f0f13",
   "theme_color": "#6c63ff",
