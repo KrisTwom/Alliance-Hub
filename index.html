@@ -19,7 +19,8 @@
     #login-screen {
       position: fixed; inset: 0; background: var(--bg-deep);
       display: flex; align-items: center; justify-content: center;
-      z-index: 9999; flex-direction: column; gap: 1.5rem; padding: 2rem;
+      z-index: 9999; flex-direction: column; gap: 1.5rem;
+      padding: calc(env(safe-area-inset-top, 0px) + 2rem) 2rem calc(env(safe-area-inset-bottom, 0px) + 2rem);
       text-align: center;
     }
     #login-screen.hidden { display: none; }
