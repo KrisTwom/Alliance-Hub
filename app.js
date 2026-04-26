@@ -1,586 +1,761 @@
 // ============================================================
-// CONFIG — replace with your actual values
+//  CONFIG
 // ============================================================
-const CONFIG = {
-  GAS_URL: 'https://script.google.com/macros/s/AKfycbwCPJnrh6kNvhsLw8YAE_4O6nwSQNi4fNX8c_UbTksmtPelirWQeVwi3t33UKCQsCVuTA/exec',
-  APP_NAME: 'Alliance Hub',
-  GOOGLE_CLIENT_ID: '465273345673-7mdusmgk0bppo6clk5pr3pensgfmq637.apps.googleusercontent.com',
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbwCPJnrh6kNvhsLw8YAE_4O6nwSQNi4fNX8c_UbTksmtPelirWQeVwi3t33UKCQsCVuTA/exec';
+
+// ============================================================
+//  STATE
+// ============================================================
+const App = {
+  user:         null,
+  config:       null,
+  activeCharId: null,
+  email:        null,   // injected by your GitHub auth layer
 };
 
 // ============================================================
-// STATE
-// ============================================================
-const state = {
-  user: null,
-  isAdmin: false,
-  page: 'login',
-};
-
-// ============================================================
-// AUTH — Google Sign-In + session persistence + biometrics
-// ============================================================
-const Auth = {
-  signInWithGoogle() {
-    return new Promise((resolve, reject) => {
-      if (!window.google) {
-        reject(new Error('Google Sign-In not loaded yet, please try again'));
-        return;
-      }
-      google.accounts.id.initialize({
-        client_id: CONFIG.GOOGLE_CLIENT_ID,
-        callback: async (response) => {
-          try {
-            const result = await API.post('auth_google', { idToken: response.credential });
-            if (result.success) {
-              Auth.saveSession(result.user, result.token);
-              resolve(result.user);
-            } else {
-              reject(new Error(result.error || 'Sign-in failed'));
-            }
-          } catch (e) {
-            reject(e);
-          }
-        },
-        ux_mode: 'popup',
-      });
-      // Try One Tap first, fall back to rendered button
-      google.accounts.id.prompt((notification) => {
-        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-          google.accounts.id.renderButton(
-            document.getElementById('google-signin-container'),
-            { theme: 'filled_black', size: 'large', width: 280 }
-          );
-        }
-      });
-    });
-  },
-
-  saveSession(user, token) {
-    localStorage.setItem('session_token', token);
-    localStorage.setItem('session_user', JSON.stringify(user));
-    localStorage.setItem('session_expiry', Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
-    state.user = user;
-    state.isAdmin = user.isAdmin;
-  },
-
-  loadSession() {
-    const expiry = localStorage.getItem('session_expiry');
-    if (!expiry || Date.now() > parseInt(expiry)) {
-      Auth.clearSession();
-      return null;
-    }
-    const user = localStorage.getItem('session_user');
-    const token = localStorage.getItem('session_token');
-    if (user && token) {
-      state.user = JSON.parse(user);
-      state.isAdmin = state.user.isAdmin;
-      return state.user;
-    }
-    return null;
-  },
-
-  clearSession() {
-    localStorage.removeItem('session_token');
-    localStorage.removeItem('session_user');
-    localStorage.removeItem('session_expiry');
-    state.user = null;
-    state.isAdmin = false;
-  },
-
-  getToken() {
-    return localStorage.getItem('session_token');
-  },
-
-  // ---- Biometric Auth (Face ID / Fingerprint via WebAuthn) ----
-  async isBiometricAvailable() {
-    return window.PublicKeyCredential &&
-      await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-  },
-
-  async registerBiometric(user) {
-    // Store a credential tied to this user so they can log in with Face ID next time
-    const challenge = crypto.getRandomValues(new Uint8Array(32));
-    const credential = await navigator.credentials.create({
-      publicKey: {
-        challenge,
-        rp: { name: CONFIG.APP_NAME, id: location.hostname },
-        user: {
-          id: new TextEncoder().encode(user.id),
-          name: user.email,
-          displayName: user.name,
-        },
-        pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
-        authenticatorSelection: {
-          authenticatorAttachment: 'platform', // device biometric only
-          userVerification: 'required',
-        },
-        timeout: 60000,
-      }
-    });
-    // Save the credential ID for later verification
-    localStorage.setItem('biometric_credential_id', btoa(String.fromCharCode(...new Uint8Array(credential.rawId))));
-    localStorage.setItem('biometric_user_id', user.id);
-    return true;
-  },
-
-  async authenticateWithBiometric() {
-    const credIdB64 = localStorage.getItem('biometric_credential_id');
-    if (!credIdB64) return null;
-
-    const credId = Uint8Array.from(atob(credIdB64), c => c.charCodeAt(0));
-    const challenge = crypto.getRandomValues(new Uint8Array(32));
-
-    try {
-      await navigator.credentials.get({
-        publicKey: {
-          challenge,
-          allowCredentials: [{ id: credId, type: 'public-key' }],
-          userVerification: 'required',
-          timeout: 60000,
-        }
-      });
-      // Biometric passed — restore session for the stored user
-      const userId = localStorage.getItem('biometric_user_id');
-      const result = await API.post('auth_biometric', { userId });
-      if (result.success) {
-        Auth.saveSession(result.user, result.token);
-        return result.user;
-      }
-    } catch (e) {
-      console.warn('Biometric auth failed:', e);
-    }
-    return null;
-  },
-
-  hasBiometricRegistered() {
-    return !!localStorage.getItem('biometric_credential_id');
-  },
-};
-
-// ============================================================
-// API — thin wrapper around GAS Web App
+//  API  — fetch-based, replaces google.script.run
 // ============================================================
 const API = {
-  async post(action, data) {
-    const body = { action, ...data };
-    const token = Auth.getToken();
-    if (token) body._token = token;
-
-    const res = await fetch(CONFIG.GAS_URL, {
-      method: 'POST',
-      body: JSON.stringify(body),
+  async call(action, data = {}) {
+    const body = { action, email: App.email, ...data };
+    const res = await fetch(GAS_URL, {
+      method:  'POST',
+      // GAS requires no custom headers for CORS in no-cors mode,
+      // but we need the response — use mode:'cors' with GAS deployed as "Anyone"
+      headers: { 'Content-Type': 'text/plain' }, // GAS ignores content-type header; text/plain avoids CORS preflight
+      body:    JSON.stringify(body),
     });
     return res.json();
   },
-
-  async submitForm(formData) {
-    return API.post('submit_form', formData);
-  },
-
-  async getMySubmissions() {
-    return API.post('get_my_submissions', {});
-  },
-
-  async getMyRewards() {
-    return API.post('get_my_rewards', {});
-  },
-
-  // Admin only
-  async getAllSubmissions() {
-    return API.post('admin_get_submissions', {});
-  },
-
-  async approveSubmission(submissionId, rewardAmount) {
-    return API.post('admin_approve', { submissionId, rewardAmount });
-  },
-
-  async rejectSubmission(submissionId, reason) {
-    return API.post('admin_reject', { submissionId, reason });
-  },
 };
 
 // ============================================================
-// ROUTER — simple hash-based routing
+//  ENTRY — called by your GitHub auth layer once the user
+//  is signed in. Pass the verified Google email.
+//  e.g.:  window.initAllianceTracker('user@gmail.com')
 // ============================================================
-const Router = {
-  routes: {
-    login: renderLogin,
-    home: renderHome,
-    submit: renderSubmit,
-    history: renderHistory,
-    rewards: renderRewards,
-    admin: renderAdmin,
-  },
+window.initAllianceTracker = async function(email) {
+  App.email = email;
+  try {
+    const [user, config] = await Promise.all([
+      API.call('get_current_user'),
+      API.call('get_config'),
+    ]);
+    App.user   = user;
+    App.config = config;
+    if (user.characters?.length) App.activeCharId = user.characters[0].charId;
+    _buildShell();
+    _initNav();
 
-  go(page) {
-    state.page = page;
-    location.hash = page;
-    render();
-  },
+    // Remove splash
+    document.getElementById('splash')?.remove();
+    document.getElementById('app').style.display = 'flex';
 
-  init() {
-    window.addEventListener('hashchange', () => {
-      const page = location.hash.replace('#', '') || 'login';
-      state.page = page;
-      render();
-    });
+    if (user.status === 'unregistered') { API.call('request_access'); _showPending(); return; }
+    if (user.status === 'pending')      { _showPending(); return; }
+    showView('home');
+  } catch(err) {
+    document.getElementById('splash').innerHTML =
+      `<div style="color:#e05555;text-align:center;padding:2rem">Failed to connect.<br><small>${err.message}</small><br><button onclick="location.reload()" style="margin-top:1rem;padding:.5rem 1rem;background:#e0c97f;color:#000;border:none;border-radius:6px;cursor:pointer">Retry</button></div>`;
   }
 };
 
 // ============================================================
-// RENDER — swap out #app content per page
+//  SHELL BUILDER
 // ============================================================
-function render() {
+function _buildShell() {
   const app = document.getElementById('app');
-  const renderFn = Router.routes[state.page];
-  if (renderFn) {
-    app.innerHTML = renderFn();
-    attachListeners();
-  }
-}
-
-// ============================================================
-// PAGE: LOGIN
-// ============================================================
-function renderLogin() {
-  const hasBiometric = Auth.hasBiometricRegistered();
-  return `
-    <div class="page login-page">
-      <div class="login-card">
-        <div class="logo">⬡</div>
-        <h1>${CONFIG.APP_NAME}</h1>
-        <p class="subtitle">Sign in to continue</p>
-
-        ${hasBiometric ? `
-          <button class="btn btn-biometric" id="btn-biometric">
-            <span class="icon">🔒</span> Use Face ID / Fingerprint
-          </button>
-          <div class="divider"><span>or</span></div>
-        ` : ''}
-
-        <button class="btn btn-google" id="btn-google">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-          Sign in with Google
-        </button>
-        <div id="google-signin-container"></div>
-        <div id="login-status" class="status-msg"></div>
+  app.innerHTML = `
+    <!-- DESKTOP HEADER -->
+    <header id="main-header">
+      <div class="header-left">
+        <span class="header-emblem">⚔</span>
+        <span class="header-title">ALLIANCE TRACKER</span>
       </div>
-    </div>
-  `;
+      <div class="header-center" id="desktop-nav">
+        <button class="nav-btn active" data-view="home">🏠 Home</button>
+        <button class="nav-btn" data-view="attendance">🗡 Attendance</button>
+        <button class="nav-btn" data-view="my-splits">💰 My Splits</button>
+        ${App.user.isAdmin ? `
+        <button class="nav-btn" data-view="drops">💎 Drops</button>
+        <button class="nav-btn" data-view="inventory">🎒 Inventory</button>
+        <button class="nav-btn" data-view="payouts">📊 Payouts</button>
+        <button class="nav-btn" data-view="roster">👥 Roster</button>` : ''}
+      </div>
+      <div class="header-right">
+        <div id="char-switcher"></div>
+        <span id="header-username" class="header-user"></span>
+        <span id="header-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}">${App.user.isAdmin ? 'Admin' : 'Member'}</span>
+      </div>
+    </header>
+
+    <!-- VIEWS -->
+    <main id="main-content">
+      <div id="view-home"       class="view active"></div>
+      <div id="view-attendance" class="view"></div>
+      <div id="view-my-splits"  class="view"></div>
+      <div id="view-drops"      class="view"></div>
+      <div id="view-inventory"  class="view"></div>
+      <div id="view-payouts"    class="view"></div>
+      <div id="view-roster"     class="view"></div>
+      <div id="view-confirm"    class="view"></div>
+    </main>
+
+    <!-- MOBILE BOTTOM NAV -->
+    <nav id="mobile-nav">
+      <button class="mob-nav-btn active" data-view="home">
+        <span class="mob-nav-icon">🏠</span><span class="mob-nav-label">Home</span>
+      </button>
+      <button class="mob-nav-btn" data-view="attendance">
+        <span class="mob-nav-icon">🗡</span><span class="mob-nav-label">Attendance</span>
+      </button>
+      <button class="mob-nav-btn" data-view="my-splits">
+        <span class="mob-nav-icon">💰</span><span class="mob-nav-label">My Splits</span>
+      </button>
+      <button class="mob-nav-btn" id="more-btn">
+        <span class="mob-nav-icon">☰</span><span class="mob-nav-label">More</span>
+      </button>
+    </nav>
+
+    <!-- SIDEBAR -->
+    <div id="sidebar-overlay" class="sidebar-overlay hidden"></div>
+    <aside id="sidebar" class="sidebar hidden">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Menu</span>
+        <button class="sidebar-close" id="sidebar-close">✕</button>
+      </div>
+      <div class="sidebar-user">
+        <div id="sidebar-char-switcher"></div>
+        <div id="sidebar-username" class="sidebar-uname"></div>
+        <div id="sidebar-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}" style="margin-top:4px">${App.user.isAdmin ? 'Admin' : 'Member'}</div>
+      </div>
+      <div class="sidebar-links">
+        ${App.user.isAdmin ? `
+        <button class="sidebar-link" data-view="drops">💎 Drops</button>
+        <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
+        <button class="sidebar-link" data-view="payouts">📊 Payouts</button>
+        <button class="sidebar-link" data-view="roster">👥 Roster</button>` : ''}
+      </div>
+    </aside>`;
+
+  // Set username
+  const char = getActiveChar();
+  document.getElementById('header-username').textContent  = char?.ign || App.user.email;
+  document.getElementById('sidebar-username').textContent = char?.ign || App.user.email;
+  _renderCharSwitcher('char-switcher');
+  _renderCharSwitcher('sidebar-char-switcher');
 }
 
 // ============================================================
-// PAGE: HOME (dashboard)
+//  NAV WIRING
+// ============================================================
+function _initNav() {
+  document.querySelectorAll('#desktop-nav .nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#desktop-nav .nav-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      showView(btn.dataset.view);
+    });
+  });
+
+  document.querySelectorAll('#mobile-nav .mob-nav-btn[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      showView(btn.dataset.view);
+    });
+  });
+
+  document.getElementById('more-btn')?.addEventListener('click', _openSidebar);
+  document.getElementById('sidebar-close')?.addEventListener('click', _closeSidebar);
+  document.getElementById('sidebar-overlay')?.addEventListener('click', _closeSidebar);
+
+  document.querySelectorAll('.sidebar-link[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _closeSidebar();
+      document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.remove('active'));
+      showView(btn.dataset.view);
+    });
+  });
+
+  document.getElementById('modal-overlay')?.addEventListener('click', e => {
+    if (e.target.id === 'modal-overlay') closeModal();
+  });
+}
+
+// ============================================================
+//  CHAR SWITCHER
+// ============================================================
+function _renderCharSwitcher(id) {
+  const el = document.getElementById(id); if (!el) return;
+  const chars = App.user.characters || [];
+  el.innerHTML = chars.length <= 1 ? '' :
+    `<select class="char-select" onchange="switchChar(this.value)">
+      ${chars.map(c => `<option value="${c.charId}"${c.charId === App.activeCharId ? ' selected' : ''}>${c.ign}</option>`).join('')}
+    </select>`;
+}
+
+function getActiveChar() {
+  if (!App.user?.characters?.length) return null;
+  return App.user.characters.find(c => c.charId === App.activeCharId) || App.user.characters[0];
+}
+
+function switchChar(charId) {
+  App.activeCharId = charId;
+  _renderCharSwitcher('char-switcher');
+  _renderCharSwitcher('sidebar-char-switcher');
+  const char = getActiveChar();
+  document.getElementById('header-username').textContent  = char?.ign || App.user.email;
+  document.getElementById('sidebar-username').textContent = char?.ign || App.user.email;
+  const active = document.querySelector('.view.active');
+  if (active) showView(active.id.replace('view-', ''));
+}
+
+// ============================================================
+//  VIEW ROUTER
+// ============================================================
+function showView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + name)?.classList.add('active');
+  const map = {
+    home:        renderHome,
+    attendance:  renderAttendance,
+    'my-splits': renderMySplits,
+    drops:       renderDrops,
+    inventory:   renderInventory,
+    payouts:     renderPayouts,
+    roster:      renderRoster,
+  };
+  map[name]?.();
+}
+
+// ============================================================
+//  PENDING
+// ============================================================
+function _showPending() {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-home').classList.add('active');
+  document.getElementById('view-home').innerHTML = `
+    <div class="pending-screen">
+      <div class="pending-icon">⏳</div>
+      <div class="pending-title">Awaiting Approval</div>
+      <p class="pending-text">
+        Signed in as <strong style="color:var(--gold)">${App.email}</strong><br><br>
+        Contact an Alliance Admin to get approved. Refresh this page once approved.
+      </p>
+    </div>`;
+}
+
+// ============================================================
+//  HOME
 // ============================================================
 function renderHome() {
-  return `
-    <div class="page">
-      ${renderNav()}
-      <div class="content">
-        <div class="greeting">
-          <h2>Hey, ${state.user?.name?.split(' ')[0] || 'there'} 👋</h2>
-          <p>What would you like to do today?</p>
-        </div>
-        <div class="card-grid">
-          <button class="action-card" onclick="Router.go('submit')">
-            <span class="card-icon">📋</span>
-            <span class="card-label">New Submission</span>
-          </button>
-          <button class="action-card" onclick="Router.go('history')">
-            <span class="card-icon">🕘</span>
-            <span class="card-label">My History</span>
-          </button>
-          <button class="action-card" onclick="Router.go('rewards')">
-            <span class="card-icon">🏆</span>
-            <span class="card-label">My Rewards</span>
-          </button>
-          ${state.isAdmin ? `
-          <button class="action-card admin-card" onclick="Router.go('admin')">
-            <span class="card-icon">⚙️</span>
-            <span class="card-label">Admin Panel</span>
-          </button>` : ''}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ============================================================
-// PAGE: SUBMIT FORM
-// ============================================================
-function renderSubmit() {
-  return `
-    <div class="page">
-      ${renderNav('New Submission')}
-      <div class="content">
-        <div class="form-card">
-          <!-- TODO: customize these fields for your actual form -->
-          <div class="field">
-            <label>Title</label>
-            <input type="text" id="field-title" placeholder="Enter a title..." />
-          </div>
-          <div class="field">
-            <label>Category</label>
-            <select id="field-category">
-              <option value="">Select category</option>
-              <option value="type_a">Type A</option>
-              <option value="type_b">Type B</option>
-              <option value="type_c">Type C</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Description</label>
-            <textarea id="field-desc" rows="4" placeholder="Describe your submission..."></textarea>
-          </div>
-          <div class="field">
-            <label>Amount / Quantity</label>
-            <input type="number" id="field-amount" placeholder="0" min="0" />
-          </div>
-          <button class="btn btn-primary" id="btn-submit-form">Submit</button>
-          <div id="submit-status" class="status-msg"></div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ============================================================
-// PAGE: HISTORY
-// ============================================================
-function renderHistory() {
-  return `
-    <div class="page">
-      ${renderNav('My Submissions')}
-      <div class="content">
-        <div id="history-list" class="list-container">
-          <div class="loading">Loading...</div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ============================================================
-// PAGE: REWARDS
-// ============================================================
-function renderRewards() {
-  return `
-    <div class="page">
-      ${renderNav('My Rewards')}
-      <div class="content">
-        <div id="rewards-content" class="list-container">
-          <div class="loading">Loading...</div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ============================================================
-// PAGE: ADMIN
-// ============================================================
-function renderAdmin() {
-  if (!state.isAdmin) { Router.go('home'); return ''; }
-  return `
-    <div class="page">
-      ${renderNav('Admin Panel')}
-      <div class="content">
-        <div id="admin-list" class="list-container">
-          <div class="loading">Loading submissions...</div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ============================================================
-// SHARED: NAV BAR
-// ============================================================
-function renderNav(title = '') {
-  return `
-    <nav class="nav-bar">
-      ${state.page !== 'home' ? `<button class="nav-back" onclick="Router.go('home')">←</button>` : '<div></div>'}
-      <span class="nav-title">${title || CONFIG.APP_NAME}</span>
-      <button class="nav-menu" id="btn-logout" title="Sign out">⏻</button>
-    </nav>
-  `;
-}
-
-// ============================================================
-// EVENT LISTENERS (attached after each render)
-// ============================================================
-function attachListeners() {
-  // Login
-  document.getElementById('btn-google')?.addEventListener('click', async () => {
-    try {
-      // In production: open a GAS OAuth URL in a popup or redirect
-      // For now, this shows the flow
-      showStatus('login-status', 'Redirecting to Google...', 'info');
-      const user = await Auth.signInWithGoogle();
-      await maybeOfferBiometric(user);
-      Router.go('home');
-    } catch (e) {
-      showStatus('login-status', e.message, 'error');
-    }
+  const el = document.getElementById('view-home');
+  const char = getActiveChar();
+  el.innerHTML = `<div class="section-title">🏠 Home</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  API.call('get_leaderboard').then(lb => {
+    el.innerHTML = `
+      <div class="section-title">🏠 Home</div>
+      ${char ? `<div class="stats-row">
+        <div class="stat-chip"><div class="stat-chip-label">Character</div><div class="stat-chip-value" style="font-size:1.1rem">${char.ign}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">My Points</div><div class="stat-chip-value">${(char.points||0).toLocaleString()}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Class</div><div class="stat-chip-value" style="font-size:1rem">${char.charClass||'—'}</div></div>
+      </div>` : ''}
+      <div class="section-title">🏆 Leaderboard</div>
+      <div class="card" style="padding:0;overflow:hidden">
+        ${!lb?.length ? `<div class="empty-state"><span class="empty-state-icon">🏆</span>No points yet.</div>`
+        : lb.map(p => `<div class="leaderboard-row">
+            <span class="lb-rank ${p.rank===1?'top1':p.rank===2?'top2':p.rank===3?'top3':''}">${p.rank===1?'🥇':p.rank===2?'🥈':p.rank===3?'🥉':p.rank}</span>
+            <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${p.charClass||''}</div></div>
+            <div class="lb-points">${p.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
+          </div>`).join('')}
+      </div>`;
   });
+}
 
-  document.getElementById('btn-biometric')?.addEventListener('click', async () => {
-    const user = await Auth.authenticateWithBiometric();
-    if (user) Router.go('home');
-    else showStatus('login-status', 'Biometric failed, try Google sign-in', 'error');
+// ============================================================
+//  ATTENDANCE
+// ============================================================
+function renderAttendance() {
+  const el = document.getElementById('view-attendance');
+  const char = getActiveChar();
+  if (!char) { el.innerHTML=`<div class="pending-screen"><div class="pending-icon">⚠️</div><div class="pending-title">No Character</div><p class="pending-text">Ask an admin to set up your character.</p></div>`; return; }
+  el.innerHTML = `
+    <div class="section-title">🗡 Log Attendance</div>
+    <div class="card">
+      <p style="color:var(--text-secondary);font-size:.9rem;margin-bottom:1.2rem">Playing as <strong style="color:var(--gold)">${char.ign}</strong> — select every boss you attended.</p>
+      ${App.config.bossCategories.map(cat => `
+        <div class="boss-category-header">${cat.emoji} ${cat.category}</div>
+        <div class="boss-grid">${cat.bosses.map(b => `
+          <label class="boss-check">
+            <input type="checkbox" value="${b.name}">
+            <span class="boss-check-icon">✓</span>
+            <span class="boss-check-emoji">${b.emoji}</span>
+            <span class="boss-check-info"><span class="boss-check-name">${b.name}</span><span class="boss-check-pts">${b.points} pts</span></span>
+          </label>`).join('')}
+        </div>`).join('')}
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-top:.5rem">
+        <div>
+          <span id="sel-count" style="color:var(--text-secondary);font-size:.88rem">0 selected</span>
+          <span id="sel-pts"   style="color:var(--gold);font-size:.88rem;margin-left:.75rem"></span>
+        </div>
+        <button class="btn btn-primary" id="submit-att-btn" onclick="submitAttendance()">⚔ Submit Attendance</button>
+      </div>
+    </div>`;
+  document.querySelectorAll('.boss-check').forEach(label => {
+    const cb = label.querySelector('input');
+    cb.addEventListener('change', () => { label.classList.toggle('selected', cb.checked); _updateAttSummary(); });
   });
+}
 
-  // Logout
-  document.getElementById('btn-logout')?.addEventListener('click', () => {
-    Auth.clearSession();
-    Router.go('login');
-  });
+function _updateAttSummary() {
+  const checked = [...document.querySelectorAll('.boss-check input:checked')];
+  const bossMap = {}; App.config.bossCategories.forEach(c => c.bosses.forEach(b => { bossMap[b.name]=b.points; }));
+  const pts = checked.reduce((s,cb) => s+(bossMap[cb.value]||0), 0);
+  document.getElementById('sel-count').textContent = `${checked.length} selected`;
+  document.getElementById('sel-pts').textContent   = checked.length > 0 ? `· +${pts} pts` : '';
+}
 
-  // Form submission
-  document.getElementById('btn-submit-form')?.addEventListener('click', async () => {
-    const data = {
-      title: document.getElementById('field-title').value,
-      category: document.getElementById('field-category').value,
-      description: document.getElementById('field-desc').value,
-      amount: document.getElementById('field-amount').value,
-    };
-    if (!data.title || !data.category) {
-      showStatus('submit-status', 'Please fill in required fields', 'error');
-      return;
-    }
-    showStatus('submit-status', 'Submitting...', 'info');
-    const result = await API.submitForm(data);
-    if (result.success) {
-      showStatus('submit-status', '✓ Submitted successfully!', 'success');
+function submitAttendance() {
+  const selected = [...document.querySelectorAll('.boss-check input:checked')].map(cb => cb.value);
+  if (!selected.length) { toast('Select at least one boss.', 'error'); return; }
+  const char = getActiveChar();
+  const btn  = document.getElementById('submit-att-btn');
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  API.call('submit_attendance', { charId: char.charId, bosses: selected }).then(res => {
+    if (res.success) {
+      const c = App.user.characters.find(c => c.charId === char.charId);
+      if (c) c.points = (c.points||0) + res.pointsEarned;
+      _showConfirmation(selected, res.pointsEarned, res.ign);
     } else {
-      showStatus('submit-status', result.error || 'Submission failed', 'error');
+      toast(res.message||'Error', 'error');
+      btn.disabled = false; btn.textContent = '⚔ Submit Attendance';
     }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='⚔ Submit Attendance'; });
+}
+
+function _showConfirmation(bosses, pts, ign) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  const el = document.getElementById('view-confirm'); el.classList.add('active');
+  el.innerHTML = `
+    <div class="confirm-screen">
+      <div class="confirm-icon">✅</div>
+      <div class="confirm-title">Attendance Logged!</div>
+      <div class="confirm-subtitle">Great job, <strong style="color:var(--gold)">${ign}</strong>!</div>
+      <div class="confirm-bosses">${bosses.map(b=>`<span class="confirm-boss-tag">${b}</span>`).join('')}</div>
+      <div class="confirm-points">+${pts}</div>
+      <div class="confirm-points-label">Points Earned</div>
+      <button class="btn btn-primary" style="margin-bottom:.75rem" onclick="_goToAttendance()">⚔ Log More Bosses</button>
+      <button class="btn btn-secondary" onclick="showView('home')">🏠 Go to Home</button>
+    </div>`;
+  document.querySelectorAll('.mob-nav-btn,.nav-btn').forEach(b => b.classList.remove('active'));
+}
+
+function _goToAttendance() {
+  document.querySelectorAll('.mob-nav-btn').forEach(b => { if(b.dataset.view==='attendance') b.classList.add('active'); else b.classList.remove('active'); });
+  document.querySelectorAll('#desktop-nav .nav-btn').forEach(b => { if(b.dataset.view==='attendance') b.classList.add('active'); else b.classList.remove('active'); });
+  showView('attendance');
+}
+
+// ============================================================
+//  MY SPLITS
+// ============================================================
+function renderMySplits() {
+  const el = document.getElementById('view-my-splits');
+  const char = getActiveChar();
+  if (!char) { el.innerHTML=`<div class="empty-state"><span class="empty-state-icon">💰</span>No character found.</div>`; return; }
+  el.innerHTML=`<div class="section-title">💰 My Splits</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  Promise.all([
+    API.call('get_my_payouts',   { charId: char.charId }),
+    API.call('get_my_attendance', { charId: char.charId }),
+  ]).then(([pays, att]) => {
+    const totalGold = (pays||[]).reduce((s,p) => s+(Number(p.goldShare)||0), 0);
+    el.innerHTML = `
+      <div class="section-title">💰 My Splits</div>
+      <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Showing: <strong style="color:var(--gold)">${char.ign}</strong></p>
+      <div class="stats-row">
+        <div class="stat-chip"><div class="stat-chip-label">Total Gold Earned</div><div class="stat-chip-value">${totalGold.toLocaleString()}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Payout Events</div><div class="stat-chip-value">${(pays||[]).length}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Bosses Attended</div><div class="stat-chip-value">${(att||[]).length}</div></div>
+      </div>
+      <div class="section-title" style="font-size:.95rem">Gold Payouts</div>
+      <div class="table-scroll">
+        ${!(pays||[]).length ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No payouts yet.</div>`
+        : `<table class="data-table"><thead><tr><th>Sale ID</th><th>Gold</th><th>Month</th><th>Date</th></tr></thead>
+            <tbody>${pays.map(p=>`<tr>
+              <td style="font-size:.78rem;color:var(--text-secondary)">${p.saleId||p.payoutId}</td>
+              <td><span class="gold-amount">${Number(p.goldShare).toLocaleString()}</span></td>
+              <td>${p.month||'—'}</td>
+              <td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(p.createdAt)}</td>
+            </tr>`).join('')}</tbody></table>`}
+      </div>
+      <div class="section-title" style="font-size:.95rem;margin-top:1.25rem">Attendance Log</div>
+      <div class="table-scroll">
+        ${!(att||[]).length ? `<div class="empty-state"><span class="empty-state-icon">🗡</span>No attendance yet.</div>`
+        : `<table class="data-table"><thead><tr><th>Boss</th><th>Points</th><th>Date</th></tr></thead>
+            <tbody>${att.map(a=>`<tr><td>${a.boss}</td><td style="color:var(--gold)">+${a.points}</td><td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(a.timestamp)}</td></tr>`).join('')}</tbody></table>`}
+      </div>`;
   });
-
-  // Load data for dynamic pages
-  if (state.page === 'history') loadHistory();
-  if (state.page === 'rewards') loadRewards();
-  if (state.page === 'admin') loadAdminSubmissions();
 }
 
-async function loadHistory() {
-  const result = await API.getMySubmissions();
-  const container = document.getElementById('history-list');
-  if (!result.success || !result.submissions.length) {
-    container.innerHTML = '<p class="empty-state">No submissions yet.</p>';
-    return;
-  }
-  container.innerHTML = result.submissions.map(s => `
-    <div class="list-item">
-      <div class="item-title">${s.title}</div>
-      <div class="item-meta">${s.category} · ${s.date}</div>
-      <div class="item-status status-${s.status}">${s.status}</div>
+// ============================================================
+//  DROPS (Admin)
+// ============================================================
+function renderDrops() {
+  const el = document.getElementById('view-drops');
+  el.innerHTML=`<div class="section-title">💎 Boss Runs</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  API.call('get_grouped_runs').then(runs => {
+    el.innerHTML = `
+      <div class="section-title">💎 Boss Runs</div>
+      <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Timestamp</th><th>Boss</th><th>Drops</th><th>Participants</th><th>Status</th></tr></thead>
+          <tbody>
+            ${!(runs||[]).length ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem">No boss runs recorded yet.</td></tr>`
+            : runs.map((r,i) => `
+              <tr onclick="openRunModal(${i})">
+                <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
+                <td><strong>${r.boss}</strong></td>
+                <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.drops||'—'}</td>
+                <td><span style="color:var(--gold)">${r.participantCount}</span> players</td>
+                <td><span class="status ${r.status==='Confirmed'?'status-confirmed':'status-pending'}">${r.status}</span></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    window._runs = runs || [];
+  });
+}
+
+function openRunModal(idx) {
+  const run = window._runs[idx];
+  const drops = App.config.bossDrops[run.boss] || [];
+  let savedDrops = [];
+  try { savedDrops = run.drops ? JSON.parse(run.drops) : []; } catch(e) {}
+
+  showModal(`
+    <div class="modal-title">💎 ${run.boss} — ${fmtDate(run.windowStart)} ${fmtTime(run.windowStart)}</div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
+      <span style="font-size:.82rem;color:var(--text-secondary)">Window: ${fmtTime(run.windowStart)} – ${fmtTime(run.windowEnd)}</span>
+      <span class="status ${run.status==='Confirmed'?'status-confirmed':'status-pending'}">${run.status}</span>
     </div>
-  `).join('');
-}
-
-async function loadRewards() {
-  const result = await API.getMyRewards();
-  const container = document.getElementById('rewards-content');
-  if (!result.success) {
-    container.innerHTML = '<p class="empty-state">Could not load rewards.</p>';
-    return;
-  }
-  container.innerHTML = `
-    <div class="rewards-total">
-      <div class="total-label">Total Earned</div>
-      <div class="total-value">${result.total ?? 0}</div>
-    </div>
-    ${(result.rewards || []).map(r => `
-      <div class="list-item">
-        <div class="item-title">${r.reason}</div>
-        <div class="item-meta">${r.date}</div>
-        <div class="item-reward">+${r.amount}</div>
-      </div>
-    `).join('')}
-  `;
-}
-
-async function loadAdminSubmissions() {
-  const result = await API.getAllSubmissions();
-  const container = document.getElementById('admin-list');
-  if (!result.success || !result.submissions.length) {
-    container.innerHTML = '<p class="empty-state">No pending submissions.</p>';
-    return;
-  }
-  container.innerHTML = result.submissions.map(s => `
-    <div class="list-item admin-item" id="sub-${s.id}">
-      <div class="item-title">${s.title}</div>
-      <div class="item-meta">${s.userName} · ${s.category} · ${s.date}</div>
-      <div class="item-desc">${s.description}</div>
-      <div class="admin-actions">
-        <input type="number" placeholder="Reward pts" id="reward-${s.id}" class="reward-input" />
-        <button class="btn btn-small btn-success" onclick="approveSubmission('${s.id}')">Approve</button>
-        <button class="btn btn-small btn-danger" onclick="rejectSubmission('${s.id}')">Reject</button>
+    <div style="margin-bottom:1rem">
+      <div class="form-label" style="margin-bottom:.5rem">Participants (uncheck to exclude)</div>
+      <div id="modal-participants" style="display:flex;flex-direction:column;gap:.35rem;max-height:160px;overflow-y:auto;padding:.5rem;background:var(--bg-raised);border-radius:var(--radius);border:1px solid var(--border)">
+        ${run.participants.map(p => `
+          <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.9rem">
+            <input type="checkbox" class="part-check" value="${p.charId}" data-ign="${p.ign}" data-email="${p.email}" checked style="accent-color:var(--gold)">
+            ${p.ign}
+          </label>`).join('')}
       </div>
     </div>
-  `).join('');
+    <div class="form-group">
+      <div class="form-label">Items Dropped</div>
+      <div style="display:flex;flex-direction:column;gap:.35rem">
+        ${drops.map(item => {
+          const saved = savedDrops.find(d => d.itemName === item);
+          return `<label style="display:flex;align-items:center;gap:.75rem;font-size:.9rem;cursor:pointer">
+            <input type="checkbox" class="drop-check" value="${item}" ${saved?'checked':''} style="accent-color:var(--gold)">
+            <span style="flex:1">${item}</span>
+            <input type="number" min="1" max="99" value="${saved?.qty||1}" class="form-input drop-qty" data-item="${item}" style="width:60px;padding:.3rem .5rem;font-size:.85rem">
+          </label>`;
+        }).join('')}
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes (internal only)</label>
+      <textarea class="form-textarea" id="modal-notes" placeholder="Optional admin notes…">${run.notes||''}</textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="confirm-run-btn" onclick="submitRunConfirm(${idx})">✓ Confirm Run</button>
+    </div>`);
 }
 
-async function approveSubmission(id) {
-  const pts = document.getElementById(`reward-${id}`).value;
-  const result = await API.approveSubmission(id, pts);
-  if (result.success) {
-    document.getElementById(`sub-${id}`).remove();
-  }
-}
-
-async function rejectSubmission(id) {
-  const result = await API.rejectSubmission(id, '');
-  if (result.success) {
-    document.getElementById(`sub-${id}`).remove();
-  }
+function submitRunConfirm(idx) {
+  const run  = window._runs[idx];
+  const btn  = document.getElementById('confirm-run-btn');
+  btn.disabled = true; btn.textContent = '⏳ Confirming…';
+  const participants = [...document.querySelectorAll('.part-check:checked')].map(cb => ({ charId:cb.value, ign:cb.dataset.ign, email:cb.dataset.email }));
+  const drops = [...document.querySelectorAll('.drop-check:checked')].map(cb => ({ itemName:cb.value, qty:Number(document.querySelector(`.drop-qty[data-item="${cb.value}"]`)?.value)||1 }));
+  const notes = document.getElementById('modal-notes').value;
+  API.call('confirm_run', { runData:{ boss:run.boss, windowStart:run.windowStart, participants, drops, notes, existingRunId:run.runId } })
+    .then(res => {
+      if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); renderDrops(); }
+      else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; }
+    })
+    .catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; });
 }
 
 // ============================================================
-// BIOMETRIC OFFER (after first Google login)
+//  INVENTORY
 // ============================================================
-async function maybeOfferBiometric(user) {
-  if (Auth.hasBiometricRegistered()) return;
-  const available = await Auth.isBiometricAvailable();
-  if (!available) return;
-  const yes = confirm('Would you like to enable Face ID / fingerprint login next time?');
-  if (yes) await Auth.registerBiometric(user);
+function renderInventory() {
+  const el = document.getElementById('view-inventory');
+  el.innerHTML=`<div class="section-title">🎒 Inventory</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  API.call('get_inventory').then(bossItems => {
+    const bosses = Object.keys(bossItems||{});
+    if (!bosses.length) { el.innerHTML=`<div class="section-title">🎒 Inventory</div><div class="empty-state"><span class="empty-state-icon">🎒</span>No items yet.</div>`; return; }
+    const emojiMap = {}; App.config.bossCategories.forEach(cat => cat.bosses.forEach(b => { emojiMap[b.name]=b.emoji; }));
+    el.innerHTML = `<div class="section-title">🎒 Inventory</div>` +
+      bosses.map(boss => `
+        <div class="inv-section">
+          <div class="inv-section-title">${emojiMap[boss]||'⚔'} ${boss}</div>
+          <div class="inv-grid">
+            ${Object.entries(bossItems[boss]).map(([itemName,data]) => `
+              <div class="inv-tile ${data.available===0?'sold-out':''}" onclick="openItemModal('${escHtml(boss)}','${escHtml(itemName)}')">
+                <div class="inv-tile-img">🎁</div>
+                <div class="inv-tile-name">${itemName}</div>
+                <div class="inv-tile-qty">${data.available}</div>
+                <div class="inv-tile-qty-label">${data.available===0?'All Sold':'Available'}</div>
+              </div>`).join('')}
+          </div>
+        </div>`).join('');
+    window._inventoryData = bossItems;
+  });
+}
+
+function openItemModal(boss, itemName) {
+  const data = window._inventoryData?.[boss]?.[itemName]; if (!data) return;
+  showModal(`
+    <div class="modal-title">🎁 ${itemName}</div>
+    <div style="display:flex;gap:1.5rem;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap">
+      <div><div style="font-family:var(--font-display);font-size:3rem;color:var(--gold);line-height:1">${data.available}</div><div style="font-size:.78rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.1em">Available</div></div>
+      <div><div style="font-family:var(--font-display);font-size:2rem;color:var(--text-secondary);line-height:1">${data.totalQty}</div><div style="font-size:.78rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.1em">Total Dropped</div></div>
+    </div>
+    <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem;padding:1rem;background:var(--bg-raised);border-radius:var(--radius);border:1px solid var(--border)">
+      <div class="form-group" style="margin:0;flex:1;min-width:120px"><label class="form-label">Gold Per Item</label><input class="form-input" id="item-gold" type="number" min="1" placeholder="e.g. 10000"></div>
+      <div class="form-group" style="margin:0;flex:1;min-width:120px"><label class="form-label">Winner (optional)</label><input class="form-input" id="item-winner" placeholder="IGN or —"></div>
+      <button class="btn btn-success" id="sell-btn" onclick="sellSelectedItems()">💰 Mark Selected Sold</button>
+    </div>
+    <div style="font-size:.8rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary);margin-bottom:.5rem">Drop History — select rows to sell</div>
+    <div class="table-scroll" style="max-height:280px;overflow-y:auto">
+      <table class="data-table">
+        <thead><tr><th></th><th>Dropped At</th><th>Qty</th><th>Participants</th><th>Status</th></tr></thead>
+        <tbody>${data.history.map(h=>`
+          <tr data-inv-id="${h.invId}" data-status="${h.status}" onclick="toggleHistoryRow(this)">
+            <td><input type="checkbox" class="hist-check" value="${h.invId}" ${h.status!=='Available'?'disabled':''} style="accent-color:var(--gold)"></td>
+            <td style="font-size:.82rem;white-space:nowrap">${fmtDate(h.droppedAt)} ${fmtTime(h.droppedAt)}</td>
+            <td style="color:var(--gold)">${h.qty}</td>
+            <td>${h.participantCount} players</td>
+            <td><span class="status ${h.status==='Available'?'status-available':'status-sold'}">${h.status}</span></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+}
+
+function toggleHistoryRow(tr) {
+  if (tr.dataset.status !== 'Available') return;
+  const cb = tr.querySelector('.hist-check'); cb.checked = !cb.checked; tr.classList.toggle('selected', cb.checked);
+}
+
+function sellSelectedItems() {
+  const invIds = [...document.querySelectorAll('.hist-check:checked')].map(cb => cb.value);
+  if (!invIds.length) { toast('Select at least one drop row.', 'error'); return; }
+  const gold = Number(document.getElementById('item-gold').value);
+  if (!gold || gold <= 0) { toast('Enter a valid gold amount.', 'error'); return; }
+  const winner = document.getElementById('item-winner').value.trim();
+  const btn = document.getElementById('sell-btn'); btn.disabled=true; btn.textContent='Processing…';
+  API.call('mark_items_sold', { invIds, goldPerItem: gold, winner }).then(res => {
+    if (res.success) {
+      const msg = res.payoutsCount === 0 ? 'Sale recorded but no payouts — confirm the run first.' : `Sold! ${res.salesCount} item(s), ${res.payoutsCount} payouts.`;
+      toast(msg, res.payoutsCount === 0 ? 'error' : 'success');
+      closeModal(); renderInventory();
+    } else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='💰 Mark Selected Sold'; }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='💰 Mark Selected Sold'; });
 }
 
 // ============================================================
-// UTILS
+//  PAYOUTS (Admin)
 // ============================================================
-function showStatus(elementId, message, type) {
-  const el = document.getElementById(elementId);
-  if (el) {
-    el.textContent = message;
-    el.className = `status-msg status-${type}`;
-  }
+let _currentMonth = null;
+
+function renderPayouts() {
+  const el = document.getElementById('view-payouts');
+  el.innerHTML=`<div class="section-title">📊 Payouts</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  API.call('get_available_months').then(months => {
+    if (!(months||[]).length) { el.innerHTML=`<div class="section-title">📊 Payouts</div><div class="empty-state"><span class="empty-state-icon">📊</span>No payouts yet.</div>`; return; }
+    if (!_currentMonth || !months.includes(_currentMonth)) _currentMonth = months[0];
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.5rem">
+        <div class="section-title" style="margin-bottom:0">📊 Payouts</div>
+        <select class="month-select" id="month-select" onchange="switchMonth(this.value)">
+          ${months.map(m=>`<option value="${m}"${m===_currentMonth?' selected':''}>${fmtMonth(m)}</option>`).join('')}
+        </select>
+      </div>
+      <div id="payouts-content"><div style="color:var(--text-secondary)">Loading…</div></div>`;
+    loadPayoutsMonth(_currentMonth);
+  });
+}
+
+function switchMonth(m) { _currentMonth=m; loadPayoutsMonth(m); }
+
+function loadPayoutsMonth(month) {
+  const el = document.getElementById('payouts-content');
+  el.innerHTML=`<div style="color:var(--text-secondary)">Loading…</div>`;
+  API.call('get_payouts_page', { month }).then(data => {
+    el.innerHTML = `
+      <div class="stats-row">
+        <div class="stat-chip"><div class="stat-chip-label">Total Revenue</div><div class="stat-chip-value">${(data.totalRevenue||0).toLocaleString()}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Total Distributed</div><div class="stat-chip-value">${(data.totalDistributed||0).toLocaleString()}</div></div>
+      </div>
+      <div class="card" style="padding:.75rem 1rem;margin-bottom:1rem">
+        <div class="collapsible-header" onclick="toggleCollapsible(this)">
+          <span style="font-family:var(--font-display);font-size:.9rem;color:var(--gold);letter-spacing:.1em">Items Sold This Month (${(data.monthSales||[]).length})</span>
+          <span class="collapsible-arrow">▼</span>
+        </div>
+        <div class="collapsible-body collapsed" style="max-height:0">
+          <div class="table-scroll" style="margin-top:.75rem">
+            ${!(data.monthSales||[]).length ? `<div class="empty-state" style="padding:1rem">No sales this month.</div>`
+            : `<table class="data-table"><thead><tr><th>Item Sold</th><th>Date Sold</th><th>Sold Amount</th><th>Winner</th></tr></thead>
+                <tbody>${data.monthSales.map(s=>`<tr>
+                  <td>${s.itemName} <span style="color:var(--text-muted);font-size:.78rem">×${s.qty}</span></td>
+                  <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(s.soldAt)}</td>
+                  <td><span class="gold-amount">${Number(s.totalGold).toLocaleString()}</span></td>
+                  <td style="color:var(--text-secondary)">${s.winner||'—'}</td>
+                </tr>`).join('')}</tbody></table>`}
+          </div>
+        </div>
+      </div>
+      <div class="section-title" style="font-size:.95rem">Character Payouts — ${fmtMonth(month)}</div>
+      <div class="table-scroll">
+        ${!(data.characterPayouts||[]).length ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No payouts this month.</div>`
+        : `<table class="data-table"><thead><tr><th>Character</th><th>Total Splits</th><th>Paid</th></tr></thead>
+            <tbody>${data.characterPayouts.map(c=>`<tr>
+              <td><div style="font-weight:600">${c.ign}</div><div style="font-size:.75rem;color:var(--text-secondary)">${c.email}</div></td>
+              <td><span class="gold-amount">${Number(c.totalGold).toLocaleString()}</span></td>
+              <td><input type="checkbox" class="paid-check" data-char-id="${c.charId}" data-month="${month}" ${c.paid?'checked':''} onchange="togglePaid(this)"></td>
+            </tr>`).join('')}</tbody></table>`}
+      </div>`;
+  });
+}
+
+function toggleCollapsible(header) {
+  header.classList.toggle('open');
+  const body = header.nextElementSibling;
+  if (header.classList.contains('open')) { body.classList.remove('collapsed'); body.style.maxHeight = body.scrollHeight+'px'; }
+  else { body.style.maxHeight='0'; setTimeout(()=>body.classList.add('collapsed'),300); }
+}
+
+function togglePaid(cb) {
+  API.call('mark_char_paid', { charId:cb.dataset.charId, month:cb.dataset.month, paid:cb.checked })
+    .then(res => { if(res.success) toast(cb.checked?'Marked as paid':'Unmarked','success'); else { toast('Error','error'); cb.checked=!cb.checked; } });
 }
 
 // ============================================================
-// INIT
+//  ROSTER (Admin)
 // ============================================================
-async function init() {
-  // Register service worker
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=' + Date.now()).catch(console.error);
-  }
-
-  Router.init();
-
-  // Check for existing session
-  const user = Auth.loadSession();
-  if (user) {
-    state.page = 'home';
-    location.hash = 'home';
-  } else {
-    state.page = 'login';
-    location.hash = 'login';
-  }
-
-  render();
+function renderRoster() {
+  const el = document.getElementById('view-roster');
+  el.innerHTML=`<div class="section-title">👥 Roster</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  API.call('get_roster').then(roster => {
+    roster = roster || [];
+    const active  = roster.filter(r=>r.status==='active');
+    const pending = roster.filter(r=>r.status==='pending');
+    el.innerHTML = `
+      <div class="section-title">👥 Roster</div>
+      <div class="stats-row">
+        <div class="stat-chip"><div class="stat-chip-label">Active</div><div class="stat-chip-value">${active.length}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Pending</div><div class="stat-chip-value">${pending.length}</div></div>
+      </div>
+      <button class="btn btn-primary" style="margin-bottom:1.2rem" onclick="openRegisterMemberModal()">+ Register Member</button>
+      ${pending.length?`<div class="section-title" style="font-size:.95rem">Pending Approval</div>${pending.map(r=>rosterCard(r)).join('')}<div style="margin-top:1rem"></div>`:''}
+      <div class="section-title" style="font-size:.95rem">Active Members</div>
+      ${!active.length?`<div class="card"><div class="empty-state"><span class="empty-state-icon">👥</span>No active members yet.</div></div>`:active.map(r=>rosterCard(r)).join('')}`;
+  });
 }
 
-init();
+function rosterCard(r) {
+  const chars = r.characters||[];
+  const pts = chars.reduce((s,c)=>s+(c.points||0),0);
+  return `<div class="card">
+    <div class="card-header">
+      <div><div class="card-title">${chars.length?chars.map(c=>c.ign).join(', '):r.email}</div><div class="card-meta">${r.email}</div></div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+        <span class="status ${r.status==='active'?'status-confirmed':'status-pending'}">${r.status}</span>
+        ${pts>0?`<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>`:''}
+      </div>
+    </div>
+    ${chars.length?`<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span style="font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>`:''}
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+      ${r.status==='pending'?`<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>`:''}
+      <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
+    </div>
+  </div>`;
+}
+
+function openRegisterMemberModal(pre='') {
+  showModal(`
+    <div class="modal-title">+ Register Member</div>
+    <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="reg-email" value="${pre}" ${pre?'readonly style="opacity:.6"':''} placeholder="player@gmail.com"></div>
+    <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="reg-ign" placeholder="Character name"></div>
+    <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="reg-level" type="number" placeholder="e.g. 50"></div>
+    <div class="form-group"><label class="form-label">Class</label><input class="form-input" id="reg-class" placeholder="e.g. Warrior"></div>
+    <div class="form-group"><label class="form-label">Guild</label><input class="form-input" id="reg-guild" placeholder="Guild name"></div>
+    <div class="form-group"><label class="form-label">Faction</label><input class="form-input" id="reg-faction" placeholder="e.g. Lanos"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitRegisterMember()">Register</button>
+    </div>`);
+}
+
+function submitRegisterMember() {
+  const memberEmail=document.getElementById('reg-email').value.trim();
+  const ign=document.getElementById('reg-ign').value.trim();
+  if (!memberEmail||!ign) { toast('Email and IGN required.','error'); return; }
+  API.call('register_member',{ memberEmail, ign, level:document.getElementById('reg-level').value.trim(), charClass:document.getElementById('reg-class').value.trim(), guild:document.getElementById('reg-guild').value.trim(), faction:document.getElementById('reg-faction').value.trim() })
+    .then(res=>{ if(res.success){toast('Member registered!','success');closeModal();renderRoster();}else{toast(res.error||'Error','error');} });
+}
+
+function openAddCharModal(memberEmail) {
+  showModal(`
+    <div class="modal-title">+ Add Character</div>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">${memberEmail}</p>
+    <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="ac-ign" placeholder="Character name"></div>
+    <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="ac-level" type="number" placeholder="e.g. 50"></div>
+    <div class="form-group"><label class="form-label">Class</label><input class="form-input" id="ac-class" placeholder="e.g. Warrior"></div>
+    <div class="form-group"><label class="form-label">Guild</label><input class="form-input" id="ac-guild" placeholder="Guild name"></div>
+    <div class="form-group"><label class="form-label">Faction</label><input class="form-input" id="ac-faction" placeholder="e.g. Crimson"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddChar('${memberEmail}')">Add</button>
+    </div>`);
+}
+
+function submitAddChar(memberEmail) {
+  const ign=document.getElementById('ac-ign').value.trim();
+  if (!ign) { toast('IGN required.','error'); return; }
+  API.call('add_character',{ memberEmail, ign, level:document.getElementById('ac-level').value.trim(), charClass:document.getElementById('ac-class').value.trim(), guild:document.getElementById('ac-guild').value.trim(), faction:document.getElementById('ac-faction').value.trim() })
+    .then(res=>{ if(res.success){toast('Character added!','success');closeModal();renderRoster();}else{toast(res.error||'Error','error');} });
+}
+
+// ============================================================
+//  SIDEBAR / MODAL / TOAST / UTILS
+// ============================================================
+function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
+function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
+
+function showModal(html) { document.getElementById('modal-box').innerHTML=html; document.getElementById('modal-overlay').classList.remove('hidden'); }
+function closeModal()    { document.getElementById('modal-overlay').classList.add('hidden'); }
+
+function toast(msg, type='') {
+  const t = document.getElementById('toast');
+  t.textContent=msg; t.className='show '+type;
+  clearTimeout(t._timer); t._timer=setTimeout(()=>t.className='',3200);
+}
+
+function fmtDate(raw)  { if(!raw)return'—'; const d=new Date(raw); return isNaN(d)?String(raw):d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
+function fmtTime(raw)  { if(!raw)return'';  const d=new Date(raw); return isNaN(d)?'':d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}); }
+function fmtMonth(m)   { if(!m)return'—'; const[y,mo]=m.split('-'); return new Date(y,mo-1,1).toLocaleDateString(undefined,{month:'long',year:'numeric'}); }
+function escHtml(s)    { return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ============================================================
+//  SERVICE WORKER REGISTRATION
+// ============================================================
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(console.error);
+}
