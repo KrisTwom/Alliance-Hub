@@ -12,21 +12,165 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Rajdhani:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <title>Alliance Tracker</title>
   <link rel="stylesheet" href="style.css" />
+  <style>
+    #login-screen {
+      position: fixed; inset: 0; background: var(--bg-deep);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999; flex-direction: column; gap: 1.5rem; padding: 2rem;
+      text-align: center;
+    }
+    #login-screen.hidden { display: none; }
+    #loading-screen {
+      position: fixed; inset: 0; background: var(--bg-deep);
+      display: none; align-items: center; justify-content: center;
+      z-index: 9998; flex-direction: column; gap: 1rem;
+    }
+    #loading-screen.visible { display: flex; }
+    #login-status {
+      font-size: .85rem; color: var(--danger);
+      min-height: 1.2em; margin-top: -.5rem;
+    }
+  </style>
 </head>
 <body>
-  <!-- The entire app is rendered by app.js into #app -->
-  <div id="app">
-    <!-- Initial loading splash shown before JS runs -->
-    <div id="splash">
-      <div class="loader-emblem">⚔</div>
-      <div class="loader-title">ALLIANCE TRACKER</div>
-      <div class="loader-bar"><div class="loader-fill"></div></div>
-    </div>
+
+  <!-- LOGIN SCREEN -->
+  <div id="login-screen">
+    <div style="font-size:3.5rem;filter:drop-shadow(0 0 16px var(--gold))">⚔</div>
+    <div style="font-family:var(--font-display);font-size:1.4rem;letter-spacing:.25em;color:var(--gold)">ALLIANCE TRACKER</div>
+    <p style="color:var(--text-secondary);font-size:.95rem;max-width:300px;line-height:1.6">
+      Sign in with your Google account to continue.
+    </p>
+    <button class="btn btn-primary" id="btn-google" style="font-size:1rem;padding:.8rem 2rem;gap:.75rem;">
+      <svg viewBox="0 0 24 24" width="20" height="20" style="flex-shrink:0">
+        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+      </svg>
+      Sign in with Google
+    </button>
+    <div id="google-signin-container"></div>
+    <div id="login-status"></div>
   </div>
+
+  <!-- LOADING SCREEN (shown after sign-in while fetching data) -->
+  <div id="loading-screen">
+    <div class="loader-emblem">⚔</div>
+    <div class="loader-title">ALLIANCE TRACKER</div>
+    <div class="loader-bar"><div class="loader-fill"></div></div>
+  </div>
+
+  <!-- APP (populated by app.js after initAllianceTracker is called) -->
+  <div id="app" style="display:none;"></div>
+
   <div id="toast"></div>
   <div id="modal-overlay" class="modal-overlay hidden"><div id="modal-box" class="modal-box"></div></div>
+
+  <script>
+    // ── GOOGLE OAUTH CLIENT ID ──────────────────────────────────
+    const GOOGLE_CLIENT_ID = '465273345673-7mdusmgk0bppo6clk5pr3pensgfmq637.apps.googleusercontent.com';
+
+    // ── Called once Google GSI library is ready ─────────────────
+    function initGoogleAuth() {
+      google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: handleCredential,
+        ux_mode: 'popup',
+        auto_select: true,   // silently signs in if there's a recent session
+      });
+
+      // Try silent sign-in first (returning users)
+      google.accounts.id.prompt(notification => {
+        // If One Tap is suppressed or skipped, just show the button — no action needed
+      });
+    }
+
+    // ── Handles the credential response from Google ─────────────
+    function handleCredential(response) {
+      // Decode the JWT to get the email (no server-side verification needed for this use case)
+      try {
+        const parts  = response.credential.split('.');
+        const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+        const email  = payload.email;
+        if (!email) throw new Error('No email in token');
+
+        // Store credential for session persistence (30-day expiry)
+        localStorage.setItem('alliance_credential', response.credential);
+        localStorage.setItem('alliance_email', email);
+        localStorage.setItem('alliance_expiry', Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+        launchApp(email);
+      } catch(e) {
+        document.getElementById('login-status').textContent = 'Sign-in failed: ' + e.message;
+      }
+    }
+
+    // ── Button click → trigger Google popup ─────────────────────
+    document.getElementById('btn-google').addEventListener('click', () => {
+      document.getElementById('login-status').textContent = '';
+      if (!window.google) {
+        document.getElementById('login-status').textContent = 'Google Sign-In still loading, try again in a moment.';
+        return;
+      }
+      // Use token client for explicit button click
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: 'email profile',
+        callback: tokenResponse => {
+          fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+            headers: { Authorization: `Bearer ${tokenResponse.access_token}` }
+          })
+          .then(r => r.json())
+          .then(info => {
+            localStorage.setItem('alliance_email', info.email);
+            localStorage.setItem('alliance_expiry', Date.now() + 30 * 24 * 60 * 60 * 1000);
+            launchApp(info.email);
+          })
+          .catch(e => {
+            document.getElementById('login-status').textContent = 'Could not fetch profile: ' + e.message;
+          });
+        },
+      });
+      client.requestAccessToken();
+    });
+
+    // ── Show loading screen then boot the app ───────────────────
+    function launchApp(email) {
+      document.getElementById('login-screen').classList.add('hidden');
+      document.getElementById('loading-screen').classList.add('visible');
+      // Give the loading animation a moment to render, then init
+      setTimeout(() => window.initAllianceTracker(email), 100);
+    }
+
+    // ── Check for existing valid session on page load ────────────
+    window.addEventListener('load', () => {
+      const expiry = localStorage.getItem('alliance_expiry');
+      const email  = localStorage.getItem('alliance_email');
+      if (email && expiry && Date.now() < parseInt(expiry)) {
+        // Valid session — skip login screen
+        launchApp(email);
+        return;
+      }
+      // No session — wait for GSI to load, then init auth
+      const waitForGoogle = setInterval(() => {
+        if (window.google) { clearInterval(waitForGoogle); initGoogleAuth(); }
+      }, 100);
+    });
+
+    // ── Sign out (called from app.js shell) ──────────────────────
+    window.signOut = function() {
+      localStorage.removeItem('alliance_email');
+      localStorage.removeItem('alliance_credential');
+      localStorage.removeItem('alliance_expiry');
+      google.accounts.id.disableAutoSelect();
+      location.reload();
+    };
+  </script>
+
   <script src="app.js"></script>
 </body>
 </html>
