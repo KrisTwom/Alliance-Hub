@@ -86,14 +86,21 @@ html,body {
   -webkit-backdrop-filter:blur(20px);
   backdrop-filter:blur(20px);
 }
-/* Fill status bar area with header colour when running as installed PWA */
+/* Fill status bar + home indicator area when running as installed PWA */
 @media all and (display-mode: standalone) {
   body::before {
     content:'';
-    display:block;
     position:fixed;
     top:0; left:0; right:0;
     height:env(safe-area-inset-top, 0px);
+    background:var(--bg-card);
+    z-index:9999;
+  }
+  body::after {
+    content:'';
+    position:fixed;
+    bottom:0; left:0; right:0;
+    height:env(safe-area-inset-bottom, 0px);
     background:var(--bg-card);
     z-index:9999;
   }
@@ -131,8 +138,8 @@ html,body {
 /* ── MOBILE BOTTOM NAV ──────────────────── */
 #mobile-nav {
   position:fixed; bottom:0; left:0; right:0;
-  height:calc(var(--mob-nav-h) + var(--safe-bottom));
-  padding-bottom:var(--safe-bottom);
+  height:calc(var(--mob-nav-h) + var(--safe-bottom) + 4px);
+  padding-bottom:calc(var(--safe-bottom) + 4px);
   background:var(--bg-card);
   border-top:1px solid var(--border);
   z-index:200; display:none;
@@ -317,7 +324,7 @@ html,body {
 @media (max-width:700px) {
   #main-header .header-center { display:none; }
   #mobile-nav { display:grid; }
-  #main-content { padding:1rem; padding-bottom:calc(var(--mob-nav-h) + var(--safe-bottom) + 1.5rem); }
+  #main-content { padding:1rem; padding-bottom:calc(var(--mob-nav-h) + var(--safe-bottom) + 5.5rem); }
   .boss-grid { grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); }
   #toast { bottom:calc(var(--mob-nav-h) + var(--safe-bottom) + .75rem); }
   .inv-grid { grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); }
