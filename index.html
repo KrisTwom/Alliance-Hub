@@ -142,6 +142,7 @@
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('loading-screen').classList.add('visible');
       // Give the loading animation a moment to render, then init
+      document.querySelector('.loader-title').textContent = 'Connecting…';
       setTimeout(() => window.initAllianceTracker(email), 100);
     }
 
