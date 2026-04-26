@@ -138,8 +138,8 @@ html,body {
 /* ── MOBILE BOTTOM NAV ──────────────────── */
 #mobile-nav {
   position:fixed; bottom:0; left:0; right:0;
-  height:calc(var(--mob-nav-h) + var(--safe-bottom) + 4px);
-  padding-bottom:calc(var(--safe-bottom) + 4px);
+  height:calc(var(--mob-nav-h) + max(var(--safe-bottom), 20px));
+  padding-bottom:max(var(--safe-bottom), 20px);
   background:var(--bg-card);
   border-top:1px solid var(--border);
   z-index:200; display:none;
@@ -324,7 +324,7 @@ html,body {
 @media (max-width:700px) {
   #main-header .header-center { display:none; }
   #mobile-nav { display:grid; }
-  #main-content { padding:1rem; padding-bottom:calc(var(--mob-nav-h) + var(--safe-bottom) + 5.5rem); }
+  #main-content { padding:1rem; padding-bottom:calc(var(--mob-nav-h) + max(var(--safe-bottom), 20px) + 1.5rem); }
   .boss-grid { grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); }
   #toast { bottom:calc(var(--mob-nav-h) + var(--safe-bottom) + .75rem); }
   .inv-grid { grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); }
