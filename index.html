@@ -80,13 +80,12 @@
         client_id: GOOGLE_CLIENT_ID,
         callback: handleCredential,
         ux_mode: 'popup',
-        auto_select: true,   // silently signs in if there's a recent session
+        auto_select: true,
+        use_fedcm_for_prompt: true,
       });
 
       // Try silent sign-in first (returning users)
-      google.accounts.id.prompt(notification => {
-        // If One Tap is suppressed or skipped, just show the button — no action needed
-      });
+      google.accounts.id.prompt();
     }
 
     // ── Handles the credential response from Google ─────────────
