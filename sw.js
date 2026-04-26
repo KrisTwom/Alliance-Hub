@@ -1,9 +1,10 @@
-const CACHE_NAME = 'myapp-v1';
+const CACHE_NAME = 'alliance-tracker-v1';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/app.js',
-  '/manifest.json'
+  '/style.css',
+  '/manifest.json',
 ];
 
 // Install: cache static assets
@@ -26,21 +27,28 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
-// Fetch: cache-first for static, network-first for API calls
+// Fetch strategy:
+// - GAS API calls → always network (never cache)
+// - Everything else → cache-first, fall back to network
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // Always go to network for GAS API calls
-  if (url.hostname.includes('script.google.com')) {
+  // Never cache GAS API calls or Google auth calls
+  if (
+    url.hostname.includes('script.google.com') ||
+    url.hostname.includes('accounts.google.com') ||
+    url.hostname.includes('googleapis.com')
+  ) {
     event.respondWith(fetch(event.request));
     return;
   }
 
-  // Cache-first for everything else
+  // Cache-first for all other requests
   event.respondWith(
     caches.match(event.request).then(cached => {
-      return cached || fetch(event.request).then(response => {
-        // Cache new static assets as they're fetched
+      if (cached) return cached;
+      return fetch(event.request).then(response => {
+        // Cache successful GET responses
         if (response.ok && event.request.method === 'GET') {
           const clone = response.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
@@ -48,7 +56,7 @@ self.addEventListener('fetch', event => {
         return response;
       });
     }).catch(() => {
-      // Offline fallback
+      // Offline fallback — serve the shell for navigation requests
       if (event.request.destination === 'document') {
         return caches.match('/index.html');
       }
