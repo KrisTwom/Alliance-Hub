@@ -37,27 +37,45 @@ const API = {
 // ============================================================
 window.initAllianceTracker = async function(email) {
   App.email = email;
+  const loadingScreen = document.getElementById('loading-screen');
+  const appEl         = document.getElementById('app');
+
+  function showError(msg) {
+    if (loadingScreen) loadingScreen.style.display = 'none';
+    appEl.style.display = 'flex';
+    appEl.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:2rem;text-align:center;gap:1rem;">
+        <div style="font-size:3rem">⚠️</div>
+        <div style="font-family:'Cinzel',serif;color:#e0c97f;font-size:1.1rem;letter-spacing:.1em">Connection Failed</div>
+        <div style="color:#8a8474;font-size:.9rem;max-width:320px">${msg}</div>
+        <button onclick="location.reload()" style="margin-top:.5rem;padding:.6rem 1.5rem;background:#e0c97f;color:#0a0c14;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Retry</button>
+      </div>`;
+  }
+
   try {
     const [user, config] = await Promise.all([
       API.call('get_current_user'),
       API.call('get_config'),
     ]);
+
+    if (user?.error) throw new Error('GAS error: ' + user.error);
+    if (!config?.bossCategories) throw new Error('Config missing — check GAS deployment');
+
     App.user   = user;
     App.config = config;
     if (user.characters?.length) App.activeCharId = user.characters[0].charId;
+
     _buildShell();
     _initNav();
 
-    // Remove splash
-    document.getElementById('splash')?.remove();
-    document.getElementById('app').style.display = 'flex';
+    if (loadingScreen) loadingScreen.style.display = 'none';
+    appEl.style.display = 'flex';
 
     if (user.status === 'unregistered') { API.call('request_access'); _showPending(); return; }
     if (user.status === 'pending')      { _showPending(); return; }
     showView('home');
   } catch(err) {
-    document.getElementById('splash').innerHTML =
-      `<div style="color:#e05555;text-align:center;padding:2rem">Failed to connect.<br><small>${err.message}</small><br><button onclick="location.reload()" style="margin-top:1rem;padding:.5rem 1rem;background:#e0c97f;color:#000;border:none;border-radius:6px;cursor:pointer">Retry</button></div>`;
+    showError(err.message || 'Could not reach the server. Check your GAS deployment URL and make sure it is deployed as "Anyone".');
   }
 };
 
