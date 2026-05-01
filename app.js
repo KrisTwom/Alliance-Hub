@@ -113,18 +113,25 @@ const API = {
   },
 
   async _fetch(action, params = {}, freshToken = false) {
-    // freshToken=true: include the live Google token (first call after login).
-    // All subsequent calls send just the email (tokens expire in 1 hour).
     const authPayload = freshToken && window.getFreshAuthPayload
       ? window.getFreshAuthPayload()
       : (window.getAuthPayload ? window.getAuthPayload() : { email: App.email });
     const body = { action, email: App.email, ...authPayload, ...params };
+
+    // DEBUG — remove after fixing auth
+    console.log('[API._fetch]', action, 'freshToken=', freshToken, 'keys=', Object.keys(body).join(','), 'email=', body.email, 'hasCredential=', !!body.credential, 'hasAccessToken=', !!body.accessToken);
+
     const res  = await fetch(GAS_URL, {
       method:  'POST',
       headers: { 'Content-Type': 'text/plain' },
       body:    JSON.stringify(body),
     });
-    return res.json();
+    const json = await res.json();
+
+    // DEBUG — remove after fixing auth
+    if (json?.error) console.warn('[API._fetch] GAS error for', action, ':', json.error);
+
+    return json;
   },
 };
 
