@@ -174,7 +174,7 @@
         if (remaining < SESSION_SLIDE_MS) {
           localStorage.setItem('alliance_expiry', Date.now() + SESSION_TTL_MS);
         }
-        launchApp(email, true /*isFreshLogin*/);
+        launchApp(email, false /*returningSession*/);
         return;
       }
       // No valid session — wait for GSI to load, then init auth
@@ -203,15 +203,18 @@
     };
 
     // ── Helper: get the fresh-login token payload ─────────────────
-    // Called once at login time so GAS can verify the token.
+    // Only sends the credential (ID token) — never the access token.
+    // Access tokens expire in 1hr and require a live network call to
+    // verify on GAS, which fails on any returning session.
+    // ID tokens also expire in 1hr but at least fail gracefully.
+    // For returning sessions, isFreshLogin=false so this is never called.
     window.getFreshAuthPayload = function() {
       const authType = localStorage.getItem('alliance_auth_type');
       if (authType === 'credential') {
         return { credential: localStorage.getItem('alliance_credential') };
       }
-      if (authType === 'access_token') {
-        return { accessToken: localStorage.getItem('alliance_access_token') };
-      }
+      // access_token path: don't send it — fall back to email-only
+      // The ADMIN_EMAILS allowlist is the real security gate
       return {};
     };
   </script>

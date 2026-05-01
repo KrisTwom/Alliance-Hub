@@ -113,25 +113,21 @@ const API = {
   },
 
   async _fetch(action, params = {}, freshToken = false) {
-    const authPayload = freshToken && window.getFreshAuthPayload
+    // Always send email. On fresh login also include the credential
+    // (ID token) so GAS can verify it server-side. On returning sessions
+    // freshToken=false so only email is sent — accepted by GAS Path 3.
+    // We never send accessToken — it expires in 1hr and requires a live
+    // network call to verify, which breaks returning sessions.
+    const authPayload = (freshToken && window.getFreshAuthPayload)
       ? window.getFreshAuthPayload()
-      : (window.getAuthPayload ? window.getAuthPayload() : { email: App.email });
+      : {};
     const body = { action, email: App.email, ...authPayload, ...params };
-
-    // DEBUG — remove after fixing auth
-    console.log('[API._fetch]', action, 'freshToken=', freshToken, 'keys=', Object.keys(body).join(','), 'email=', body.email, 'hasCredential=', !!body.credential, 'hasAccessToken=', !!body.accessToken);
-
     const res  = await fetch(GAS_URL, {
       method:  'POST',
       headers: { 'Content-Type': 'text/plain' },
       body:    JSON.stringify(body),
     });
-    const json = await res.json();
-
-    // DEBUG — remove after fixing auth
-    if (json?.error) console.warn('[API._fetch] GAS error for', action, ':', json.error);
-
-    return json;
+    return res.json();
   },
 };
 
@@ -224,7 +220,8 @@ window.initAllianceTracker = async function(email, isFreshLogin = false) {
   try {
     // Single batch call — fetches user, config, leaderboard,
     // attendance, payouts, and admin data all at once.
-    const allData = await API._fetch('get_all_data', {}, isFreshLogin /*freshToken*/);
+    // Always send email-only — token verification on GAS is unreliable after 1hr
+    const allData = await API._fetch('get_all_data', {}, false);
     if (allData?.error) throw new Error('GAS error: ' + allData.error);
     if (!allData?.config?.bossCategories) throw new Error('Config missing — check GAS deployment URL');
 
