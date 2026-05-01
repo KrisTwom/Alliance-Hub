@@ -196,13 +196,24 @@
     };
 
     // ── Helper: get the current auth payload for API calls ───────
-    // app.js calls this to include the right token in every request.
+    // Fresh logins include the live token for server-side verification.
+    // Returning sessions send only the email — tokens expire in 1 hour
+    // and can't be silently refreshed in a GAS-only app.
     window.getAuthPayload = function() {
+      return { email: localStorage.getItem('alliance_email') || '' };
+    };
+
+    // ── Helper: get the fresh-login token payload ─────────────────
+    // Called once at login time so GAS can verify the token.
+    window.getFreshAuthPayload = function() {
       const authType = localStorage.getItem('alliance_auth_type');
       if (authType === 'credential') {
         return { credential: localStorage.getItem('alliance_credential') };
       }
-      return { accessToken: localStorage.getItem('alliance_access_token') };
+      if (authType === 'access_token') {
+        return { accessToken: localStorage.getItem('alliance_access_token') };
+      }
+      return {};
     };
   </script>
 

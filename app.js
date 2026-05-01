@@ -112,11 +112,12 @@ const API = {
     return data;
   },
 
-  async _fetch(action, params = {}) {
-    // Include the auth token so GAS can verify the request server-side.
-    // getAuthPayload() returns either { credential } or { accessToken }
-    // depending on which sign-in flow was used.
-    const authPayload = window.getAuthPayload ? window.getAuthPayload() : {};
+  async _fetch(action, params = {}, freshToken = false) {
+    // freshToken=true: include the live Google token (first call after login).
+    // All subsequent calls send just the email (tokens expire in 1 hour).
+    const authPayload = freshToken && window.getFreshAuthPayload
+      ? window.getFreshAuthPayload()
+      : (window.getAuthPayload ? window.getAuthPayload() : { email: App.email });
     const body = { action, email: App.email, ...authPayload, ...params };
     const res  = await fetch(GAS_URL, {
       method:  'POST',
@@ -216,7 +217,7 @@ window.initAllianceTracker = async function(email) {
   try {
     // Single batch call — fetches user, config, leaderboard,
     // attendance, payouts, and admin data all at once.
-    const allData = await API._fetch('get_all_data', {});
+    const allData = await API._fetch('get_all_data', {}, true /*freshToken*/);
     if (allData?.error) throw new Error('GAS error: ' + allData.error);
     if (!allData?.config?.bossCategories) throw new Error('Config missing — check GAS deployment URL');
 
