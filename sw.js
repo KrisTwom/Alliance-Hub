@@ -1,10 +1,9 @@
 // ── Bump this version string on every deploy to invalidate stale caches ──
 // e.g. alliance-tracker-v2, v3, or use a build hash injected at deploy time.
-const CACHE_NAME = 'alliance-tracker-v1';
+const CACHE_NAME = 'alliance-tracker-v4';
+// app.js and index.html are excluded from precache — they're fetched
+// network-first so auth/logic fixes always land without a hard refresh.
 const STATIC_ASSETS = [
-  '/',
-  '/index.html',
-  '/app.js',
   '/style.css',
   '/manifest.json',
 ];
@@ -45,7 +44,21 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Cache-first for all other requests
+  // Network-first for app.js and index.html so deploys land immediately
+  if (url.pathname === '/app.js' || url.pathname === '/' || url.pathname === '/index.html') {
+    event.respondWith(
+      fetch(event.request).then(response => {
+        if (response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+        }
+        return response;
+      }).catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // Cache-first for all other requests (fonts, icons, style.css etc.)
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
