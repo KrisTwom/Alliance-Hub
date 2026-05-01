@@ -220,6 +220,8 @@ html,body {
 .inv-tile-qty-label { font-size:.7rem; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.08em; }
 .inv-tile.sold-out { opacity:.45; }
 .inv-tile.sold-out .inv-tile-qty { color:var(--text-muted); }
+.inv-tile.never-dropped { opacity:.25; filter:grayscale(1); cursor:default !important; }
+.inv-tile.never-dropped .inv-tile-qty { color:var(--text-muted); font-size:1.5rem; }
 
 /* ── STATUS BADGES ───────────────────────── */
 .status { display:inline-flex; align-items:center; gap:4px; font-size:.75rem; font-weight:600; letter-spacing:.08em; padding:3px 10px; border-radius:99px; }
