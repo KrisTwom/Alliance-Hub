@@ -165,6 +165,19 @@ function _buildShell() {
   _renderCharSwitcher('sidebar-char-switcher');
 }
 
+// =========================================================
+// LOADING SPINNER FUNCTION
+// =========================================================
+
+function loadingBlock(title = '') {
+  return `
+    <div class="section-title">${title}</div>
+    <div style="display:flex;justify-content:center;align-items:center;padding:2rem 0;">
+      <div class="loader"></div>
+    </div>
+  `;
+}
+
 // ============================================================
 //  NAV WIRING
 // ============================================================
@@ -271,7 +284,7 @@ function _showPending() {
 function renderHome() {
   const el = document.getElementById('view-home');
   const char = getActiveChar();
-  el.innerHTML = `<div class="section-title">🏠 Home</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  el.innerHTML = loadingBlock('🏠 Home');
   API.call('get_leaderboard').then(lb => {
     el.innerHTML = `
       <div class="section-title">🏠 Home</div>
@@ -383,7 +396,7 @@ function renderMySplits() {
   const el = document.getElementById('view-my-splits');
   const char = getActiveChar();
   if (!char) { el.innerHTML=`<div class="empty-state"><span class="empty-state-icon">💰</span>No character found.</div>`; return; }
-  el.innerHTML=`<div class="section-title">💰 My Splits</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  el.innerHTML=loadingBlock('💰 My Splits');
   Promise.all([
     API.call('get_my_payouts',   { charId: char.charId }),
     API.call('get_my_attendance', { charId: char.charId }),
@@ -422,7 +435,7 @@ function renderMySplits() {
 // ============================================================
 function renderDrops() {
   const el = document.getElementById('view-drops');
-  el.innerHTML=`<div class="section-title">💎 Boss Runs</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  el.innerHTML=loadingBlock('💎 Boss Runs');
   API.call('get_grouped_runs').then(runs => {
     el.innerHTML = `
       <div class="section-title">💎 Boss Runs</div>
@@ -515,7 +528,7 @@ function submitRunConfirm(idx) {
 // ============================================================
 function renderInventory() {
   const el = document.getElementById('view-inventory');
-  el.innerHTML=`<div class="section-title">🎒 Inventory</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  el.innerHTML = loadingBlock('🎒 Inventory');
   API.call('get_inventory').then(bossItems => {
     bossItems = bossItems || {};
 
@@ -650,7 +663,7 @@ function renderPayouts() {
           ${months.map(m=>`<option value="${m}"${m===_currentMonth?' selected':''}>${fmtMonth(m)}</option>`).join('')}
         </select>
       </div>
-      <div id="payouts-content"><div style="color:var(--text-secondary)">Loading…</div></div>`;
+      ${el.innerHTML = loadingBlock('📊 Payouts')}`;
     loadPayoutsMonth(_currentMonth);
   });
 }
@@ -659,7 +672,7 @@ function switchMonth(m) { _currentMonth=m; loadPayoutsMonth(m); }
 
 function loadPayoutsMonth(month) {
   const el = document.getElementById('payouts-content');
-  el.innerHTML=`<div style="color:var(--text-secondary)">Loading…</div>`;
+  el.innerHTML = loadingBlock('📊 Payouts');
   API.call('get_payouts_page', { month }).then(data => {
     el.innerHTML = `
       <div class="stats-row">
@@ -714,7 +727,7 @@ function togglePaid(cb) {
 // ============================================================
 function renderRoster() {
   const el = document.getElementById('view-roster');
-  el.innerHTML=`<div class="section-title">👥 Roster</div><div style="color:var(--text-secondary)">Loading…</div>`;
+  el.innerHTML = loadingBlock('👥 Roster');
   API.call('get_roster').then(roster => {
     roster = roster || [];
     const active  = roster.filter(r=>r.status==='active');
