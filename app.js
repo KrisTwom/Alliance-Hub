@@ -37,22 +37,6 @@ const API = {
 // ============================================================
 window.initAllianceTracker = async function(email) {
   App.email = email;
-
-  const loadingScreen = document.getElementById('loading-screen');
-  const appEl         = document.getElementById('app');
-
-  // 🟢 FORCE RENDER FIRST
-  await new Promise(requestAnimationFrame);
-  
-  // Ensure at least 300ms visible
-  const minDelay = new Promise(res => setTimeout(res, 300));
-  
-  const [user, config] = await Promise.all([
-    API.call('get_current_user'),
-    API.call('get_config'),
-    minDelay
-  ]);
-  App.email = email;
   const loadingScreen = document.getElementById('loading-screen');
   const appEl         = document.getElementById('app');
 

@@ -60,11 +60,9 @@
 
   <!-- LOADING SCREEN (shown after sign-in while fetching data) -->
   <div id="loading-screen">
-    <div class="loader-content">
-      <div class="loader-emblem">⚔</div>
-      <div class="loader-title">ALLIANCE TRACKER</div>
-      <div class="loader"></div>
-    </div>
+    <div class="loader-emblem">⚔</div>
+    <div class="loader-title">ALLIANCE TRACKER</div>
+    <div class="loader-bar"><div class="loader-fill"></div></div>
   </div>
 
   <!-- APP (populated by app.js after initAllianceTracker is called) -->
@@ -83,10 +81,12 @@
         client_id: GOOGLE_CLIENT_ID,
         callback: handleCredential,
         ux_mode: 'popup',
-        auto_select: false,
+        auto_select: true,
         use_fedcm_for_prompt: true,
       });
-      // Don't call .prompt() here — it conflicts with the button flow and causes AbortError
+
+      // Try silent sign-in first (returning users)
+      google.accounts.id.prompt();
     }
 
     // ── Handles the credential response from Google ─────────────
@@ -143,7 +143,7 @@
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('loading-screen').classList.add('visible');
       // Give the loading animation a moment to render, then init
-      // loader title update removed - spinner doesn't need text change
+      document.querySelector('.loader-title').textContent = 'Connecting…';
       setTimeout(() => window.initAllianceTracker(email), 100);
     }
 
