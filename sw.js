@@ -1,3 +1,5 @@
+// ── Bump this version string on every deploy to invalidate stale caches ──
+// e.g. alliance-tracker-v2, v3, or use a build hash injected at deploy time.
 const CACHE_NAME = 'alliance-tracker-v1';
 const STATIC_ASSETS = [
   '/',
@@ -56,10 +58,13 @@ self.addEventListener('fetch', event => {
         return response;
       });
     }).catch(() => {
-      // Offline fallback — serve the shell for navigation requests
+      // Offline fallback
       if (event.request.destination === 'document') {
         return caches.match('/index.html');
       }
+      // For non-document assets (scripts, styles, images) return a minimal offline response
+      // rather than letting the fetch reject with an unhandled error.
+      return new Response('', { status: 503, statusText: 'Service Unavailable — offline' });
     })
   );
 });

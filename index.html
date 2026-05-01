@@ -75,6 +75,10 @@
     // ── GOOGLE OAUTH CLIENT ID ──────────────────────────────────
     const GOOGLE_CLIENT_ID = '465273345673-7mdusmgk0bppo6clk5pr3pensgfmq637.apps.googleusercontent.com';
 
+    // ── Session config ───────────────────────────────────────────
+    const SESSION_TTL_MS  = 7 * 24 * 60 * 60 * 1000; // 7-day session window
+    const SESSION_SLIDE_MS = 24 * 60 * 60 * 1000;    // slide expiry if active within 24h
+
     // ── Called once Google GSI library is ready ─────────────────
     function initGoogleAuth() {
       google.accounts.id.initialize({
@@ -84,24 +88,30 @@
         auto_select: true,
         use_fedcm_for_prompt: true,
       });
-
       // Try silent sign-in first (returning users)
       google.accounts.id.prompt();
     }
 
-    // ── Handles the credential response from Google ─────────────
+    // ── Handles the ID token credential from GSI prompt ─────────
+    // We store the raw credential so the GAS backend can verify it
+    // server-side. We never trust a bare email from the client.
     function handleCredential(response) {
-      // Decode the JWT to get the email (no server-side verification needed for this use case)
       try {
-        const parts  = response.credential.split('.');
-        const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-        const email  = payload.email;
-        if (!email) throw new Error('No email in token');
+        const credential = response.credential;
+        if (!credential) throw new Error('No credential in response');
 
-        // Store credential for session persistence (30-day expiry)
-        localStorage.setItem('alliance_credential', response.credential);
-        localStorage.setItem('alliance_email', email);
-        localStorage.setItem('alliance_expiry', Date.now() + 30 * 24 * 60 * 60 * 1000);
+        // Decode email locally only for display/UX purposes.
+        // The GAS backend will re-verify the token independently.
+        const parts   = credential.split('.');
+        const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+        const email   = payload.email;
+        if (!email) throw new Error('No email in token payload');
+
+        // Store credential + sliding expiry
+        localStorage.setItem('alliance_credential',  credential);
+        localStorage.setItem('alliance_email',        email);
+        localStorage.setItem('alliance_expiry',       Date.now() + SESSION_TTL_MS);
+        localStorage.setItem('alliance_auth_type',    'credential');
 
         launchApp(email);
       } catch(e) {
@@ -109,25 +119,29 @@
       }
     }
 
-    // ── Button click → trigger Google popup ─────────────────────
+    // ── Button click → trigger Google OAuth2 popup ───────────────
     document.getElementById('btn-google').addEventListener('click', () => {
       document.getElementById('login-status').textContent = '';
       if (!window.google) {
         document.getElementById('login-status').textContent = 'Google Sign-In still loading, try again in a moment.';
         return;
       }
-      // Use token client for explicit button click
       const client = google.accounts.oauth2.initTokenClient({
         client_id: GOOGLE_CLIENT_ID,
         scope: 'email profile',
         callback: tokenResponse => {
+          // Fetch the user's email from Google with the access token
           fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
             headers: { Authorization: `Bearer ${tokenResponse.access_token}` }
           })
           .then(r => r.json())
           .then(info => {
-            localStorage.setItem('alliance_email', info.email);
-            localStorage.setItem('alliance_expiry', Date.now() + 30 * 24 * 60 * 60 * 1000);
+            if (!info.email) throw new Error('No email returned from userinfo');
+            // Store access token — GAS backend will verify it via userinfo endpoint
+            localStorage.setItem('alliance_access_token', tokenResponse.access_token);
+            localStorage.setItem('alliance_email',        info.email);
+            localStorage.setItem('alliance_expiry',       Date.now() + SESSION_TTL_MS);
+            localStorage.setItem('alliance_auth_type',    'access_token');
             launchApp(info.email);
           })
           .catch(e => {
@@ -142,21 +156,29 @@
     function launchApp(email) {
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('loading-screen').classList.add('visible');
-      // Give the loading animation a moment to render, then init
       document.querySelector('.loader-title').textContent = 'Connecting…';
       setTimeout(() => window.initAllianceTracker(email), 100);
     }
 
     // ── Check for existing valid session on page load ────────────
     window.addEventListener('load', () => {
-      const expiry = localStorage.getItem('alliance_expiry');
-      const email  = localStorage.getItem('alliance_email');
-      if (email && expiry && Date.now() < parseInt(expiry)) {
-        // Valid session — skip login screen
+      const expiry   = localStorage.getItem('alliance_expiry');
+      const email    = localStorage.getItem('alliance_email');
+      const authType = localStorage.getItem('alliance_auth_type');
+      const hasToken = authType === 'credential'
+        ? !!localStorage.getItem('alliance_credential')
+        : !!localStorage.getItem('alliance_access_token');
+
+      if (email && expiry && hasToken && Date.now() < parseInt(expiry)) {
+        // Slide the session expiry on each active visit
+        const remaining = parseInt(expiry) - Date.now();
+        if (remaining < SESSION_SLIDE_MS) {
+          localStorage.setItem('alliance_expiry', Date.now() + SESSION_TTL_MS);
+        }
         launchApp(email);
         return;
       }
-      // No session — wait for GSI to load, then init auth
+      // No valid session — wait for GSI to load, then init auth
       const waitForGoogle = setInterval(() => {
         if (window.google) { clearInterval(waitForGoogle); initGoogleAuth(); }
       }, 100);
@@ -166,9 +188,21 @@
     window.signOut = function() {
       localStorage.removeItem('alliance_email');
       localStorage.removeItem('alliance_credential');
+      localStorage.removeItem('alliance_access_token');
       localStorage.removeItem('alliance_expiry');
-      google.accounts.id.disableAutoSelect();
+      localStorage.removeItem('alliance_auth_type');
+      if (window.google) google.accounts.id.disableAutoSelect();
       location.reload();
+    };
+
+    // ── Helper: get the current auth payload for API calls ───────
+    // app.js calls this to include the right token in every request.
+    window.getAuthPayload = function() {
+      const authType = localStorage.getItem('alliance_auth_type');
+      if (authType === 'credential') {
+        return { credential: localStorage.getItem('alliance_credential') };
+      }
+      return { accessToken: localStorage.getItem('alliance_access_token') };
     };
   </script>
 

@@ -113,7 +113,11 @@ const API = {
   },
 
   async _fetch(action, params = {}) {
-    const body = { action, email: App.email, ...params };
+    // Include the auth token so GAS can verify the request server-side.
+    // getAuthPayload() returns either { credential } or { accessToken }
+    // depending on which sign-in flow was used.
+    const authPayload = window.getAuthPayload ? window.getAuthPayload() : {};
+    const body = { action, email: App.email, ...authPayload, ...params };
     const res  = await fetch(GAS_URL, {
       method:  'POST',
       headers: { 'Content-Type': 'text/plain' },
