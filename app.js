@@ -197,7 +197,7 @@ const Skeleton = {
 // ============================================================
 //  ENTRY POINT
 // ============================================================
-window.initAllianceTracker = async function(email) {
+window.initAllianceTracker = async function(email, isFreshLogin = false) {
   App.email = email;
   const loadingScreen = document.getElementById('loading-screen');
   const appEl         = document.getElementById('app');
@@ -217,7 +217,7 @@ window.initAllianceTracker = async function(email) {
   try {
     // Single batch call — fetches user, config, leaderboard,
     // attendance, payouts, and admin data all at once.
-    const allData = await API._fetch('get_all_data', {}, true /*freshToken*/);
+    const allData = await API._fetch('get_all_data', {}, isFreshLogin /*freshToken*/);
     if (allData?.error) throw new Error('GAS error: ' + allData.error);
     if (!allData?.config?.bossCategories) throw new Error('Config missing — check GAS deployment URL');
 

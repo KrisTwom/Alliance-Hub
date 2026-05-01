@@ -113,7 +113,7 @@
         localStorage.setItem('alliance_expiry',       Date.now() + SESSION_TTL_MS);
         localStorage.setItem('alliance_auth_type',    'credential');
 
-        launchApp(email);
+        launchApp(email, true /*isFreshLogin*/);
       } catch(e) {
         document.getElementById('login-status').textContent = 'Sign-in failed: ' + e.message;
       }
@@ -142,7 +142,7 @@
             localStorage.setItem('alliance_email',        info.email);
             localStorage.setItem('alliance_expiry',       Date.now() + SESSION_TTL_MS);
             localStorage.setItem('alliance_auth_type',    'access_token');
-            launchApp(info.email);
+            launchApp(info.email, true /*isFreshLogin*/);
           })
           .catch(e => {
             document.getElementById('login-status').textContent = 'Could not fetch profile: ' + e.message;
@@ -153,11 +153,10 @@
     });
 
     // ── Show loading screen then boot the app ───────────────────
-    function launchApp(email) {
+    function launchApp(email, isFreshLogin = false) {
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('loading-screen').classList.add('visible');
-      document.querySelector('.loader-title').textContent = 'Connecting…';
-      setTimeout(() => window.initAllianceTracker(email), 100);
+      setTimeout(() => window.initAllianceTracker(email, isFreshLogin), 100);
     }
 
     // ── Check for existing valid session on page load ────────────
@@ -175,7 +174,7 @@
         if (remaining < SESSION_SLIDE_MS) {
           localStorage.setItem('alliance_expiry', Date.now() + SESSION_TTL_MS);
         }
-        launchApp(email);
+        launchApp(email, true /*isFreshLogin*/);
         return;
       }
       // No valid session — wait for GSI to load, then init auth
