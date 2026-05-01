@@ -488,7 +488,10 @@ function openRunModal(idx) {
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="confirm-run-btn" onclick="submitRunConfirm(${idx})">✓ Confirm Run</button>
+      ${run.runId && !App.user.isSuperAdmin
+        ? `<button class="btn btn-secondary" disabled title="Only super admins can edit a confirmed run" style="opacity:.45;cursor:not-allowed;">🔒 Locked</button>`
+        : `<button class="btn btn-primary" id="confirm-run-btn" onclick="submitRunConfirm(${idx})">${run.runId ? '💾 Save Changes' : '✓ Confirm Run'}</button>`
+      }
     </div>`);
 }
 
