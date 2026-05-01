@@ -10,20 +10,113 @@ const App = {
   user:         null,
   config:       null,
   activeCharId: null,
-  email:        null,   // injected by your GitHub auth layer
+  email:        null,
 };
 
 // ============================================================
-//  API  — fetch-based, replaces google.script.run
+//  CACHE  — in-memory, TTL-based, per action key
+//  Mutation actions (submit, confirm, sell…) call cache.bust()
+//  on the relevant keys so next read is always fresh.
+// ============================================================
+const Cache = {
+  _store: {},
+  TTL: {
+    // How long (ms) cached data is considered fresh per action
+    get_leaderboard:      60 * 1000,        // 1 min
+    get_my_attendance:    2  * 60 * 1000,   // 2 min
+    get_my_payouts:       2  * 60 * 1000,
+    get_grouped_runs:     90 * 1000,        // 90 sec (changes when attendance submitted)
+    get_inventory:        2  * 60 * 1000,
+    get_payouts_page:     2  * 60 * 1000,
+    get_available_months: 5  * 60 * 1000,
+    get_roster:           5  * 60 * 1000,
+    DEFAULT:              3  * 60 * 1000,
+  },
+
+  key(action, params = {}) {
+    // Create a stable string key from action + relevant params
+    return action + ':' + JSON.stringify(params);
+  },
+
+  get(action, params) {
+    const k     = this.key(action, params);
+    const entry = this._store[k];
+    if (!entry) return null;
+    const ttl = this.TTL[action] || this.TTL.DEFAULT;
+    if (Date.now() - entry.ts > ttl) { delete this._store[k]; return null; }
+    return entry.data;
+  },
+
+  set(action, params, data) {
+    this._store[this.key(action, params)] = { data, ts: Date.now() };
+  },
+
+  // Bust one or more action keys (all param variants)
+  bust(...actions) {
+    actions.forEach(action => {
+      Object.keys(this._store).forEach(k => {
+        if (k.startsWith(action + ':')) delete this._store[k];
+      });
+    });
+  },
+
+  // Seed the cache from a batch payload (called on login)
+  seed(payload) {
+    const now = Date.now();
+    const put = (action, params, data) => {
+      this._store[this.key(action, params)] = { data, ts: now };
+    };
+
+    if (payload.config)      put('get_config',      {}, payload.config);
+    if (payload.leaderboard) put('get_leaderboard',  {}, payload.leaderboard);
+    if (payload.roster)      put('get_roster',       {}, payload.roster);
+    if (payload.groupedRuns) put('get_grouped_runs', {}, payload.groupedRuns);
+    if (payload.inventory)   put('get_inventory',    {}, payload.inventory);
+    if (payload.months)      put('get_available_months', {}, payload.months);
+
+    if (payload.myAttendance) {
+      Object.entries(payload.myAttendance).forEach(([charId, data]) => {
+        put('get_my_attendance', { charId }, data);
+      });
+    }
+    if (payload.myPayouts) {
+      Object.entries(payload.myPayouts).forEach(([charId, data]) => {
+        put('get_my_payouts', { charId }, data);
+      });
+    }
+    if (payload.payoutsPage && payload.months?.[0]) {
+      put('get_payouts_page', { month: payload.months[0] }, payload.payoutsPage);
+    }
+  },
+};
+
+// ============================================================
+//  API  — cache-first fetch wrapper
 // ============================================================
 const API = {
-  async call(action, data = {}) {
-    const body = { action, email: App.email, ...data };
-    const res = await fetch(GAS_URL, {
+  // Cacheable read — returns cached data instantly if fresh,
+  // otherwise fetches and caches the result.
+  async read(action, params = {}) {
+    const cached = Cache.get(action, params);
+    if (cached !== null) return cached;
+
+    const data = await this._fetch(action, params);
+    Cache.set(action, params, data);
+    return data;
+  },
+
+  // Write — never cached, always live. Busts relevant caches after.
+  async write(action, params = {}, bustKeys = []) {
+    const data = await this._fetch(action, params);
+    if (bustKeys.length) Cache.bust(...bustKeys);
+    return data;
+  },
+
+  async _fetch(action, params = {}) {
+    const body = { action, email: App.email, ...params };
+    const res  = await fetch(GAS_URL, {
       method:  'POST',
-      // GAS requires no custom headers for CORS in no-cors mode,
-      // but we need the response — use mode:'cors' with GAS deployed as "Anyone"
-      headers: { 'Content-Type': 'text/plain' }, // GAS ignores content-type header; text/plain avoids CORS preflight
+      headers: { 'Content-Type': 'text/plain' },
       body:    JSON.stringify(body),
     });
     return res.json();
@@ -31,9 +124,73 @@ const API = {
 };
 
 // ============================================================
-//  ENTRY — called by your GitHub auth layer once the user
-//  is signed in. Pass the verified Google email.
-//  e.g.:  window.initAllianceTracker('user@gmail.com')
+//  SKELETON SCREEN HELPERS
+// ============================================================
+const Skeleton = {
+  // Generic spinner + title (used while waiting for network)
+  spinner(title = '') {
+    return `
+      ${title ? `<div class="section-title">${title}</div>` : ''}
+      <div style="display:flex;justify-content:center;align-items:center;padding:3rem 0;">
+        <div class="loader"></div>
+      </div>`;
+  },
+
+  // Table skeleton — grey shimmer rows
+  table(title, cols, rows = 5) {
+    const colWidths = cols.map(w => `<td style="padding:.75rem .85rem"><div class="skel" style="height:14px;width:${w}%;border-radius:4px"></div></td>`).join('');
+    const bodyRows  = Array(rows).fill(`<tr>${colWidths}</tr>`).join('');
+    return `
+      ${title ? `<div class="section-title">${title}</div>` : ''}
+      <div class="table-scroll">
+        <table class="data-table">
+          <tbody>${bodyRows}</tbody>
+        </table>
+      </div>`;
+  },
+
+  // Card grid skeleton
+  cards(title, count = 3) {
+    const cards = Array(count).fill(`
+      <div class="stat-chip">
+        <div class="skel" style="height:11px;width:60%;border-radius:3px;margin-bottom:.4rem"></div>
+        <div class="skel" style="height:26px;width:40%;border-radius:4px"></div>
+      </div>`).join('');
+    return `
+      ${title ? `<div class="section-title">${title}</div>` : ''}
+      <div class="stats-row">${cards}</div>`;
+  },
+
+  // Inventory tile grid skeleton
+  inventory(title) {
+    const tiles = Array(8).fill(`
+      <div class="inv-tile" style="cursor:default">
+        <div class="skel inv-tile-img" style="font-size:0"></div>
+        <div class="skel" style="height:12px;width:80%;border-radius:3px"></div>
+        <div class="skel" style="height:22px;width:40%;border-radius:4px"></div>
+        <div class="skel" style="height:10px;width:55%;border-radius:3px"></div>
+      </div>`).join('');
+    return `
+      ${title ? `<div class="section-title">${title}</div>` : ''}
+      <div class="inv-grid">${tiles}</div>`;
+  },
+
+  // Leaderboard skeleton
+  leaderboard(count = 8) {
+    return Array(count).fill(`
+      <div class="leaderboard-row">
+        <div class="skel" style="width:28px;height:18px;border-radius:4px;flex-shrink:0"></div>
+        <div style="flex:1;min-width:0">
+          <div class="skel" style="height:14px;width:45%;border-radius:4px;margin-bottom:5px"></div>
+          <div class="skel" style="height:11px;width:28%;border-radius:3px"></div>
+        </div>
+        <div class="skel" style="width:60px;height:16px;border-radius:4px"></div>
+      </div>`).join('');
+  },
+};
+
+// ============================================================
+//  ENTRY POINT
 // ============================================================
 window.initAllianceTracker = async function(email) {
   App.email = email;
@@ -53,17 +210,19 @@ window.initAllianceTracker = async function(email) {
   }
 
   try {
-    const [user, config] = await Promise.all([
-      API.call('get_current_user'),
-      API.call('get_config'),
-    ]);
+    // Single batch call — fetches user, config, leaderboard,
+    // attendance, payouts, and admin data all at once.
+    const allData = await API._fetch('get_all_data', {});
+    if (allData?.error) throw new Error('GAS error: ' + allData.error);
+    if (!allData?.config?.bossCategories) throw new Error('Config missing — check GAS deployment URL');
 
-    if (user?.error) throw new Error('GAS error: ' + user.error);
-    if (!config?.bossCategories) throw new Error('Config missing — check GAS deployment');
+    // Hydrate app state
+    App.user   = allData.user;
+    App.config = allData.config;
+    if (App.user.characters?.length) App.activeCharId = App.user.characters[0].charId;
 
-    App.user   = user;
-    App.config = config;
-    if (user.characters?.length) App.activeCharId = user.characters[0].charId;
+    // Seed the cache with everything we just received
+    Cache.seed(allData);
 
     _buildShell();
     _initNav();
@@ -71,11 +230,12 @@ window.initAllianceTracker = async function(email) {
     if (loadingScreen) loadingScreen.style.display = 'none';
     appEl.style.display = 'flex';
 
-    if (user.status === 'unregistered') { API.call('request_access'); _showPending(); return; }
-    if (user.status === 'pending')      { _showPending(); return; }
+    if (App.user.status === 'unregistered') { API._fetch('request_access'); _showPending(); return; }
+    if (App.user.status === 'pending')      { _showPending(); return; }
     showView('home');
+
   } catch(err) {
-    showError(err.message || 'Could not reach the server. Check your GAS deployment URL and make sure it is deployed as "Anyone".');
+    showError(err.message || 'Could not reach the server. Check your GAS deployment.');
   }
 };
 
@@ -85,7 +245,6 @@ window.initAllianceTracker = async function(email) {
 function _buildShell() {
   const app = document.getElementById('app');
   app.innerHTML = `
-    <!-- DESKTOP HEADER -->
     <header id="main-header">
       <div class="header-left">
         <span class="header-emblem">⚔</span>
@@ -108,7 +267,6 @@ function _buildShell() {
       </div>
     </header>
 
-    <!-- VIEWS -->
     <main id="main-content">
       <div id="view-home"       class="view active"></div>
       <div id="view-attendance" class="view"></div>
@@ -120,7 +278,6 @@ function _buildShell() {
       <div id="view-confirm"    class="view"></div>
     </main>
 
-    <!-- MOBILE BOTTOM NAV -->
     <nav id="mobile-nav">
       <button class="mob-nav-btn active" data-view="home">
         <span class="mob-nav-icon">🏠</span><span class="mob-nav-label">Home</span>
@@ -136,7 +293,6 @@ function _buildShell() {
       </button>
     </nav>
 
-    <!-- SIDEBAR -->
     <div id="sidebar-overlay" class="sidebar-overlay hidden"></div>
     <aside id="sidebar" class="sidebar hidden">
       <div class="sidebar-header">
@@ -157,25 +313,11 @@ function _buildShell() {
       </div>
     </aside>`;
 
-  // Set username
   const char = getActiveChar();
   document.getElementById('header-username').textContent  = char?.ign || App.user.email;
   document.getElementById('sidebar-username').textContent = char?.ign || App.user.email;
   _renderCharSwitcher('char-switcher');
   _renderCharSwitcher('sidebar-char-switcher');
-}
-
-// =========================================================
-// LOADING SPINNER FUNCTION
-// =========================================================
-
-function loadingBlock(title = '') {
-  return `
-    <div class="section-title">${title}</div>
-    <div style="display:flex;justify-content:center;align-items:center;padding:2rem 0;">
-      <div class="loader"></div>
-    </div>
-  `;
 }
 
 // ============================================================
@@ -189,7 +331,6 @@ function _initNav() {
       showView(btn.dataset.view);
     });
   });
-
   document.querySelectorAll('#mobile-nav .mob-nav-btn[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.remove('active'));
@@ -197,11 +338,9 @@ function _initNav() {
       showView(btn.dataset.view);
     });
   });
-
   document.getElementById('more-btn')?.addEventListener('click', _openSidebar);
   document.getElementById('sidebar-close')?.addEventListener('click', _closeSidebar);
   document.getElementById('sidebar-overlay')?.addEventListener('click', _closeSidebar);
-
   document.querySelectorAll('.sidebar-link[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
       _closeSidebar();
@@ -209,7 +348,6 @@ function _initNav() {
       showView(btn.dataset.view);
     });
   });
-
   document.getElementById('modal-overlay')?.addEventListener('click', e => {
     if (e.target.id === 'modal-overlay') closeModal();
   });
@@ -273,7 +411,7 @@ function _showPending() {
       <div class="pending-title">Awaiting Approval</div>
       <p class="pending-text">
         Signed in as <strong style="color:var(--gold)">${App.email}</strong><br><br>
-        Contact an Alliance Admin to get approved. Refresh this page once approved.
+        Contact an Alliance Admin to get approved. Refresh once approved.
       </p>
     </div>`;
 }
@@ -282,36 +420,44 @@ function _showPending() {
 //  HOME
 // ============================================================
 function renderHome() {
-  const el = document.getElementById('view-home');
+  const el   = document.getElementById('view-home');
   const char = getActiveChar();
-  el.innerHTML = loadingBlock('🏠 Home');
-  API.call('get_leaderboard').then(lb => {
-    el.innerHTML = `
-      <div class="section-title">🏠 Home</div>
-      ${char ? `<div class="stats-row">
-        <div class="stat-chip"><div class="stat-chip-label">Character</div><div class="stat-chip-value" style="font-size:1.1rem">${char.ign}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">My Points</div><div class="stat-chip-value">${(char.points||0).toLocaleString()}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Class</div><div class="stat-chip-value" style="font-size:1rem">${char.charClass||'—'}</div></div>
-      </div>` : ''}
-      <div class="section-title">🏆 Leaderboard</div>
-      <div class="card" style="padding:0;overflow:hidden">
-        ${!lb?.length ? `<div class="empty-state"><span class="empty-state-icon">🏆</span>No points yet.</div>`
-        : lb.map(p => `<div class="leaderboard-row">
-            <span class="lb-rank ${p.rank===1?'top1':p.rank===2?'top2':p.rank===3?'top3':''}">${p.rank===1?'🥇':p.rank===2?'🥈':p.rank===3?'🥉':p.rank}</span>
-            <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${p.charClass||''}</div></div>
-            <div class="lb-points">${p.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
-          </div>`).join('')}
-      </div>`;
+
+  // Show skeleton immediately
+  el.innerHTML = `
+    <div class="section-title">🏠 Home</div>
+    ${char ? `<div class="stats-row">
+      <div class="stat-chip"><div class="stat-chip-label">Character</div><div class="stat-chip-value" style="font-size:1.1rem">${char.ign}</div></div>
+      <div class="stat-chip"><div class="stat-chip-label">My Points</div><div class="stat-chip-value">${(char.points||0).toLocaleString()}</div></div>
+      <div class="stat-chip"><div class="stat-chip-label">Class</div><div class="stat-chip-value" style="font-size:1rem">${char.charClass||'—'}</div></div>
+    </div>` : ''}
+    <div class="section-title">🏆 Leaderboard</div>
+    <div class="card" style="padding:0;overflow:hidden">${Skeleton.leaderboard()}</div>`;
+
+  API.read('get_leaderboard').then(lb => {
+    const lbEl = el.querySelector('.card');
+    if (!lbEl) return;
+    lbEl.innerHTML = !lb?.length
+      ? `<div class="empty-state"><span class="empty-state-icon">🏆</span>No points yet.</div>`
+      : lb.map(p => `<div class="leaderboard-row">
+          <span class="lb-rank ${p.rank===1?'top1':p.rank===2?'top2':p.rank===3?'top3':''}">${p.rank===1?'🥇':p.rank===2?'🥈':p.rank===3?'🥉':p.rank}</span>
+          <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${p.charClass||''}</div></div>
+          <div class="lb-points">${p.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
+        </div>`).join('');
   });
 }
 
 // ============================================================
-//  ATTENDANCE
+//  ATTENDANCE  (no async loading — config is already in memory)
 // ============================================================
 function renderAttendance() {
-  const el = document.getElementById('view-attendance');
+  const el   = document.getElementById('view-attendance');
   const char = getActiveChar();
-  if (!char) { el.innerHTML=`<div class="pending-screen"><div class="pending-icon">⚠️</div><div class="pending-title">No Character</div><p class="pending-text">Ask an admin to set up your character.</p></div>`; return; }
+  if (!char) {
+    el.innerHTML = `<div class="pending-screen"><div class="pending-icon">⚠️</div><div class="pending-title">No Character</div><p class="pending-text">Ask an admin to set up your character.</p></div>`;
+    return;
+  }
+  // Config is pre-loaded — this renders instantly, zero network calls
   el.innerHTML = `
     <div class="section-title">🗡 Log Attendance</div>
     <div class="card">
@@ -342,8 +488,8 @@ function renderAttendance() {
 
 function _updateAttSummary() {
   const checked = [...document.querySelectorAll('.boss-check input:checked')];
-  const bossMap = {}; App.config.bossCategories.forEach(c => c.bosses.forEach(b => { bossMap[b.name]=b.points; }));
-  const pts = checked.reduce((s,cb) => s+(bossMap[cb.value]||0), 0);
+  const bossMap = {}; App.config.bossCategories.forEach(c => c.bosses.forEach(b => { bossMap[b.name] = b.points; }));
+  const pts = checked.reduce((s, cb) => s + (bossMap[cb.value]||0), 0);
   document.getElementById('sel-count').textContent = `${checked.length} selected`;
   document.getElementById('sel-pts').textContent   = checked.length > 0 ? `· +${pts} pts` : '';
 }
@@ -354,8 +500,12 @@ function submitAttendance() {
   const char = getActiveChar();
   const btn  = document.getElementById('submit-att-btn');
   btn.disabled = true; btn.textContent = 'Submitting…';
-  API.call('submit_attendance', { charId: char.charId, bosses: selected }).then(res => {
+
+  API.write('submit_attendance', { charId: char.charId, bosses: selected },
+    ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs']
+  ).then(res => {
     if (res.success) {
+      // Update local character points immediately (no re-fetch needed)
       const c = App.user.characters.find(c => c.charId === char.charId);
       if (c) c.points = (c.points||0) + res.pointsEarned;
       _showConfirmation(selected, res.pointsEarned, res.ign);
@@ -363,9 +513,12 @@ function submitAttendance() {
       toast(res.message||'Error', 'error');
       btn.disabled = false; btn.textContent = '⚔ Submit Attendance';
     }
-  }).catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='⚔ Submit Attendance'; });
+  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '⚔ Submit Attendance'; });
 }
 
+// ============================================================
+//  CONFIRMATION
+// ============================================================
 function _showConfirmation(bosses, pts, ign) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const el = document.getElementById('view-confirm'); el.classList.add('active');
@@ -374,7 +527,7 @@ function _showConfirmation(bosses, pts, ign) {
       <div class="confirm-icon">✅</div>
       <div class="confirm-title">Attendance Logged!</div>
       <div class="confirm-subtitle">Great job, <strong style="color:var(--gold)">${ign}</strong>!</div>
-      <div class="confirm-bosses">${bosses.map(b=>`<span class="confirm-boss-tag">${b}</span>`).join('')}</div>
+      <div class="confirm-bosses">${bosses.map(b => `<span class="confirm-boss-tag">${b}</span>`).join('')}</div>
       <div class="confirm-points">+${pts}</div>
       <div class="confirm-points-label">Points Earned</div>
       <button class="btn btn-primary" style="margin-bottom:.75rem" onclick="_goToAttendance()">⚔ Log More Bosses</button>
@@ -393,15 +546,23 @@ function _goToAttendance() {
 //  MY SPLITS
 // ============================================================
 function renderMySplits() {
-  const el = document.getElementById('view-my-splits');
+  const el   = document.getElementById('view-my-splits');
   const char = getActiveChar();
-  if (!char) { el.innerHTML=`<div class="empty-state"><span class="empty-state-icon">💰</span>No character found.</div>`; return; }
-  el.innerHTML=loadingBlock('💰 My Splits');
+  if (!char) { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">💰</span>No character found.</div>`; return; }
+
+  // Skeleton — instantly visible
+  el.innerHTML = `
+    <div class="section-title">💰 My Splits</div>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Showing: <strong style="color:var(--gold)">${char.ign}</strong></p>
+    ${Skeleton.cards('', 3)}
+    ${Skeleton.table('Gold Payouts', [30, 20, 15, 20], 4)}
+    ${Skeleton.table('Attendance Log', [40, 15, 30], 4)}`;
+
   Promise.all([
-    API.call('get_my_payouts',   { charId: char.charId }),
-    API.call('get_my_attendance', { charId: char.charId }),
+    API.read('get_my_payouts',    { charId: char.charId }),
+    API.read('get_my_attendance', { charId: char.charId }),
   ]).then(([pays, att]) => {
-    const totalGold = (pays||[]).reduce((s,p) => s+(Number(p.goldShare)||0), 0);
+    const totalGold = (pays||[]).reduce((s, p) => s + (Number(p.goldShare)||0), 0);
     el.innerHTML = `
       <div class="section-title">💰 My Splits</div>
       <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Showing: <strong style="color:var(--gold)">${char.ign}</strong></p>
@@ -412,31 +573,39 @@ function renderMySplits() {
       </div>
       <div class="section-title" style="font-size:.95rem">Gold Payouts</div>
       <div class="table-scroll">
-        ${!(pays||[]).length ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No payouts yet.</div>`
-        : `<table class="data-table"><thead><tr><th>Sale ID</th><th>Gold</th><th>Month</th><th>Date</th></tr></thead>
-            <tbody>${pays.map(p=>`<tr>
-              <td style="font-size:.78rem;color:var(--text-secondary)">${p.saleId||p.payoutId}</td>
-              <td><span class="gold-amount">${Number(p.goldShare).toLocaleString()}</span></td>
-              <td>${p.month||'—'}</td>
-              <td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(p.createdAt)}</td>
-            </tr>`).join('')}</tbody></table>`}
+        ${!(pays||[]).length
+          ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No payouts yet.</div>`
+          : `<table class="data-table"><thead><tr><th>Sale ID</th><th>Gold</th><th>Month</th><th>Date</th></tr></thead>
+              <tbody>${pays.map(p=>`<tr>
+                <td style="font-size:.78rem;color:var(--text-secondary)">${p.saleId||p.payoutId}</td>
+                <td><span class="gold-amount">${Number(p.goldShare).toLocaleString()}</span></td>
+                <td>${p.month||'—'}</td>
+                <td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(p.createdAt)}</td>
+              </tr>`).join('')}</tbody></table>`}
       </div>
       <div class="section-title" style="font-size:.95rem;margin-top:1.25rem">Attendance Log</div>
       <div class="table-scroll">
-        ${!(att||[]).length ? `<div class="empty-state"><span class="empty-state-icon">🗡</span>No attendance yet.</div>`
-        : `<table class="data-table"><thead><tr><th>Boss</th><th>Points</th><th>Date</th></tr></thead>
-            <tbody>${att.map(a=>`<tr><td>${a.boss}</td><td style="color:var(--gold)">+${a.points}</td><td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(a.timestamp)}</td></tr>`).join('')}</tbody></table>`}
+        ${!(att||[]).length
+          ? `<div class="empty-state"><span class="empty-state-icon">🗡</span>No attendance yet.</div>`
+          : `<table class="data-table"><thead><tr><th>Boss</th><th>Points</th><th>Date</th></tr></thead>
+              <tbody>${att.map(a=>`<tr><td>${a.boss}</td><td style="color:var(--gold)">+${a.points}</td><td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(a.timestamp)}</td></tr>`).join('')}</tbody></table>`}
       </div>`;
   });
 }
 
 // ============================================================
-//  DROPS (Admin)
+//  DROPS  (Admin)
 // ============================================================
 function renderDrops() {
   const el = document.getElementById('view-drops');
-  el.innerHTML=loadingBlock('💎 Boss Runs');
-  API.call('get_grouped_runs').then(runs => {
+
+  // Skeleton table — 5 shimmer rows
+  el.innerHTML = `
+    <div class="section-title">💎 Boss Runs</div>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
+    ${Skeleton.table('', [20, 18, 28, 15, 12], 6)}`;
+
+  API.read('get_grouped_runs').then(runs => {
     el.innerHTML = `
       <div class="section-title">💎 Boss Runs</div>
       <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
@@ -444,15 +613,16 @@ function renderDrops() {
         <table class="data-table">
           <thead><tr><th>Timestamp</th><th>Boss</th><th>Drops</th><th>Participants</th><th>Status</th></tr></thead>
           <tbody>
-            ${!(runs||[]).length ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem">No boss runs recorded yet.</td></tr>`
-            : runs.map((r,i) => `
-              <tr onclick="openRunModal(${i})">
-                <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
-                <td><strong>${r.boss}</strong></td>
-                <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.drops||'—'}</td>
-                <td><span style="color:var(--gold)">${r.participantCount}</span> players</td>
-                <td><span class="status ${r.status==='Confirmed'?'status-confirmed':'status-pending'}">${r.status}</span></td>
-              </tr>`).join('')}
+            ${!(runs||[]).length
+              ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem">No boss runs recorded yet.</td></tr>`
+              : runs.map((r,i) => `
+                <tr onclick="openRunModal(${i})">
+                  <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
+                  <td><strong>${r.boss}</strong></td>
+                  <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.drops||'—'}</td>
+                  <td><span style="color:var(--gold)">${r.participantCount}</span> players</td>
+                  <td><span class="status ${r.status==='Confirmed'?'status-confirmed':'status-pending'}">${r.status}</span></td>
+                </tr>`).join('')}
           </tbody>
         </table>
       </div>`;
@@ -503,8 +673,7 @@ function openRunModal(idx) {
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       ${run.runId && !App.user.isSuperAdmin
         ? `<button class="btn btn-secondary" disabled title="Only super admins can edit a confirmed run" style="opacity:.45;cursor:not-allowed;">🔒 Locked</button>`
-        : `<button class="btn btn-primary" id="confirm-run-btn" onclick="submitRunConfirm(${idx})">${run.runId ? '💾 Save Changes' : '✓ Confirm Run'}</button>`
-      }
+        : `<button class="btn btn-primary" id="confirm-run-btn" onclick="submitRunConfirm(${idx})">${run.runId ? '💾 Save Changes' : '✓ Confirm Run'}</button>`}
     </div>`);
 }
 
@@ -513,14 +682,16 @@ function submitRunConfirm(idx) {
   const btn  = document.getElementById('confirm-run-btn');
   btn.disabled = true; btn.textContent = '⏳ Confirming…';
   const participants = [...document.querySelectorAll('.part-check:checked')].map(cb => ({ charId:cb.value, ign:cb.dataset.ign, email:cb.dataset.email }));
-  const drops = [...document.querySelectorAll('.drop-check:checked')].map(cb => ({ itemName:cb.value, qty:Number(document.querySelector(`.drop-qty[data-item="${cb.value}"]`)?.value)||1 }));
-  const notes = document.getElementById('modal-notes').value;
-  API.call('confirm_run', { runData:{ boss:run.boss, windowStart:run.windowStart, participants, drops, notes, existingRunId:run.runId } })
-    .then(res => {
-      if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); renderDrops(); }
-      else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; }
-    })
-    .catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; });
+  const drops        = [...document.querySelectorAll('.drop-check:checked')].map(cb => ({ itemName:cb.value, qty:Number(document.querySelector(`.drop-qty[data-item="${cb.value}"]`)?.value)||1 }));
+  const notes        = document.getElementById('modal-notes').value;
+
+  API.write('confirm_run',
+    { runData: { boss:run.boss, windowStart:run.windowStart, participants, drops, notes, existingRunId:run.runId } },
+    ['get_grouped_runs', 'get_inventory']
+  ).then(res => {
+    if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); renderDrops(); }
+    else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; });
 }
 
 // ============================================================
@@ -528,29 +699,25 @@ function submitRunConfirm(idx) {
 // ============================================================
 function renderInventory() {
   const el = document.getElementById('view-inventory');
-  el.innerHTML = loadingBlock('🎒 Inventory');
-  API.call('get_inventory').then(bossItems => {
-    bossItems = bossItems || {};
 
-    // Build emoji map and full boss list from config
+  // Show skeleton tiles immediately
+  el.innerHTML = `<div class="section-title">🎒 Inventory</div>${Skeleton.inventory()}`;
+
+  API.read('get_inventory').then(bossItems => {
+    bossItems = bossItems || {};
     const emojiMap = {};
     App.config.bossCategories.forEach(cat => cat.bosses.forEach(b => { emojiMap[b.name] = b.emoji; }));
 
-    // Merge actual inventory data with full drop table from config
-    // So every boss and every possible item always shows, even at 0
     const allBossDrops = App.config.bossDrops || {};
     const merged = {};
-
     Object.keys(allBossDrops).forEach(boss => {
-      if (!allBossDrops[boss].length) return; // skip bosses with no drops defined
+      if (!allBossDrops[boss].length) return;
       merged[boss] = {};
       allBossDrops[boss].forEach(itemName => {
-        // Use real data if it exists, otherwise show a zero placeholder
-        merged[boss][itemName] = (bossItems[boss] && bossItems[boss][itemName])
+        merged[boss][itemName] = (bossItems[boss]?.[itemName])
           ? bossItems[boss][itemName]
           : { totalQty: 0, available: 0, history: [], neverDropped: true };
       });
-      // Also include any items that dropped but aren't in the drop table (edge case)
       if (bossItems[boss]) {
         Object.keys(bossItems[boss]).forEach(itemName => {
           if (!merged[boss][itemName]) merged[boss][itemName] = bossItems[boss][itemName];
@@ -558,10 +725,9 @@ function renderInventory() {
       }
     });
 
-    // Sort bosses by category order from config
     const bossOrder = [];
     App.config.bossCategories.forEach(cat => cat.bosses.forEach(b => bossOrder.push(b.name)));
-    const sortedBosses = Object.keys(merged).sort((a, b) => {
+    const sortedBosses = Object.keys(merged).sort((a,b) => {
       const ai = bossOrder.indexOf(a), bi = bossOrder.indexOf(b);
       return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
     });
@@ -572,19 +738,18 @@ function renderInventory() {
           <div class="inv-section-title">${emojiMap[boss]||'⚔'} ${boss}</div>
           <div class="inv-grid">
             ${Object.entries(merged[boss]).map(([itemName, data]) => {
-              const isNever  = data.neverDropped;
+              const isNever   = data.neverDropped;
               const isSoldOut = !isNever && data.available === 0;
               const tileClass = isNever ? 'inv-tile never-dropped' : isSoldOut ? 'inv-tile sold-out' : 'inv-tile';
               const qtyLabel  = isNever ? 'Not Yet Dropped' : isSoldOut ? 'All Sold' : 'Available';
-              // Only open modal if there's actual history to show
               const clickHandler = isNever ? '' : `onclick="openItemModal('${escHtml(boss)}','${escHtml(itemName)}')"`;
               return `
-              <div class="${tileClass}" ${clickHandler} style="${isNever ? 'cursor:default;' : ''}">
-                <div class="inv-tile-img">🎁</div>
-                <div class="inv-tile-name">${itemName}</div>
-                <div class="inv-tile-qty">${isNever ? '—' : data.available}</div>
-                <div class="inv-tile-qty-label">${qtyLabel}</div>
-              </div>`;
+                <div class="${tileClass}" ${clickHandler} style="${isNever?'cursor:default;':''}">
+                  <div class="inv-tile-img">🎁</div>
+                  <div class="inv-tile-name">${itemName}</div>
+                  <div class="inv-tile-qty">${isNever ? '—' : data.available}</div>
+                  <div class="inv-tile-qty-label">${qtyLabel}</div>
+                </div>`;
             }).join('')}
           </div>
         </div>`).join('');
@@ -636,9 +801,14 @@ function sellSelectedItems() {
   if (!gold || gold <= 0) { toast('Enter a valid gold amount.', 'error'); return; }
   const winner = document.getElementById('item-winner').value.trim();
   const btn = document.getElementById('sell-btn'); btn.disabled=true; btn.textContent='Processing…';
-  API.call('mark_items_sold', { invIds, goldPerItem: gold, winner }).then(res => {
+
+  API.write('mark_items_sold', { invIds, goldPerItem: gold, winner },
+    ['get_inventory', 'get_my_payouts', 'get_available_months', 'get_payouts_page']
+  ).then(res => {
     if (res.success) {
-      const msg = res.payoutsCount === 0 ? 'Sale recorded but no payouts — confirm the run first.' : `Sold! ${res.salesCount} item(s), ${res.payoutsCount} payouts.`;
+      const msg = res.payoutsCount === 0
+        ? 'Sale recorded but no payouts — confirm the run first.'
+        : `Sold! ${res.salesCount} item(s), ${res.payoutsCount} payouts.`;
       toast(msg, res.payoutsCount === 0 ? 'error' : 'success');
       closeModal(); renderInventory();
     } else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='💰 Mark Selected Sold'; }
@@ -646,15 +816,19 @@ function sellSelectedItems() {
 }
 
 // ============================================================
-//  PAYOUTS (Admin)
+//  PAYOUTS  (Admin)
 // ============================================================
 let _currentMonth = null;
 
 function renderPayouts() {
   const el = document.getElementById('view-payouts');
-  el.innerHTML=`<div class="section-title">📊 Payouts</div><div style="color:var(--text-secondary)">Loading…</div>`;
-  API.call('get_available_months').then(months => {
-    if (!(months||[]).length) { el.innerHTML=`<div class="section-title">📊 Payouts</div><div class="empty-state"><span class="empty-state-icon">📊</span>No payouts yet.</div>`; return; }
+  el.innerHTML = `<div class="section-title">📊 Payouts</div>${Skeleton.spinner()}`;
+
+  API.read('get_available_months').then(months => {
+    if (!(months||[]).length) {
+      el.innerHTML = `<div class="section-title">📊 Payouts</div><div class="empty-state"><span class="empty-state-icon">📊</span>No payouts yet.</div>`;
+      return;
+    }
     if (!_currentMonth || !months.includes(_currentMonth)) _currentMonth = months[0];
     el.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.5rem">
@@ -663,17 +837,19 @@ function renderPayouts() {
           ${months.map(m=>`<option value="${m}"${m===_currentMonth?' selected':''}>${fmtMonth(m)}</option>`).join('')}
         </select>
       </div>
-      ${el.innerHTML = loadingBlock('📊 Payouts')}`;
+      <div id="payouts-content">${Skeleton.cards('', 2)}${Skeleton.table('', [30,15,12], 5)}</div>`;
     loadPayoutsMonth(_currentMonth);
   });
 }
 
-function switchMonth(m) { _currentMonth=m; loadPayoutsMonth(m); }
+function switchMonth(m) { _currentMonth = m; loadPayoutsMonth(m); }
 
 function loadPayoutsMonth(month) {
   const el = document.getElementById('payouts-content');
-  el.innerHTML = loadingBlock('📊 Payouts');
-  API.call('get_payouts_page', { month }).then(data => {
+  if (!el) return;
+  el.innerHTML = Skeleton.cards('', 2) + Skeleton.table('', [30,15,12], 5);
+
+  API.read('get_payouts_page', { month }).then(data => {
     el.innerHTML = `
       <div class="stats-row">
         <div class="stat-chip"><div class="stat-chip-label">Total Revenue</div><div class="stat-chip-value">${(data.totalRevenue||0).toLocaleString()}</div></div>
@@ -686,26 +862,28 @@ function loadPayoutsMonth(month) {
         </div>
         <div class="collapsible-body collapsed" style="max-height:0">
           <div class="table-scroll" style="margin-top:.75rem">
-            ${!(data.monthSales||[]).length ? `<div class="empty-state" style="padding:1rem">No sales this month.</div>`
-            : `<table class="data-table"><thead><tr><th>Item Sold</th><th>Date Sold</th><th>Sold Amount</th><th>Winner</th></tr></thead>
-                <tbody>${data.monthSales.map(s=>`<tr>
-                  <td>${s.itemName} <span style="color:var(--text-muted);font-size:.78rem">×${s.qty}</span></td>
-                  <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(s.soldAt)}</td>
-                  <td><span class="gold-amount">${Number(s.totalGold).toLocaleString()}</span></td>
-                  <td style="color:var(--text-secondary)">${s.winner||'—'}</td>
-                </tr>`).join('')}</tbody></table>`}
+            ${!(data.monthSales||[]).length
+              ? `<div class="empty-state" style="padding:1rem">No sales this month.</div>`
+              : `<table class="data-table"><thead><tr><th>Item Sold</th><th>Date Sold</th><th>Sold Amount</th><th>Winner</th></tr></thead>
+                  <tbody>${data.monthSales.map(s=>`<tr>
+                    <td>${s.itemName} <span style="color:var(--text-muted);font-size:.78rem">×${s.qty}</span></td>
+                    <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(s.soldAt)}</td>
+                    <td><span class="gold-amount">${Number(s.totalGold).toLocaleString()}</span></td>
+                    <td style="color:var(--text-secondary)">${s.winner||'—'}</td>
+                  </tr>`).join('')}</tbody></table>`}
           </div>
         </div>
       </div>
       <div class="section-title" style="font-size:.95rem">Character Payouts — ${fmtMonth(month)}</div>
       <div class="table-scroll">
-        ${!(data.characterPayouts||[]).length ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No payouts this month.</div>`
-        : `<table class="data-table"><thead><tr><th>Character</th><th>Total Splits</th><th>Paid</th></tr></thead>
-            <tbody>${data.characterPayouts.map(c=>`<tr>
-              <td><div style="font-weight:600">${c.ign}</div><div style="font-size:.75rem;color:var(--text-secondary)">${c.email}</div></td>
-              <td><span class="gold-amount">${Number(c.totalGold).toLocaleString()}</span></td>
-              <td><input type="checkbox" class="paid-check" data-char-id="${c.charId}" data-month="${month}" ${c.paid?'checked':''} onchange="togglePaid(this)"></td>
-            </tr>`).join('')}</tbody></table>`}
+        ${!(data.characterPayouts||[]).length
+          ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No payouts this month.</div>`
+          : `<table class="data-table"><thead><tr><th>Character</th><th>Total Splits</th><th>Paid</th></tr></thead>
+              <tbody>${data.characterPayouts.map(c=>`<tr>
+                <td><div style="font-weight:600">${c.ign}</div><div style="font-size:.75rem;color:var(--text-secondary)">${c.email}</div></td>
+                <td><span class="gold-amount">${Number(c.totalGold).toLocaleString()}</span></td>
+                <td><input type="checkbox" class="paid-check" data-char-id="${c.charId}" data-month="${month}" ${c.paid?'checked':''} onchange="togglePaid(this)"></td>
+              </tr>`).join('')}</tbody></table>`}
       </div>`;
   });
 }
@@ -713,25 +891,37 @@ function loadPayoutsMonth(month) {
 function toggleCollapsible(header) {
   header.classList.toggle('open');
   const body = header.nextElementSibling;
-  if (header.classList.contains('open')) { body.classList.remove('collapsed'); body.style.maxHeight = body.scrollHeight+'px'; }
-  else { body.style.maxHeight='0'; setTimeout(()=>body.classList.add('collapsed'),300); }
+  if (header.classList.contains('open')) { body.classList.remove('collapsed'); body.style.maxHeight = body.scrollHeight + 'px'; }
+  else { body.style.maxHeight = '0'; setTimeout(() => body.classList.add('collapsed'), 300); }
 }
 
 function togglePaid(cb) {
-  API.call('mark_char_paid', { charId:cb.dataset.charId, month:cb.dataset.month, paid:cb.checked })
-    .then(res => { if(res.success) toast(cb.checked?'Marked as paid':'Unmarked','success'); else { toast('Error','error'); cb.checked=!cb.checked; } });
+  API.write('mark_char_paid',
+    { charId: cb.dataset.charId, month: cb.dataset.month, paid: cb.checked },
+    ['get_payouts_page']
+  ).then(res => {
+    if (res.success) toast(cb.checked ? 'Marked as paid' : 'Unmarked', 'success');
+    else { toast('Error', 'error'); cb.checked = !cb.checked; }
+  });
 }
 
 // ============================================================
-//  ROSTER (Admin)
+//  ROSTER  (Admin)
 // ============================================================
 function renderRoster() {
   const el = document.getElementById('view-roster');
-  el.innerHTML = loadingBlock('👥 Roster');
-  API.call('get_roster').then(roster => {
+
+  // Skeleton cards
+  el.innerHTML = `
+    <div class="section-title">👥 Roster</div>
+    ${Skeleton.cards('', 2)}
+    <div style="height:40px;margin-bottom:1.2rem"><div class="skel" style="height:36px;width:160px;border-radius:6px"></div></div>
+    ${[1,2,3,4].map(() => `<div class="card"><div class="skel" style="height:14px;width:55%;border-radius:4px;margin-bottom:.6rem"></div><div class="skel" style="height:11px;width:35%;border-radius:3px"></div></div>`).join('')}`;
+
+  API.read('get_roster').then(roster => {
     roster = roster || [];
-    const active  = roster.filter(r=>r.status==='active');
-    const pending = roster.filter(r=>r.status==='pending');
+    const active  = roster.filter(r => r.status === 'active');
+    const pending = roster.filter(r => r.status === 'pending');
     el.innerHTML = `
       <div class="section-title">👥 Roster</div>
       <div class="stats-row">
@@ -739,26 +929,26 @@ function renderRoster() {
         <div class="stat-chip"><div class="stat-chip-label">Pending</div><div class="stat-chip-value">${pending.length}</div></div>
       </div>
       <button class="btn btn-primary" style="margin-bottom:1.2rem" onclick="openRegisterMemberModal()">+ Register Member</button>
-      ${pending.length?`<div class="section-title" style="font-size:.95rem">Pending Approval</div>${pending.map(r=>rosterCard(r)).join('')}<div style="margin-top:1rem"></div>`:''}
+      ${pending.length ? `<div class="section-title" style="font-size:.95rem">Pending Approval</div>${pending.map(r=>rosterCard(r)).join('')}<div style="margin-top:1rem"></div>` : ''}
       <div class="section-title" style="font-size:.95rem">Active Members</div>
-      ${!active.length?`<div class="card"><div class="empty-state"><span class="empty-state-icon">👥</span>No active members yet.</div></div>`:active.map(r=>rosterCard(r)).join('')}`;
+      ${!active.length ? `<div class="card"><div class="empty-state"><span class="empty-state-icon">👥</span>No active members yet.</div></div>` : active.map(r=>rosterCard(r)).join('')}`;
   });
 }
 
 function rosterCard(r) {
-  const chars = r.characters||[];
-  const pts = chars.reduce((s,c)=>s+(c.points||0),0);
+  const chars = r.characters || [];
+  const pts   = chars.reduce((s,c) => s+(c.points||0), 0);
   return `<div class="card">
     <div class="card-header">
-      <div><div class="card-title">${chars.length?chars.map(c=>c.ign).join(', '):r.email}</div><div class="card-meta">${r.email}</div></div>
+      <div><div class="card-title">${chars.length ? chars.map(c=>c.ign).join(', ') : r.email}</div><div class="card-meta">${r.email}</div></div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         <span class="status ${r.status==='active'?'status-confirmed':'status-pending'}">${r.status}</span>
-        ${pts>0?`<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>`:''}
+        ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
       </div>
     </div>
-    ${chars.length?`<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span style="font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>`:''}
+    ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span style="font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-      ${r.status==='pending'?`<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>`:''}
+      ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
       <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
     </div>
   </div>`;
@@ -780,11 +970,19 @@ function openRegisterMemberModal(pre='') {
 }
 
 function submitRegisterMember() {
-  const memberEmail=document.getElementById('reg-email').value.trim();
-  const ign=document.getElementById('reg-ign').value.trim();
-  if (!memberEmail||!ign) { toast('Email and IGN required.','error'); return; }
-  API.call('register_member',{ memberEmail, ign, level:document.getElementById('reg-level').value.trim(), charClass:document.getElementById('reg-class').value.trim(), guild:document.getElementById('reg-guild').value.trim(), faction:document.getElementById('reg-faction').value.trim() })
-    .then(res=>{ if(res.success){toast('Member registered!','success');closeModal();renderRoster();}else{toast(res.error||'Error','error');} });
+  const memberEmail = document.getElementById('reg-email').value.trim();
+  const ign         = document.getElementById('reg-ign').value.trim();
+  if (!memberEmail || !ign) { toast('Email and IGN required.', 'error'); return; }
+  API.write('register_member', {
+    memberEmail, ign,
+    level:     document.getElementById('reg-level').value.trim(),
+    charClass: document.getElementById('reg-class').value.trim(),
+    guild:     document.getElementById('reg-guild').value.trim(),
+    faction:   document.getElementById('reg-faction').value.trim(),
+  }, ['get_roster']).then(res => {
+    if (res.success) { toast('Member registered!', 'success'); closeModal(); renderRoster(); }
+    else { toast(res.error||'Error', 'error'); }
+  });
 }
 
 function openAddCharModal(memberEmail) {
@@ -803,10 +1001,18 @@ function openAddCharModal(memberEmail) {
 }
 
 function submitAddChar(memberEmail) {
-  const ign=document.getElementById('ac-ign').value.trim();
-  if (!ign) { toast('IGN required.','error'); return; }
-  API.call('add_character',{ memberEmail, ign, level:document.getElementById('ac-level').value.trim(), charClass:document.getElementById('ac-class').value.trim(), guild:document.getElementById('ac-guild').value.trim(), faction:document.getElementById('ac-faction').value.trim() })
-    .then(res=>{ if(res.success){toast('Character added!','success');closeModal();renderRoster();}else{toast(res.error||'Error','error');} });
+  const ign = document.getElementById('ac-ign').value.trim();
+  if (!ign) { toast('IGN required.', 'error'); return; }
+  API.write('add_character', {
+    memberEmail, ign,
+    level:     document.getElementById('ac-level').value.trim(),
+    charClass: document.getElementById('ac-class').value.trim(),
+    guild:     document.getElementById('ac-guild').value.trim(),
+    faction:   document.getElementById('ac-faction').value.trim(),
+  }, ['get_roster']).then(res => {
+    if (res.success) { toast('Character added!', 'success'); closeModal(); renderRoster(); }
+    else { toast(res.error||'Error', 'error'); }
+  });
 }
 
 // ============================================================
@@ -814,23 +1020,22 @@ function submitAddChar(memberEmail) {
 // ============================================================
 function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
 function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
-
-function showModal(html) { document.getElementById('modal-box').innerHTML=html; document.getElementById('modal-overlay').classList.remove('hidden'); }
+function showModal(html) { document.getElementById('modal-box').innerHTML = html; document.getElementById('modal-overlay').classList.remove('hidden'); }
 function closeModal()    { document.getElementById('modal-overlay').classList.add('hidden'); }
 
 function toast(msg, type='') {
   const t = document.getElementById('toast');
-  t.textContent=msg; t.className='show '+type;
-  clearTimeout(t._timer); t._timer=setTimeout(()=>t.className='',3200);
+  t.textContent = msg; t.className = 'show ' + type;
+  clearTimeout(t._timer); t._timer = setTimeout(() => t.className = '', 3200);
 }
 
-function fmtDate(raw)  { if(!raw)return'—'; const d=new Date(raw); return isNaN(d)?String(raw):d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
-function fmtTime(raw)  { if(!raw)return'';  const d=new Date(raw); return isNaN(d)?'':d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}); }
-function fmtMonth(m)   { if(!m)return'—'; const[y,mo]=m.split('-'); return new Date(y,mo-1,1).toLocaleDateString(undefined,{month:'long',year:'numeric'}); }
-function escHtml(s)    { return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtDate(raw)  { if(!raw) return '—'; const d = new Date(raw); return isNaN(d) ? String(raw) : d.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric'}); }
+function fmtTime(raw)  { if(!raw) return '';  const d = new Date(raw); return isNaN(d) ? '' : d.toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit'}); }
+function fmtMonth(m)   { if(!m) return '—'; const [y,mo] = m.split('-'); return new Date(y, mo-1, 1).toLocaleDateString(undefined, {month:'long',year:'numeric'}); }
+function escHtml(s)    { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // ============================================================
-//  SERVICE WORKER REGISTRATION
+//  SERVICE WORKER
 // ============================================================
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(console.error);

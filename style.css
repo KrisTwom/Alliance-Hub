@@ -383,3 +383,47 @@ html,body {
   25%, 75% { opacity: 0.1; }
   50% { opacity: 1; }
 }
+
+/* ============================================================
+   SKELETON SCREENS  — add these to the bottom of style.css
+   ============================================================ */
+
+/* Shimmer animation keyframe */
+@keyframes shimmer {
+  0%   { background-position: -600px 0; }
+  100% { background-position:  600px 0; }
+}
+
+/* Base skeleton element — apply class="skel" to any div */
+.skel {
+  background: linear-gradient(
+    90deg,
+    var(--bg-raised) 25%,
+    var(--bg-hover)  50%,
+    var(--bg-raised) 75%
+  );
+  background-size: 600px 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 4px;
+  /* Prevent content from collapsing if empty */
+  min-height: 12px;
+}
+
+/* Skeleton applied directly to inv-tile-img placeholder */
+.inv-tile-img.skel {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--radius);
+  font-size: 0;
+}
+
+/* Never-dropped inventory tile (greyed out, no hover) */
+.inv-tile.never-dropped {
+  opacity: 0.38;
+  filter: grayscale(0.6);
+}
+.inv-tile.never-dropped:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border);
+}
