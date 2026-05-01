@@ -517,24 +517,66 @@ function renderInventory() {
   const el = document.getElementById('view-inventory');
   el.innerHTML=`<div class="section-title">🎒 Inventory</div><div style="color:var(--text-secondary)">Loading…</div>`;
   API.call('get_inventory').then(bossItems => {
-    const bosses = Object.keys(bossItems||{});
-    if (!bosses.length) { el.innerHTML=`<div class="section-title">🎒 Inventory</div><div class="empty-state"><span class="empty-state-icon">🎒</span>No items yet.</div>`; return; }
-    const emojiMap = {}; App.config.bossCategories.forEach(cat => cat.bosses.forEach(b => { emojiMap[b.name]=b.emoji; }));
+    bossItems = bossItems || {};
+
+    // Build emoji map and full boss list from config
+    const emojiMap = {};
+    App.config.bossCategories.forEach(cat => cat.bosses.forEach(b => { emojiMap[b.name] = b.emoji; }));
+
+    // Merge actual inventory data with full drop table from config
+    // So every boss and every possible item always shows, even at 0
+    const allBossDrops = App.config.bossDrops || {};
+    const merged = {};
+
+    Object.keys(allBossDrops).forEach(boss => {
+      if (!allBossDrops[boss].length) return; // skip bosses with no drops defined
+      merged[boss] = {};
+      allBossDrops[boss].forEach(itemName => {
+        // Use real data if it exists, otherwise show a zero placeholder
+        merged[boss][itemName] = (bossItems[boss] && bossItems[boss][itemName])
+          ? bossItems[boss][itemName]
+          : { totalQty: 0, available: 0, history: [], neverDropped: true };
+      });
+      // Also include any items that dropped but aren't in the drop table (edge case)
+      if (bossItems[boss]) {
+        Object.keys(bossItems[boss]).forEach(itemName => {
+          if (!merged[boss][itemName]) merged[boss][itemName] = bossItems[boss][itemName];
+        });
+      }
+    });
+
+    // Sort bosses by category order from config
+    const bossOrder = [];
+    App.config.bossCategories.forEach(cat => cat.bosses.forEach(b => bossOrder.push(b.name)));
+    const sortedBosses = Object.keys(merged).sort((a, b) => {
+      const ai = bossOrder.indexOf(a), bi = bossOrder.indexOf(b);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+
     el.innerHTML = `<div class="section-title">🎒 Inventory</div>` +
-      bosses.map(boss => `
+      sortedBosses.map(boss => `
         <div class="inv-section">
           <div class="inv-section-title">${emojiMap[boss]||'⚔'} ${boss}</div>
           <div class="inv-grid">
-            ${Object.entries(bossItems[boss]).map(([itemName,data]) => `
-              <div class="inv-tile ${data.available===0?'sold-out':''}" onclick="openItemModal('${escHtml(boss)}','${escHtml(itemName)}')">
+            ${Object.entries(merged[boss]).map(([itemName, data]) => {
+              const isNever  = data.neverDropped;
+              const isSoldOut = !isNever && data.available === 0;
+              const tileClass = isNever ? 'inv-tile never-dropped' : isSoldOut ? 'inv-tile sold-out' : 'inv-tile';
+              const qtyLabel  = isNever ? 'Not Yet Dropped' : isSoldOut ? 'All Sold' : 'Available';
+              // Only open modal if there's actual history to show
+              const clickHandler = isNever ? '' : `onclick="openItemModal('${escHtml(boss)}','${escHtml(itemName)}')"`;
+              return `
+              <div class="${tileClass}" ${clickHandler} style="${isNever ? 'cursor:default;' : ''}">
                 <div class="inv-tile-img">🎁</div>
                 <div class="inv-tile-name">${itemName}</div>
-                <div class="inv-tile-qty">${data.available}</div>
-                <div class="inv-tile-qty-label">${data.available===0?'All Sold':'Available'}</div>
-              </div>`).join('')}
+                <div class="inv-tile-qty">${isNever ? '—' : data.available}</div>
+                <div class="inv-tile-qty-label">${qtyLabel}</div>
+              </div>`;
+            }).join('')}
           </div>
         </div>`).join('');
-    window._inventoryData = bossItems;
+
+    window._inventoryData = merged;
   });
 }
 
