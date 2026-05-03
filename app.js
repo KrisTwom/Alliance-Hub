@@ -235,7 +235,7 @@ window.initAllianceTracker = async function(email) {
     if (loadingScreen) loadingScreen.style.display = 'none';
     appEl.style.display = 'flex';
 
-    if (App.user.status === 'unregistered') { _showAccessRequestForm(); return; }
+    if (App.user.status === 'unregistered') { API._fetch('request_access'); _showPending(); return; }
     if (App.user.status === 'pending')      { _showPending(); return; }
     showView('home');
 
@@ -269,7 +269,6 @@ function _buildShell() {
         <div id="char-switcher"></div>
         <span id="header-username" class="header-user"></span>
         <span id="header-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}">${App.user.isAdmin ? 'Admin' : 'Member'}</span>
-        <button class="btn btn-secondary btn-sm" onclick="window.signOut()" title="Sign out" style="margin-left:.25rem;padding:.3rem .6rem;">⏻</button>
       </div>
     </header>
 
@@ -417,63 +416,9 @@ function _showPending() {
       <div class="pending-title">Awaiting Approval</div>
       <p class="pending-text">
         Signed in as <strong style="color:var(--gold)">${App.email}</strong><br><br>
-        Your request has been submitted. Contact the Alliance Leader about your request.<br><br>
-        Refresh once approved.
+        Contact an Alliance Admin to get approved. Refresh once approved.
       </p>
-      <button class="btn btn-secondary" style="margin-top:1rem" onclick="window.signOut()">Sign Out</button>
     </div>`;
-}
-
-function _showAccessRequestForm() {
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  document.getElementById('view-home').classList.add('active');
-  document.getElementById('view-home').innerHTML = `
-    <div class="pending-screen" style="max-width:400px;margin:0 auto;align-items:stretch;text-align:left;">
-      <div style="text-align:center;margin-bottom:1rem">
-        <div class="pending-icon">⚔</div>
-        <div class="pending-title">Access Required</div>
-        <p class="pending-text" style="margin-bottom:0">
-          This email (<strong style="color:var(--gold)">${App.email}</strong>) does not have access to the
-          <strong style="color:var(--gold)">Kanos Alliance Hub</strong>.<br><br>
-          Would you like to send an approval request?
-        </p>
-      </div>
-      <div class="form-group"><label class="form-label">Character IGN *</label><input class="form-input" id="ar-ign" placeholder="Your in-game name"></div>
-      <div class="form-group"><label class="form-label">Level *</label><input class="form-input" id="ar-level" type="number" placeholder="e.g. 50"></div>
-      <div class="form-group"><label class="form-label">Class *</label><input class="form-input" id="ar-class" placeholder="e.g. Warrior"></div>
-      <div class="form-group"><label class="form-label">Guild</label><input class="form-input" id="ar-guild" placeholder="Your guild name"></div>
-      <p style="color:var(--text-secondary);font-size:.85rem;text-align:center;margin:.5rem 0">
-        After submitting, message the Alliance Leader about your request.
-      </p>
-      <div style="display:flex;gap:.75rem;margin-top:.5rem">
-        <button class="btn btn-secondary btn-full" onclick="window.signOut()">Sign Out</button>
-        <button class="btn btn-primary btn-full" id="ar-submit-btn" onclick="_submitAccessRequest()">Send Request</button>
-      </div>
-      <div id="ar-status" class="status-msg" style="margin-top:.5rem;text-align:center;min-height:1.2em"></div>
-    </div>`;
-}
-
-async function _submitAccessRequest() {
-  const ign      = document.getElementById('ar-ign').value.trim();
-  const level    = document.getElementById('ar-level').value.trim();
-  const charClass= document.getElementById('ar-class').value.trim();
-  const guild    = document.getElementById('ar-guild').value.trim();
-  const statusEl = document.getElementById('ar-status');
-  const btn      = document.getElementById('ar-submit-btn');
-  if (!ign || !level || !charClass) {
-    statusEl.textContent = 'Please fill in IGN, Level and Class.';
-    statusEl.style.color = 'var(--danger)';
-    return;
-  }
-  btn.disabled = true; btn.textContent = 'Sending…';
-  const res = await API._fetch('request_access_with_info', { ign, level, charClass, guild });
-  if (res.success) {
-    _showPending();
-  } else {
-    statusEl.textContent = res.error || 'Something went wrong.';
-    statusEl.style.color = 'var(--danger)';
-    btn.disabled = false; btn.textContent = 'Send Request';
-  }
 }
 
 // ============================================================
@@ -674,8 +619,8 @@ function renderDrops() {
 
 function _runsSortBy(col) {
   const s = window._runsSort;
-  if (s.col === col) s.dir = s.dir === 'asc' ? 'desc' : 'asc';
-  else { s.col = col; s.dir = col === 'windowStart' ? 'desc' : 'asc'; }
+  s.dir = (s.col === col && s.dir === 'asc') ? 'desc' : (s.col === col ? 'asc' : (col === 'windowStart' ? 'desc' : 'asc'));
+  s.col = col;
   const el = document.getElementById('view-drops');
   if (el) _renderRunsTable(el);
 }
@@ -685,26 +630,21 @@ function _renderRunsTable(el) {
   const { col, dir } = window._runsSort || { col: 'windowStart', dir: 'desc' };
   const sorted = [...runs].sort((a, b) => {
     let av = a[col] ?? '', bv = b[col] ?? '';
-    if (col === 'windowStart')       { av = new Date(av).getTime(); bv = new Date(bv).getTime(); }
-    else if (col === 'participantCount') { av = Number(av)||0; bv = Number(bv)||0; }
+    if (col === 'windowStart') { av = new Date(av).getTime(); bv = new Date(bv).getTime(); }
     else { av = String(av).toLowerCase(); bv = String(bv).toLowerCase(); }
-    if (av < bv) return dir === 'asc' ? -1 : 1;
-    if (av > bv) return dir === 'asc' ? 1 : -1;
-    return 0;
+    return dir === 'asc' ? (av < bv ? -1 : av > bv ? 1 : 0) : (av > bv ? -1 : av < bv ? 1 : 0);
   });
-  // Map sorted back to original indices for openRunModal
-  const arrow = (c) => (window._runsSort||{}).col === c ? ((window._runsSort.dir === 'asc') ? ' ▲' : ' ▼') : ' ⇅';
-  const tableWrap = el.querySelector('#runs-table-wrap') || el;
-  const tableTarget = el.querySelector('#runs-table-wrap') ? tableWrap : el;
-
+  const arrow = c => (window._runsSort||{}).col === c ? (window._runsSort.dir === 'asc' ? ' ▲' : ' ▼') : ' ⇅';
   const tableHtml = `
+    <div class="section-title">💎 Boss Runs</div>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
     <div class="table-scroll">
       <table class="data-table">
         <thead><tr>
           <th onclick="_runsSortBy('windowStart')" style="cursor:pointer">Timestamp${arrow('windowStart')}</th>
-          <th onclick="_runsSortBy('boss')" style="cursor:pointer">Boss${arrow('boss')}</th>
+          <th>Boss</th>
           <th>Drops</th>
-          <th onclick="_runsSortBy('participantCount')" style="cursor:pointer">Players${arrow('participantCount')}</th>
+          <th>Players</th>
           <th onclick="_runsSortBy('status')" style="cursor:pointer">Status${arrow('status')}</th>
         </tr></thead>
         <tbody>
@@ -716,22 +656,14 @@ function _renderRunsTable(el) {
                   <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
                   <td><strong>${r.boss}</strong></td>
                   <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.drops||'—'}</td>
-                  <td><span style="color:var(--gold)">${r.participantCount}</span></td>
+                  <td><span style="color:var(--gold)">${r.participantCount}</span> players</td>
                   <td><span class="status ${r.status==='Confirmed'?'status-confirmed':'status-pending'}">${r.status}</span></td>
                 </tr>`;
               }).join('')}
         </tbody>
       </table>
     </div>`;
-
-  if (el.querySelector('#runs-table-wrap')) {
-    tableWrap.innerHTML = tableHtml;
-  } else {
-    el.innerHTML = `
-      <div class="section-title">💎 Boss Runs</div>
-      <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
-      <div id="runs-table-wrap">${tableHtml}</div>`;
-  }
+  el.innerHTML = tableHtml;
 }
 
 function openRunModal(idx) {
@@ -761,10 +693,13 @@ function openRunModal(idx) {
       <div style="display:flex;flex-direction:column;gap:.35rem">
         ${drops.map(item => {
           const saved = savedDrops.find(d => d.itemName === item);
+          const isChecked = !!saved;
           return `<label style="display:flex;align-items:center;gap:.75rem;font-size:.9rem;cursor:pointer">
-            <input type="checkbox" class="drop-check" value="${item}" ${saved?'checked':''} style="accent-color:var(--gold)">
+            <input type="checkbox" class="drop-check" value="${item}" ${isChecked?'checked':''} style="accent-color:var(--gold)"
+              onchange="this.closest('label').querySelector('.drop-qty').value=this.checked?Math.max(1,+this.closest('label').querySelector('.drop-qty').value||1):0">
             <span style="flex:1">${item}</span>
-            <input type="number" min="1" max="99" value="${saved?.qty||1}" class="form-input drop-qty" data-item="${item}" style="width:60px;padding:.3rem .5rem;font-size:.85rem">
+            <input type="number" min="0" max="99" value="${isChecked?(saved?.qty||1):0}" class="form-input drop-qty" data-item="${item}" style="width:60px;padding:.3rem .5rem;font-size:.85rem"
+              onchange="if(+this.value>0)this.closest('label').querySelector('.drop-check').checked=true;else{this.closest('label').querySelector('.drop-check').checked=false;}">
           </label>`;
         }).join('')}
       </div>
@@ -1014,179 +949,86 @@ function togglePaid(cb) {
 // ============================================================
 function renderRoster() {
   const el = document.getElementById('view-roster');
-  el.innerHTML = `<div class="section-title">👥 Roster</div>${Skeleton.table('', [20,10,28,12], 5)}`;
+
+  // Skeleton cards
+  el.innerHTML = `
+    <div class="section-title">👥 Roster</div>
+    ${Skeleton.cards('', 2)}
+    <div style="height:40px;margin-bottom:1.2rem"><div class="skel" style="height:36px;width:160px;border-radius:6px"></div></div>
+    ${[1,2,3,4].map(() => `<div class="card"><div class="skel" style="height:14px;width:55%;border-radius:4px;margin-bottom:.6rem"></div><div class="skel" style="height:11px;width:35%;border-radius:3px"></div></div>`).join('')}`;
 
   API.read('get_roster').then(roster => {
     roster = roster || [];
+    const active  = roster.filter(r => r.status === 'active');
     const pending = roster.filter(r => r.status === 'pending');
-    // Flatten all characters across all active members into one list
-    const allChars = [];
-    roster.filter(r => r.status === 'active').forEach(r => {
-      (r.characters || []).forEach(c => allChars.push({ ...c, ownerEmail: r.email }));
-    });
-
-    window._rosterData    = { roster, allChars };
-    window._rosterSort    = { col: 'points', dir: 'desc' };
-    _renderRosterTable();
-
-    // Pending section
-    const pendingHtml = pending.length ? `
-      <div class="section-title" style="font-size:.95rem;margin-top:1.5rem">⏳ Pending Approval (${pending.length})</div>
-      ${pending.map(r => `
-        <div class="card" style="padding:.85rem 1rem;">
-          <div class="card-header" style="margin-bottom:.5rem">
-            <div>
-              <div class="card-title">${r.pendingIGN || r.email}</div>
-              <div class="card-meta">${r.email}${r.pendingLevel ? ' · Lv'+r.pendingLevel : ''}${r.pendingClass ? ' · '+r.pendingClass : ''}${r.pendingGuild ? ' · '+r.pendingGuild : ''}</div>
-            </div>
-            <span class="status status-pending">Pending</span>
-          </div>
-          <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-            <button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}','${r.pendingIGN||''}','${r.pendingLevel||''}','${r.pendingClass||''}','${r.pendingGuild||''}')">✓ Approve</button>
-            <button class="btn btn-sm btn-danger" onclick="declineMember('${r.email}')">✕ Decline</button>
-          </div>
-        </div>`).join('')}` : '';
-
     el.innerHTML = `
       <div class="section-title">👥 Roster</div>
       <div class="stats-row">
-        <div class="stat-chip"><div class="stat-chip-label">Characters</div><div class="stat-chip-value">${allChars.length}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Members</div><div class="stat-chip-value">${roster.filter(r=>r.status==='active').length}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Active</div><div class="stat-chip-value">${active.length}</div></div>
         <div class="stat-chip"><div class="stat-chip-label">Pending</div><div class="stat-chip-value">${pending.length}</div></div>
       </div>
       <button class="btn btn-primary" style="margin-bottom:1.2rem" onclick="openRegisterMemberModal()">+ Register Member</button>
-      <div id="roster-table-wrap"></div>
-      ${pendingHtml}`;
-
-    _renderRosterTable();
+      ${pending.length ? `<div class="section-title" style="font-size:.95rem">Pending Approval</div>${pending.map(r=>rosterCard(r)).join('')}<div style="margin-top:1rem"></div>` : ''}
+      <div class="section-title" style="font-size:.95rem">Active Members</div>
+      ${!active.length ? `<div class="card"><div class="empty-state"><span class="empty-state-icon">👥</span>No active members yet.</div></div>` : active.map(r=>rosterCard(r)).join('')}`;
   });
 }
 
-function _rosterSortBy(col) {
-  const s = window._rosterSort;
-  if (s.col === col) s.dir = s.dir === 'asc' ? 'desc' : 'asc';
-  else { s.col = col; s.dir = col === 'points' ? 'desc' : 'asc'; }
-  _renderRosterTable();
+function rosterCard(r) {
+  const chars = r.characters || [];
+  const pts   = chars.reduce((s,c) => s+(c.points||0), 0);
+  return `<div class="card">
+    <div class="card-header">
+      <div><div class="card-title">${chars.length ? chars.map(c=>c.ign).join(', ') : r.email}</div><div class="card-meta">${r.email}</div></div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+        <span class="status ${r.status==='active'?'status-confirmed':'status-pending'}">${r.status}</span>
+        ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
+      </div>
+    </div>
+    ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span style="font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+      ${r.status==='pending' ? `
+        <button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>
+        <button class="btn btn-sm btn-danger" onclick="confirmDeclineMember('${r.email}')">✕ Decline</button>` : ''}
+      ${r.status==='active' ? `<button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>` : ''}
+    </div>
+  </div>`;
 }
 
-function _renderRosterTable() {
-  const wrap = document.getElementById('roster-table-wrap');
-  if (!wrap || !window._rosterData) return;
-  const { allChars } = window._rosterData;
-  const { col, dir } = window._rosterSort;
-  const sorted = [...allChars].sort((a, b) => {
-    let av = a[col] ?? '', bv = b[col] ?? '';
-    if (col === 'points' || col === 'level') { av = Number(av)||0; bv = Number(bv)||0; }
-    else { av = String(av).toLowerCase(); bv = String(bv).toLowerCase(); }
-    if (av < bv) return dir === 'asc' ? -1 : 1;
-    if (av > bv) return dir === 'asc' ? 1 : -1;
-    return 0;
-  });
-  const arrow = (c) => window._rosterSort.col === c ? (window._rosterSort.dir === 'asc' ? ' ▲' : ' ▼') : ' ⇅';
-  wrap.innerHTML = `
-    <div class="table-scroll">
-      <table class="data-table">
-        <thead><tr>
-          <th onclick="_rosterSortBy('ign')" style="cursor:pointer">IGN${arrow('ign')}</th>
-          <th onclick="_rosterSortBy('level')" style="cursor:pointer">Level${arrow('level')}</th>
-          <th onclick="_rosterSortBy('ownerEmail')" style="cursor:pointer">Email${arrow('ownerEmail')}</th>
-          <th onclick="_rosterSortBy('points')" style="cursor:pointer">Points${arrow('points')}</th>
-        </tr></thead>
-        <tbody>
-          ${!sorted.length
-            ? `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:2rem">No active members yet.</td></tr>`
-            : sorted.map(c => `
-              <tr onclick="openCharDetailModal('${c.charId}')" style="cursor:pointer">
-                <td><strong>${c.ign}</strong>${c.charClass ? `<div style="font-size:.75rem;color:var(--text-secondary)">${c.charClass}</div>` : ''}</td>
-                <td>${c.level || '—'}</td>
-                <td style="font-size:.8rem;color:var(--text-secondary)">${c.ownerEmail}</td>
-                <td style="color:var(--gold);font-family:var(--font-display)">${(c.points||0).toLocaleString()}</td>
-              </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>`;
+function confirmDeclineMember(memberEmail) {
+  showModal(`
+    <div class="modal-title" style="color:var(--danger)">✕ Decline Request</div>
+    <p style="color:var(--text-secondary);font-size:.95rem;line-height:1.7;margin-bottom:1.5rem">
+      Are you sure you want to decline the access request from<br>
+      <strong style="color:var(--text-primary)">${memberEmail}</strong>?<br><br>
+      This will remove them from the pending list. They can reapply.
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="executeDeclMember('${memberEmail}')">✕ Yes, Decline</button>
+    </div>`);
 }
 
-function declineMember(memberEmail) {
-  if (!confirm('Decline access request from ' + memberEmail + '?')) return;
+function executeDeclMember(memberEmail) {
+  closeModal();
   API.write('decline_member', { memberEmail }, ['get_roster']).then(res => {
     if (res.success) { toast('Request declined.', 'success'); renderRoster(); }
     else toast(res.error || 'Error', 'error');
   });
 }
 
-function openCharDetailModal(charId) {
-  showModal(`<div class="modal-title">Loading…</div><div class="empty-state">Fetching character data…</div>`);
-  API._fetch('get_char_details', { charId }).then(c => {
-    if (c.error) { document.getElementById('modal-box').innerHTML = `<div class="modal-title">Error</div><p style="color:var(--danger)">${c.error}</p><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`; return; }
-    const itemsHtml = !c.itemsWon?.length
-      ? `<div class="empty-state" style="padding:1rem"><span class="empty-state-icon" style="font-size:1.5rem">🎁</span>No items won yet.</div>`
-      : `<div class="table-scroll" style="max-height:200px;overflow-y:auto">
-          <table class="data-table">
-            <thead><tr><th>Item</th><th>Boss</th><th>Date</th></tr></thead>
-            <tbody>${c.itemsWon.map(i => `<tr>
-              <td>${i.itemName}${i.winner ? `<span style="font-size:.72rem;color:var(--gold);margin-left:.4rem">(${i.winner})</span>` : ''}</td>
-              <td style="font-size:.8rem;color:var(--text-secondary)">${i.boss}</td>
-              <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(i.soldAt)}</td>
-            </tr>`).join('')}</tbody>
-          </table>
-        </div>`;
-    document.getElementById('modal-box').innerHTML = `
-      <div class="modal-title">⚔ ${c.ign}</div>
-      <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.2rem">
-        <span class="status status-confirmed">${c.charClass||'—'}</span>
-        <span style="font-size:.82rem;color:var(--text-secondary)">Lv ${c.level||'?'} · ${c.guild||'—'} · ${c.faction||'—'}</span>
-        <span style="font-size:.82rem;color:var(--gold);font-family:var(--font-display)">${(c.points||0).toLocaleString()} pts</span>
-      </div>
-      <div class="form-group"><label class="form-label">IGN</label><input class="form-input" id="cd-ign" value="${c.ign}"></div>
-      <div style="display:flex;gap:.75rem">
-        <div class="form-group" style="flex:1"><label class="form-label">Level</label><input class="form-input" id="cd-level" value="${c.level||''}"></div>
-        <div class="form-group" style="flex:1"><label class="form-label">Class</label><input class="form-input" id="cd-class" value="${c.charClass||''}"></div>
-      </div>
-      <div style="display:flex;gap:.75rem">
-        <div class="form-group" style="flex:1"><label class="form-label">Guild</label><input class="form-input" id="cd-guild" value="${c.guild||''}"></div>
-        <div class="form-group" style="flex:1"><label class="form-label">Faction</label><input class="form-input" id="cd-faction" value="${c.faction||''}"></div>
-      </div>
-      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="cd-email" value="${c.email}"></div>
-      <div class="form-group"><label class="form-label">Linked Emails <span style="color:var(--text-muted);font-size:.75rem">(comma separated)</span></label><input class="form-input" id="cd-linked" value="${(c.linkedEmails||[]).join(', ')}"></div>
-      <div class="section-title" style="font-size:.85rem;margin-top:.5rem">🎁 Items Won</div>
-      ${itemsHtml}
-      <div class="modal-actions" style="margin-top:1rem">
-        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveCharDetails('${charId}')">💾 Save Changes</button>
-      </div>`;
-  });
-}
-
-function saveCharDetails(charId) {
-  const fields = {
-    ign:       document.getElementById('cd-ign').value.trim(),
-    level:     document.getElementById('cd-level').value.trim(),
-    charClass: document.getElementById('cd-class').value.trim(),
-    guild:     document.getElementById('cd-guild').value.trim(),
-    faction:   document.getElementById('cd-faction').value.trim(),
-    email:     document.getElementById('cd-email').value.trim(),
-  };
-  if (!fields.ign) { toast('IGN required.', 'error'); return; }
-  API.write('update_character', { charId, fields }, ['get_roster']).then(res => {
-    if (res.success) { toast('Character updated!', 'success'); closeModal(); renderRoster(); }
-    else toast(res.error || 'Error', 'error');
-  });
-}
-
-
-function openRegisterMemberModal(pre='', preIgn='', preLevel='', preClass='', preGuild='') {
+function openRegisterMemberModal(pre='') {
   showModal(`
     <div class="modal-title">+ Register Member</div>
     <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="reg-email" value="${pre}" ${pre?'readonly style="opacity:.6"':''} placeholder="player@gmail.com"></div>
-    <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="reg-ign" value="${preIgn}" placeholder="Character name"></div>
-    <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="reg-level" type="number" value="${preLevel}" placeholder="e.g. 50"></div>
-    <div class="form-group"><label class="form-label">Class</label><input class="form-input" id="reg-class" value="${preClass}" placeholder="e.g. Warrior"></div>
-    <div class="form-group"><label class="form-label">Guild</label><input class="form-input" id="reg-guild" value="${preGuild}" placeholder="Guild name"></div>
+    <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="reg-ign" placeholder="Character name"></div>
+    <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="reg-level" type="number" placeholder="e.g. 50"></div>
+    <div class="form-group"><label class="form-label">Class</label><input class="form-input" id="reg-class" placeholder="e.g. Warrior"></div>
+    <div class="form-group"><label class="form-label">Guild</label><input class="form-input" id="reg-guild" placeholder="Guild name"></div>
     <div class="form-group"><label class="form-label">Faction</label><input class="form-input" id="reg-faction" placeholder="e.g. Lanos"></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="submitRegisterMember()">✓ Approve & Register</button>
+      <button class="btn btn-primary" onclick="submitRegisterMember()">Register</button>
     </div>`);
 }
 
