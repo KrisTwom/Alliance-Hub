@@ -7,22 +7,22 @@ const GAS_URL = 'https://script.google.com/macros/s/AKfycbwCPJnrh6kNvhsLw8YAE_4O
 //  STATE
 // ============================================================
 const BOSS_SPRITES = {
-  'BIGMAMA': '/sprites/boss sprites/bigmama.png',
-  'Ukpana': '/sprites/boss sprites/ukpana.png',
-  'Barslaf': '/sprites/boss sprites/barslaf.png',
-  'Illust': '/sprites/boss sprites/illust.png',
-  'Sephia': '/sprites/boss sprites/sephia.png',
-  'Aiyo': "/sprites/boss sprites/aiyo's protector.png",
-  'Darlene': '/sprites/boss sprites/darlene the witch.png',
-  'Caligo': '/sprites/boss sprites/caligo.png',
-  'Platanista': '/sprites/boss sprites/platanista.png',
-  'Siege': null,
-  'Devilang': '/sprites/boss sprites/devilang.png',
-  'Actaemon': '/sprites/boss sprites/actaemon.png',
-  'Billiard': '/sprites/boss sprites/billiard.png',
-  'Faith': null,
-  'Soul Lich': '/sprites/boss sprites/soul lich.png',
-  'Library Boss': '/sprites/boss sprites/primal knowledge.png'
+  'BIGMAMA':      '/spites/boss sprites/bigmama.png',
+  'Ukpana':       '/spites/boss sprites/ukpana.png',
+  'Barslaf':      '/spites/boss sprites/barslaf.png',
+  'Illust':       '/spites/boss sprites/illust.png',
+  'Sephia':       '/spites/boss sprites/sephia.png',
+  'Aiyo':         "/spites/boss sprites/aiyo's protector.png",
+  'Darlene':      '/spites/boss sprites/darlene the witch.png',
+  'Caligo':       '/spites/boss sprites/caligo.png',
+  'Platanista':   '/spites/boss sprites/platanista.png',
+  'Siege':        null,
+  'Devilang':     '/spites/boss sprites/devilang.png',
+  'Actaemon':     '/spites/boss sprites/actaemon.png',
+  'Billiard':     '/spites/boss sprites/billiard.png',
+  'Faith':        null,
+  'Soul Lich':    '/spites/boss sprites/soul lich.png',
+  'Library Boss': '/spites/boss sprites/primal knowledge.png'
 };
 
 const App = {
@@ -495,7 +495,10 @@ function renderAttendance() {
             ${BOSS_SPRITES[b.name]
               ? `<img src="${BOSS_SPRITES[b.name]}" class="boss-check-sprite" alt="${b.name}" onerror="this.style.display='none'">`
               : `<span class="boss-check-emoji">${b.emoji}</span>`}
-            <span class="boss-check-info"><span class="boss-check-name">${b.name}</span><span class="boss-check-pts">${b.points} pts</span></span>
+            <span class="boss-check-info">
+              <span class="boss-check-name">${b.name}</span>
+              <span class="boss-check-pts">${b.points} pts</span>
+            </span>
           </label>`).join('')}
         </div>`).join('')}
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-top:.5rem">
