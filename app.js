@@ -6,6 +6,25 @@ const GAS_URL = 'https://script.google.com/macros/s/AKfycbwCPJnrh6kNvhsLw8YAE_4O
 // ============================================================
 //  STATE
 // ============================================================
+const BOSS_SPRITES = {
+  'BIGMAMA': '/spites/boss sprites/bigmama.png',
+  'Ukpana': '/spites/boss sprites/ukpana.png',
+  'Barslaf': '/spites/boss sprites/barslaf.png',
+  'Illust': '/spites/boss sprites/illust.png',
+  'Sephia': '/spites/boss sprites/sephia.png',
+  'Aiyo': "/spites/boss sprites/aiyo's protector.png",
+  'Darlene': '/spites/boss sprites/darlene the witch.png',
+  'Caligo': '/spites/boss sprites/caligo.png',
+  'Platanista': '/spites/boss sprites/platanista.png',
+  'Siege': null,
+  'Devilang': '/spites/boss sprites/devilang.png',
+  'Actaemon': '/spites/boss sprites/actaemon.png',
+  'Billiard': '/spites/boss sprites/billiard.png',
+  'Faith': null,
+  'Soul Lich': '/spites/boss sprites/soul lich.png',
+  'Library Boss': '/spites/boss sprites/primal knowledge.png'
+};
+
 const App = {
   user:         null,
   config:       null,
@@ -473,7 +492,9 @@ function renderAttendance() {
           <label class="boss-check">
             <input type="checkbox" value="${b.name}">
             <span class="boss-check-icon">✓</span>
-            <span class="boss-check-emoji">${b.emoji}</span>
+            ${BOSS_SPRITES[b.name]
+              ? `<img src="${BOSS_SPRITES[b.name]}" class="boss-check-sprite" alt="${b.name}" onerror="this.style.display='none'">`
+              : `<span class="boss-check-emoji">${b.emoji}</span>`}
             <span class="boss-check-info"><span class="boss-check-name">${b.name}</span><span class="boss-check-pts">${b.points} pts</span></span>
           </label>`).join('')}
         </div>`).join('')}
@@ -611,59 +632,28 @@ function renderDrops() {
     ${Skeleton.table('', [20, 18, 28, 15, 12], 6)}`;
 
   API.read('get_grouped_runs').then(runs => {
-    window._runs     = runs || [];
-    window._runsSort = { col: 'windowStart', dir: 'desc' };
-    _renderRunsTable(el);
-  });
-}
-
-function _runsSortBy(col) {
-  const s = window._runsSort;
-  s.dir = (s.col === col && s.dir === 'asc') ? 'desc' : (s.col === col ? 'asc' : (col === 'windowStart' ? 'desc' : 'asc'));
-  s.col = col;
-  const el = document.getElementById('view-drops');
-  if (el) _renderRunsTable(el);
-}
-
-function _renderRunsTable(el) {
-  const runs = window._runs || [];
-  const { col, dir } = window._runsSort || { col: 'windowStart', dir: 'desc' };
-  const sorted = [...runs].sort((a, b) => {
-    let av = a[col] ?? '', bv = b[col] ?? '';
-    if (col === 'windowStart') { av = new Date(av).getTime(); bv = new Date(bv).getTime(); }
-    else { av = String(av).toLowerCase(); bv = String(bv).toLowerCase(); }
-    return dir === 'asc' ? (av < bv ? -1 : av > bv ? 1 : 0) : (av > bv ? -1 : av < bv ? 1 : 0);
-  });
-  const arrow = c => (window._runsSort||{}).col === c ? (window._runsSort.dir === 'asc' ? ' ▲' : ' ▼') : ' ⇅';
-  const tableHtml = `
-    <div class="section-title">💎 Boss Runs</div>
-    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
-    <div class="table-scroll">
-      <table class="data-table">
-        <thead><tr>
-          <th onclick="_runsSortBy('windowStart')" style="cursor:pointer">Timestamp${arrow('windowStart')}</th>
-          <th>Boss</th>
-          <th>Drops</th>
-          <th>Players</th>
-          <th onclick="_runsSortBy('status')" style="cursor:pointer">Status${arrow('status')}</th>
-        </tr></thead>
-        <tbody>
-          ${!sorted.length
-            ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem">No boss runs recorded yet.</td></tr>`
-            : sorted.map(r => {
-                const origIdx = runs.indexOf(r);
-                return `<tr onclick="openRunModal(${origIdx})">
+    el.innerHTML = `
+      <div class="section-title">💎 Boss Runs</div>
+      <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Timestamp</th><th>Boss</th><th>Drops</th><th>Participants</th><th>Status</th></tr></thead>
+          <tbody>
+            ${!(runs||[]).length
+              ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem">No boss runs recorded yet.</td></tr>`
+              : runs.map((r,i) => `
+                <tr onclick="openRunModal(${i})">
                   <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
                   <td><strong>${r.boss}</strong></td>
                   <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.drops||'—'}</td>
                   <td><span style="color:var(--gold)">${r.participantCount}</span> players</td>
                   <td><span class="status ${r.status==='Confirmed'?'status-confirmed':'status-pending'}">${r.status}</span></td>
-                </tr>`;
-              }).join('')}
-        </tbody>
-      </table>
-    </div>`;
-  el.innerHTML = tableHtml;
+                </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    window._runs = runs || [];
+  });
 }
 
 function openRunModal(idx) {
@@ -693,13 +683,10 @@ function openRunModal(idx) {
       <div style="display:flex;flex-direction:column;gap:.35rem">
         ${drops.map(item => {
           const saved = savedDrops.find(d => d.itemName === item);
-          const isChecked = !!saved;
           return `<label style="display:flex;align-items:center;gap:.75rem;font-size:.9rem;cursor:pointer">
-            <input type="checkbox" class="drop-check" value="${item}" ${isChecked?'checked':''} style="accent-color:var(--gold)"
-              onchange="this.closest('label').querySelector('.drop-qty').value=this.checked?Math.max(1,+this.closest('label').querySelector('.drop-qty').value||1):0">
+            <input type="checkbox" class="drop-check" value="${item}" ${saved?'checked':''} style="accent-color:var(--gold)">
             <span style="flex:1">${item}</span>
-            <input type="number" min="0" max="99" value="${isChecked?(saved?.qty||1):0}" class="form-input drop-qty" data-item="${item}" style="width:60px;padding:.3rem .5rem;font-size:.85rem"
-              onchange="if(+this.value>0)this.closest('label').querySelector('.drop-check').checked=true;else{this.closest('label').querySelector('.drop-check').checked=false;}">
+            <input type="number" min="1" max="99" value="${saved?.qty||1}" class="form-input drop-qty" data-item="${item}" style="width:60px;padding:.3rem .5rem;font-size:.85rem">
           </label>`;
         }).join('')}
       </div>
@@ -987,34 +974,10 @@ function rosterCard(r) {
     </div>
     ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span style="font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-      ${r.status==='pending' ? `
-        <button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>
-        <button class="btn btn-sm btn-danger" onclick="confirmDeclineMember('${r.email}')">✕ Decline</button>` : ''}
-      ${r.status==='active' ? `<button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>` : ''}
+      ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
+      <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
     </div>
   </div>`;
-}
-
-function confirmDeclineMember(memberEmail) {
-  showModal(`
-    <div class="modal-title" style="color:var(--danger)">✕ Decline Request</div>
-    <p style="color:var(--text-secondary);font-size:.95rem;line-height:1.7;margin-bottom:1.5rem">
-      Are you sure you want to decline the access request from<br>
-      <strong style="color:var(--text-primary)">${memberEmail}</strong>?<br><br>
-      This will remove them from the pending list. They can reapply.
-    </p>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-danger" onclick="executeDeclMember('${memberEmail}')">✕ Yes, Decline</button>
-    </div>`);
-}
-
-function executeDeclMember(memberEmail) {
-  closeModal();
-  API.write('decline_member', { memberEmail }, ['get_roster']).then(res => {
-    if (res.success) { toast('Request declined.', 'success'); renderRoster(); }
-    else toast(res.error || 'Error', 'error');
-  });
 }
 
 function openRegisterMemberModal(pre='') {

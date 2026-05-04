@@ -184,9 +184,6 @@ html,body {
 /* ── SCROLLABLE TABLE ────────────────────── */
 .table-scroll { width:100%; overflow-x:auto; border-radius:var(--radius-lg); border:1px solid var(--border); -webkit-overflow-scrolling:touch; }
 .data-table   { width:100%; border-collapse:collapse; font-size:.88rem; min-width:500px; }
-.data-table th { cursor: default; user-select: none; }
-.data-table th[onclick] { cursor: pointer; }
-.data-table th[onclick]:hover { color: var(--gold); }
 .data-table th { text-align:left; font-size:.72rem; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:var(--text-secondary); padding:.6rem .85rem; border-bottom:1px solid var(--border); background:var(--bg-raised); white-space:nowrap; }
 .data-table td { padding:.75rem .85rem; border-bottom:1px solid var(--border); color:var(--text-primary); vertical-align:middle; }
 .data-table tr:last-child td { border-bottom:none; }
@@ -203,6 +200,7 @@ html,body {
 .boss-check-icon { width:18px; height:18px; border:1.5px solid var(--text-muted); border-radius:3px; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:all var(--transition); font-size:.75rem; }
 .boss-check.selected .boss-check-icon { background:var(--gold); border-color:var(--gold); color:var(--bg-deep); }
 .boss-check-emoji { font-size:1rem; flex-shrink:0; }
+.boss-check-sprite { width:28px; height:28px; object-fit:contain; flex-shrink:0; border-radius:4px; }
 .boss-check-info  { display:flex; flex-direction:column; line-height:1.2; min-width:0; }
 .boss-check-name  { font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .boss-check-pts   { font-size:.72rem; color:var(--gold-dim); }
