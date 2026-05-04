@@ -7,22 +7,22 @@ const GAS_URL = 'https://script.google.com/macros/s/AKfycbwCPJnrh6kNvhsLw8YAE_4O
 //  STATE
 // ============================================================
 const BOSS_SPRITES = {
-  'BIGMAMA': '/spites/boss sprites/bigmama.png',
-  'Ukpana': '/spites/boss sprites/ukpana.png',
-  'Barslaf': '/spites/boss sprites/barslaf.png',
-  'Illust': '/spites/boss sprites/illust.png',
-  'Sephia': '/spites/boss sprites/sephia.png',
-  'Aiyo': "/spites/boss sprites/aiyo's protector.png",
-  'Darlene': '/spites/boss sprites/darlene the witch.png',
-  'Caligo': '/spites/boss sprites/caligo.png',
-  'Platanista': '/spites/boss sprites/platanista.png',
+  'BIGMAMA': '/sprites/boss sprites/bigmama.png',
+  'Ukpana': '/sprites/boss sprites/ukpana.png',
+  'Barslaf': '/sprites/boss sprites/barslaf.png',
+  'Illust': '/sprites/boss sprites/illust.png',
+  'Sephia': '/sprites/boss sprites/sephia.png',
+  'Aiyo': "/sprites/boss sprites/aiyo's protector.png",
+  'Darlene': '/sprites/boss sprites/darlene the witch.png',
+  'Caligo': '/sprites/boss sprites/caligo.png',
+  'Platanista': '/sprites/boss sprites/platanista.png',
   'Siege': null,
-  'Devilang': '/spites/boss sprites/devilang.png',
-  'Actaemon': '/spites/boss sprites/actaemon.png',
-  'Billiard': '/spites/boss sprites/billiard.png',
+  'Devilang': '/sprites/boss sprites/devilang.png',
+  'Actaemon': '/sprites/boss sprites/actaemon.png',
+  'Billiard': '/sprites/boss sprites/billiard.png',
   'Faith': null,
-  'Soul Lich': '/spites/boss sprites/soul lich.png',
-  'Library Boss': '/spites/boss sprites/primal knowledge.png'
+  'Soul Lich': '/sprites/boss sprites/soul lich.png',
+  'Library Boss': '/sprites/boss sprites/primal knowledge.png'
 };
 
 const App = {
