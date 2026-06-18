@@ -7,12 +7,13 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Alliance Tracker" />
-  <link rel="icon" href="/icons/Kanos Alliance Symbol.png" type="image/png" />
-  <link rel="apple-touch-icon" sizes="180x180" href="/icons/Kanos Alliance Logo.png" />
+  <link rel="icon" href="/icons/icon-192.png" type="image/png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png" />
   <link rel="manifest" href="manifest.json" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Rajdhani:wght@300;400;500;600&display=swap" rel="stylesheet">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js" defer></script>
   <title>Alliance Tracker</title>
   <link rel="stylesheet" href="style.css" />
   <style>
@@ -113,7 +114,7 @@
         localStorage.setItem('alliance_expiry',       Date.now() + SESSION_TTL_MS);
         localStorage.setItem('alliance_auth_type',    'credential');
 
-        launchApp(email, true /*isFreshLogin*/);
+        launchApp(email);
       } catch(e) {
         document.getElementById('login-status').textContent = 'Sign-in failed: ' + e.message;
       }
@@ -142,7 +143,7 @@
             localStorage.setItem('alliance_email',        info.email);
             localStorage.setItem('alliance_expiry',       Date.now() + SESSION_TTL_MS);
             localStorage.setItem('alliance_auth_type',    'access_token');
-            launchApp(info.email, true /*isFreshLogin*/);
+            launchApp(info.email);
           })
           .catch(e => {
             document.getElementById('login-status').textContent = 'Could not fetch profile: ' + e.message;
@@ -153,10 +154,11 @@
     });
 
     // ── Show loading screen then boot the app ───────────────────
-    function launchApp(email, isFreshLogin = false) {
+    function launchApp(email) {
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('loading-screen').classList.add('visible');
-      setTimeout(() => window.initAllianceTracker(email, isFreshLogin), 100);
+      document.querySelector('.loader-title').textContent = 'Connecting…';
+      setTimeout(() => window.initAllianceTracker(email), 100);
     }
 
     // ── Check for existing valid session on page load ────────────
@@ -174,7 +176,7 @@
         if (remaining < SESSION_SLIDE_MS) {
           localStorage.setItem('alliance_expiry', Date.now() + SESSION_TTL_MS);
         }
-        launchApp(email, false /*returningSession*/);
+        launchApp(email);
         return;
       }
       // No valid session — wait for GSI to load, then init auth
@@ -203,18 +205,15 @@
     };
 
     // ── Helper: get the fresh-login token payload ─────────────────
-    // Only sends the credential (ID token) — never the access token.
-    // Access tokens expire in 1hr and require a live network call to
-    // verify on GAS, which fails on any returning session.
-    // ID tokens also expire in 1hr but at least fail gracefully.
-    // For returning sessions, isFreshLogin=false so this is never called.
+    // Called once at login time so GAS can verify the token.
     window.getFreshAuthPayload = function() {
       const authType = localStorage.getItem('alliance_auth_type');
       if (authType === 'credential') {
         return { credential: localStorage.getItem('alliance_credential') };
       }
-      // access_token path: don't send it — fall back to email-only
-      // The ADMIN_EMAILS allowlist is the real security gate
+      if (authType === 'access_token') {
+        return { accessToken: localStorage.getItem('alliance_access_token') };
+      }
       return {};
     };
   </script>

@@ -430,3 +430,6 @@ html,body {
   border-color: var(--border);
 }
 .boss-check-sprite { width:40px; height:40px; object-fit:contain; flex-shrink:0; border-radius:4px; image-rendering:pixelated; max-width:40px; max-height:40px; }
+
+/* Stats & Trends — chart canvases */
+.card canvas { width: 100% !important; max-width: 100%; }
