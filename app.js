@@ -7,22 +7,22 @@ const GAS_URL = 'https://script.google.com/macros/s/AKfycbwCPJnrh6kNvhsLw8YAE_4O
 //  STATE
 // ============================================================
 const BOSS_SPRITES = {
-  'BIGMAMA':      '/spites/boss sprites/bigmama.png',
-  'Ukpana':       '/spites/boss sprites/ukpana.png',
-  'Barslaf':      '/spites/boss sprites/barslaf.png',
-  'Illust':       '/spites/boss sprites/illust.png',
-  'Sephia':       '/spites/boss sprites/sephia.png',
-  'Aiyo':         "/spites/boss sprites/aiyo's protector.png",
-  'Darlene':      '/spites/boss sprites/darlene the witch.png',
-  'Caligo':       '/spites/boss sprites/caligo.png',
-  'Platanista':   '/spites/boss sprites/platanista.png',
+  'BIGMAMA':      '/sprites/boss sprites/bigmama.png',
+  'Ukpana':       '/sprites/boss sprites/ukpana.png',
+  'Barslaf':      '/sprites/boss sprites/barslaf.png',
+  'Illust':       '/sprites/boss sprites/illust.png',
+  'Sephia':       '/sprites/boss sprites/sephia.png',
+  'Aiyo':         "/sprites/boss sprites/aiyo's protector.png",
+  'Darlene':      '/sprites/boss sprites/darlene the witch.png',
+  'Caligo':       '/sprites/boss sprites/caligo.png',
+  'Platanista':   '/sprites/boss sprites/platanista.png',
   'Siege':        null,
-  'Devilang':     '/spites/boss sprites/devilang.png',
-  'Actaemon':     '/spites/boss sprites/actaemon.png',
-  'Billiard':     '/spites/boss sprites/billiard.png',
+  'Devilang':     '/sprites/boss sprites/devilang.png',
+  'Actaemon':     '/sprites/boss sprites/actaemon.png',
+  'Billiard':     '/sprites/boss sprites/billiard.png',
   'Faith':        null,
-  'Soul Lich':    '/spites/boss sprites/soul lich.png',
-  'Library Boss': '/spites/boss sprites/primal knowledge.png'
+  'Soul Lich':    '/sprites/boss sprites/soul lich.png',
+  'Library Boss': '/sprites/boss sprites/primal knowledge.png'
 };
 
 const App = {
@@ -49,8 +49,6 @@ const Cache = {
     get_payouts_page:     2  * 60 * 1000,
     get_available_months: 5  * 60 * 1000,
     get_roster:           5  * 60 * 1000,
-    get_activity_log:     60 * 1000,
-    get_stats:            5  * 60 * 1000,
     DEFAULT:              3  * 60 * 1000,
   },
 
@@ -94,8 +92,6 @@ const Cache = {
     if (payload.groupedRuns) put('get_grouped_runs', {}, payload.groupedRuns);
     if (payload.inventory)   put('get_inventory',    {}, payload.inventory);
     if (payload.months)      put('get_available_months', {}, payload.months);
-    if (payload.activityLog) put('get_activity_log', { limit: 50 }, payload.activityLog);
-    if (payload.stats)       put('get_stats',        {}, payload.stats);
 
     if (payload.myAttendance) {
       Object.entries(payload.myAttendance).forEach(([charId, data]) => {
@@ -286,9 +282,7 @@ function _buildShell() {
         <button class="nav-btn" data-view="drops">💎 Drops</button>
         <button class="nav-btn" data-view="inventory">🎒 Inventory</button>
         <button class="nav-btn" data-view="payouts">📊 Payouts</button>
-        <button class="nav-btn" data-view="roster">👥 Roster</button>
-        <button class="nav-btn" data-view="activity">📜 Activity</button>
-        <button class="nav-btn" data-view="stats">📈 Stats</button>` : ''}
+        <button class="nav-btn" data-view="roster">👥 Roster</button>` : ''}
       </div>
       <div class="header-right">
         <div id="char-switcher"></div>
@@ -305,8 +299,6 @@ function _buildShell() {
       <div id="view-inventory"  class="view"></div>
       <div id="view-payouts"    class="view"></div>
       <div id="view-roster"     class="view"></div>
-      <div id="view-activity"   class="view"></div>
-      <div id="view-stats"      class="view"></div>
       <div id="view-confirm"    class="view"></div>
     </main>
 
@@ -341,9 +333,7 @@ function _buildShell() {
         <button class="sidebar-link" data-view="drops">💎 Drops</button>
         <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
         <button class="sidebar-link" data-view="payouts">📊 Payouts</button>
-        <button class="sidebar-link" data-view="roster">👥 Roster</button>
-        <button class="sidebar-link" data-view="activity">📜 Activity</button>
-        <button class="sidebar-link" data-view="stats">📈 Stats</button>` : ''}
+        <button class="sidebar-link" data-view="roster">👥 Roster</button>` : ''}
       </div>
     </aside>`;
 
@@ -429,8 +419,6 @@ function showView(name) {
     inventory:   renderInventory,
     payouts:     renderPayouts,
     roster:      renderRoster,
-    activity:    renderActivity,
-    stats:       renderStats,
   };
   map[name]?.();
 }
@@ -728,7 +716,7 @@ function submitRunConfirm(idx) {
 
   API.write('confirm_run',
     { runData: { boss:run.boss, windowStart:run.windowStart, participants, drops, notes, existingRunId:run.runId } },
-    ['get_grouped_runs', 'get_inventory', 'get_activity_log', 'get_stats']
+    ['get_grouped_runs', 'get_inventory']
   ).then(res => {
     if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); renderDrops(); }
     else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; }
@@ -773,60 +761,30 @@ function renderInventory() {
       return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
     });
 
-    window._inventoryMerged    = merged;
-    window._inventoryEmojiMap  = emojiMap;
-    window._inventorySortOrder = sortedBosses;
-    _renderInventoryGrid(el, '');
+    el.innerHTML = `<div class="section-title">🎒 Inventory</div>` +
+      sortedBosses.map(boss => `
+        <div class="inv-section">
+          <div class="inv-section-title">${emojiMap[boss]||'⚔'} ${boss}</div>
+          <div class="inv-grid">
+            ${Object.entries(merged[boss]).map(([itemName, data]) => {
+              const isNever   = data.neverDropped;
+              const isSoldOut = !isNever && data.available === 0;
+              const tileClass = isNever ? 'inv-tile never-dropped' : isSoldOut ? 'inv-tile sold-out' : 'inv-tile';
+              const qtyLabel  = isNever ? 'Not Yet Dropped' : isSoldOut ? 'All Sold' : 'Available';
+              const clickHandler = isNever ? '' : `onclick="openItemModal('${escHtml(boss)}','${escHtml(itemName)}')"`;
+              return `
+                <div class="${tileClass}" ${clickHandler} style="${isNever?'cursor:default;':''}">
+                  <div class="inv-tile-img">🎁</div>
+                  <div class="inv-tile-name">${itemName}</div>
+                  <div class="inv-tile-qty">${isNever ? '—' : data.available}</div>
+                  <div class="inv-tile-qty-label">${qtyLabel}</div>
+                </div>`;
+            }).join('')}
+          </div>
+        </div>`).join('');
+
+    window._inventoryData = merged;
   });
-}
-
-function _renderInventoryGrid(el, query) {
-  const merged      = window._inventoryMerged || {};
-  const emojiMap     = window._inventoryEmojiMap || {};
-  const sortedBosses = window._inventorySortOrder || [];
-  const q = (query || '').trim().toLowerCase();
-
-  const html = sortedBosses.map(boss => {
-    const entries = Object.entries(merged[boss]).filter(([itemName]) =>
-      !q || itemName.toLowerCase().includes(q) || boss.toLowerCase().includes(q)
-    );
-    if (!entries.length) return '';
-    return `
-      <div class="inv-section">
-        <div class="inv-section-title">${emojiMap[boss]||'⚔'} ${boss}</div>
-        <div class="inv-grid">
-          ${entries.map(([itemName, data]) => {
-            const isNever   = data.neverDropped;
-            const isSoldOut = !isNever && data.available === 0;
-            const tileClass = isNever ? 'inv-tile never-dropped' : isSoldOut ? 'inv-tile sold-out' : 'inv-tile';
-            const qtyLabel  = isNever ? 'Not Yet Dropped' : isSoldOut ? 'All Sold' : 'Available';
-            const clickHandler = isNever ? '' : `onclick="openItemModal('${escHtml(boss)}','${escHtml(itemName)}')"`;
-            return `
-              <div class="${tileClass}" ${clickHandler} style="${isNever?'cursor:default;':''}">
-                <div class="inv-tile-img">🎁</div>
-                <div class="inv-tile-name">${itemName}</div>
-                <div class="inv-tile-qty">${isNever ? '—' : data.available}</div>
-                <div class="inv-tile-qty-label">${qtyLabel}</div>
-              </div>`;
-          }).join('')}
-        </div>
-      </div>`;
-  }).join('');
-
-  const resultsWrap = document.getElementById('inv-results');
-  if (resultsWrap) {
-    resultsWrap.innerHTML = html || `<div class="empty-state"><span class="empty-state-icon">🔍</span>No items match "${escHtml(query)}".</div>`;
-  } else {
-    el.innerHTML = `
-      <div class="section-title">🎒 Inventory</div>
-      <div class="form-group">
-        <input class="form-input" id="inv-search" placeholder="🔍 Search items or bosses…" oninput="_renderInventoryGrid(document.getElementById('view-inventory'), this.value)">
-      </div>
-      <div id="inv-results">${html}</div>`;
-    // Preserve focus/cursor on the search input across re-renders
-    const input = document.getElementById('inv-search');
-    if (input && query) { input.value = query; input.focus(); }
-  }
 }
 
 function openItemModal(boss, itemName) {
@@ -874,7 +832,7 @@ function sellSelectedItems() {
   const btn = document.getElementById('sell-btn'); btn.disabled=true; btn.textContent='Processing…';
 
   API.write('mark_items_sold', { invIds, goldPerItem: gold, winner },
-    ['get_inventory', 'get_my_payouts', 'get_available_months', 'get_payouts_page', 'get_activity_log', 'get_stats']
+    ['get_inventory', 'get_my_payouts', 'get_available_months', 'get_payouts_page']
   ).then(res => {
     if (res.success) {
       const msg = res.payoutsCount === 0
@@ -969,7 +927,7 @@ function toggleCollapsible(header) {
 function togglePaid(cb) {
   API.write('mark_char_paid',
     { charId: cb.dataset.charId, month: cb.dataset.month, paid: cb.checked },
-    ['get_payouts_page', 'get_activity_log']
+    ['get_payouts_page']
   ).then(res => {
     if (res.success) toast(cb.checked ? 'Marked as paid' : 'Unmarked', 'success');
     else { toast('Error', 'error'); cb.checked = !cb.checked; }
@@ -990,239 +948,19 @@ function renderRoster() {
     ${[1,2,3,4].map(() => `<div class="card"><div class="skel" style="height:14px;width:55%;border-radius:4px;margin-bottom:.6rem"></div><div class="skel" style="height:11px;width:35%;border-radius:3px"></div></div>`).join('')}`;
 
   API.read('get_roster').then(roster => {
-    window._rosterData = roster || [];
-    _renderRosterCards(el, '');
-  });
-}
-
-function _renderRosterCards(el, query) {
-  const roster  = window._rosterData || [];
-  const active  = roster.filter(r => r.status === 'active');
-  const pending = roster.filter(r => r.status === 'pending');
-  const q = (query || '').trim().toLowerCase();
-
-  const matches = (r) => {
-    if (!q) return true;
-    if (r.email.toLowerCase().includes(q)) return true;
-    return (r.characters || []).some(c => (c.ign||'').toLowerCase().includes(q));
-  };
-  const filteredActive  = active.filter(matches);
-  const filteredPending = pending.filter(matches);
-
-  const bodyHtml = `
-    ${filteredPending.length ? `<div class="section-title" style="font-size:.95rem">Pending Approval</div>${filteredPending.map(r=>rosterCard(r)).join('')}<div style="margin-top:1rem"></div>` : ''}
-    <div class="section-title" style="font-size:.95rem">Active Members</div>
-    ${!filteredActive.length
-      ? `<div class="card"><div class="empty-state"><span class="empty-state-icon">${q?'🔍':'👥'}</span>${q?`No members match "${escHtml(query)}".`:'No active members yet.'}</div></div>`
-      : filteredActive.map(r=>rosterCard(r)).join('')}`;
-
-  const resultsWrap = document.getElementById('roster-results');
-  if (resultsWrap) {
-    resultsWrap.innerHTML = bodyHtml;
-  } else {
+    roster = roster || [];
+    const active  = roster.filter(r => r.status === 'active');
+    const pending = roster.filter(r => r.status === 'pending');
     el.innerHTML = `
       <div class="section-title">👥 Roster</div>
       <div class="stats-row">
         <div class="stat-chip"><div class="stat-chip-label">Active</div><div class="stat-chip-value">${active.length}</div></div>
         <div class="stat-chip"><div class="stat-chip-label">Pending</div><div class="stat-chip-value">${pending.length}</div></div>
       </div>
-      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
-        <button class="btn btn-primary" onclick="openRegisterMemberModal()">+ Register Member</button>
-        ${App.user.isSuperAdmin ? `<button class="btn btn-secondary" id="backup-btn" onclick="runManualBackup()">💾 Backup Now</button>` : ''}
-      </div>
-      <div class="form-group">
-        <input class="form-input" id="roster-search" placeholder="🔍 Search by IGN or email…" oninput="_renderRosterCards(document.getElementById('view-roster'), this.value)">
-      </div>
-      <div id="roster-results">${bodyHtml}</div>`;
-    const input = document.getElementById('roster-search');
-    if (input && query) { input.value = query; input.focus(); }
-  }
-}
-
-// ============================================================
-//  ACTIVITY LOG
-// ============================================================
-const ACTIVITY_ICONS = {
-  'Approved Member':  '✅',
-  'Declined Request':  '❌',
-  'Confirmed Run':     '⚔️',
-  'Edited Run':        '✏️',
-  'Sold Items':        '💰',
-  'Marked Paid':       '🪙',
-  'Edited Character':  '📝',
-  'Manual Backup':     '💾',
-};
-
-function renderActivity() {
-  const el = document.getElementById('view-activity');
-  el.innerHTML = `<div class="section-title">📜 Activity Log</div>${Skeleton.cards('', 3)}`;
-
-  API.read('get_activity_log', { limit: 50 }).then(log => {
-    log = log || [];
-    el.innerHTML = `
-      <div class="section-title">📜 Activity Log</div>
-      <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Recent admin actions across the alliance.</p>
-      <div class="card" style="padding:0;overflow:hidden;">
-        ${!log.length
-          ? `<div class="empty-state"><span class="empty-state-icon">📜</span>No activity recorded yet.</div>`
-          : log.map(item => `
-            <div class="leaderboard-row">
-              <span style="font-size:1.2rem;flex-shrink:0;width:28px;text-align:center">${ACTIVITY_ICONS[item.action]||'•'}</span>
-              <div style="flex:1;min-width:0">
-                <div class="lb-name" style="font-size:.9rem">${item.action}</div>
-                <div class="lb-class" style="font-size:.78rem">${item.details||''}</div>
-              </div>
-              <div style="text-align:right;flex-shrink:0">
-                <div style="font-size:.75rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(item.timestamp)}</div>
-                <div style="font-size:.7rem;color:var(--text-muted);white-space:nowrap">${fmtTime(item.timestamp)}</div>
-              </div>
-            </div>`).join('')}
-      </div>
-      <p style="color:var(--text-muted);font-size:.72rem;margin-top:.5rem;text-align:center">Showing the most recent 50 actions.</p>`;
-  });
-}
-
-// ============================================================
-//  STATS & TRENDS
-// ============================================================
-function renderStats() {
-  const el = document.getElementById('view-stats');
-  el.innerHTML = `<div class="section-title">📈 Stats & Trends</div>${Skeleton.cards('', 2)}`;
-
-  API.read('get_stats').then(stats => {
-    if (!stats || stats.error) {
-      el.innerHTML = `<div class="section-title">📈 Stats & Trends</div><div class="empty-state"><span class="empty-state-icon">📈</span>${stats?.error||'Could not load stats.'}</div>`;
-      return;
-    }
-
-    el.innerHTML = `
-      <div class="section-title">📈 Stats & Trends</div>
-      <div class="stats-row">
-        <div class="stat-chip"><div class="stat-chip-label">Characters</div><div class="stat-chip-value">${stats.totalCharacters}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Attendance Logs</div><div class="stat-chip-value">${stats.totalAttendanceRecords}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Gold Sold (All-Time)</div><div class="stat-chip-value">${(stats.totalGoldSold||0).toLocaleString()}</div></div>
-      </div>
-
-      <div class="section-title" style="font-size:.95rem">Attendance — Last 30 Days</div>
-      <div class="card"><canvas id="chart-attendance-day" height="180"></canvas></div>
-
-      <div class="section-title" style="font-size:.95rem">Attendance by Boss (All-Time)</div>
-      <div class="card"><canvas id="chart-attendance-boss" height="220"></canvas></div>
-
-      <div class="section-title" style="font-size:.95rem">Most Active Members — Last 30 Days</div>
-      <div class="card"><canvas id="chart-most-active" height="220"></canvas></div>
-
-      <div class="section-title" style="font-size:.95rem">Gold Sold — Last 30 Days</div>
-      <div class="card"><canvas id="chart-gold-day" height="180"></canvas></div>`;
-
-    _renderStatsCharts(stats);
-  });
-}
-
-function _renderStatsCharts(stats) {
-  if (typeof Chart === 'undefined') {
-    // Chart.js hasn't loaded yet (slow network) — retry shortly
-    setTimeout(() => _renderStatsCharts(stats), 300);
-    return;
-  }
-
-  const gold       = getComputedStyle(document.documentElement).getPropertyValue('--gold').trim()       || '#e0c97f';
-  const goldDim    = getComputedStyle(document.documentElement).getPropertyValue('--gold-dim').trim()    || '#a08840';
-  const textMuted  = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim() || '#8a8474';
-  const gridColor  = 'rgba(224,201,127,0.08)';
-
-  const commonOpts = {
-    responsive: true,
-    plugins: { legend: { display: false } },
-    scales: {
-      x: { ticks: { color: textMuted, font: { size: 11 } }, grid: { color: gridColor } },
-      y: { ticks: { color: textMuted, font: { size: 11 } }, grid: { color: gridColor }, beginAtZero: true },
-    },
-  };
-
-  // Destroy any existing chart instances before re-creating (avoids leaks on re-render)
-  ['chart-attendance-day','chart-attendance-boss','chart-most-active','chart-gold-day'].forEach(id => {
-    const existing = Chart.getChart(id);
-    if (existing) existing.destroy();
-  });
-
-  // 1. Attendance by day — line chart
-  const dayCtx = document.getElementById('chart-attendance-day');
-  if (dayCtx && stats.attendanceByDay?.length) {
-    new Chart(dayCtx, {
-      type: 'line',
-      data: {
-        labels: stats.attendanceByDay.map(d => d.date.slice(5)), // MM-DD
-        datasets: [{
-          data: stats.attendanceByDay.map(d => d.count),
-          borderColor: gold, backgroundColor: 'rgba(224,201,127,0.12)',
-          fill: true, tension: 0.3, pointRadius: 2,
-        }],
-      },
-      options: commonOpts,
-    });
-  } else if (dayCtx) {
-    dayCtx.parentElement.innerHTML = `<div class="empty-state" style="padding:1.5rem"><span class="empty-state-icon" style="font-size:1.5rem">📈</span>No attendance in the last 30 days.</div>`;
-  }
-
-  // 2. Attendance by boss — horizontal bar chart
-  const bossCtx = document.getElementById('chart-attendance-boss');
-  if (bossCtx && stats.attendanceByBoss?.length) {
-    const top = stats.attendanceByBoss.slice(0, 12);
-    new Chart(bossCtx, {
-      type: 'bar',
-      data: {
-        labels: top.map(b => b.boss),
-        datasets: [{ data: top.map(b => b.count), backgroundColor: goldDim }],
-      },
-      options: { ...commonOpts, indexAxis: 'y' },
-    });
-  } else if (bossCtx) {
-    bossCtx.parentElement.innerHTML = `<div class="empty-state" style="padding:1.5rem"><span class="empty-state-icon" style="font-size:1.5rem">⚔️</span>No boss attendance recorded yet.</div>`;
-  }
-
-  // 3. Most active members — bar chart
-  const activeCtx = document.getElementById('chart-most-active');
-  if (activeCtx && stats.mostActive?.length) {
-    new Chart(activeCtx, {
-      type: 'bar',
-      data: {
-        labels: stats.mostActive.map(m => m.ign),
-        datasets: [{ data: stats.mostActive.map(m => m.count), backgroundColor: gold }],
-      },
-      options: { ...commonOpts, indexAxis: 'y' },
-    });
-  } else if (activeCtx) {
-    activeCtx.parentElement.innerHTML = `<div class="empty-state" style="padding:1.5rem"><span class="empty-state-icon" style="font-size:1.5rem">🏆</span>No activity in the last 30 days.</div>`;
-  }
-
-  // 4. Gold sold by day — line chart
-  const goldCtx = document.getElementById('chart-gold-day');
-  if (goldCtx && stats.goldByDay?.length) {
-    new Chart(goldCtx, {
-      type: 'line',
-      data: {
-        labels: stats.goldByDay.map(d => d.date.slice(5)),
-        datasets: [{
-          data: stats.goldByDay.map(d => d.gold),
-          borderColor: '#4ecb71', backgroundColor: 'rgba(78,203,113,0.12)',
-          fill: true, tension: 0.3, pointRadius: 2,
-        }],
-      },
-      options: commonOpts,
-    });
-  } else if (goldCtx) {
-    goldCtx.parentElement.innerHTML = `<div class="empty-state" style="padding:1.5rem"><span class="empty-state-icon" style="font-size:1.5rem">💰</span>No sales in the last 30 days.</div>`;
-  }
-}
-
-function runManualBackup() {
-  const btn = document.getElementById('backup-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '💾 Backing up…'; }
-  API.write('backup_now', {}, ['get_activity_log']).then(res => {
-    if (res.success) toast(`Backup created: ${res.fileName}`, 'success');
-    else toast(res.error || 'Backup failed', 'error');
-    if (btn) { btn.disabled = false; btn.textContent = '💾 Backup Now'; }
+      <button class="btn btn-primary" style="margin-bottom:1.2rem" onclick="openRegisterMemberModal()">+ Register Member</button>
+      ${pending.length ? `<div class="section-title" style="font-size:.95rem">Pending Approval</div>${pending.map(r=>rosterCard(r)).join('')}<div style="margin-top:1rem"></div>` : ''}
+      <div class="section-title" style="font-size:.95rem">Active Members</div>
+      ${!active.length ? `<div class="card"><div class="empty-state"><span class="empty-state-icon">👥</span>No active members yet.</div></div>` : active.map(r=>rosterCard(r)).join('')}`;
   });
 }
 
@@ -1270,7 +1008,7 @@ function submitRegisterMember() {
     charClass: document.getElementById('reg-class').value.trim(),
     guild:     document.getElementById('reg-guild').value.trim(),
     faction:   document.getElementById('reg-faction').value.trim(),
-  }, ['get_roster', 'get_activity_log']).then(res => {
+  }, ['get_roster']).then(res => {
     if (res.success) { toast('Member registered!', 'success'); closeModal(); renderRoster(); }
     else { toast(res.error||'Error', 'error'); }
   });
