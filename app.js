@@ -278,6 +278,8 @@ function _buildShell() {
         <button class="nav-btn active" data-view="home">🏠 Home</button>
         <button class="nav-btn" data-view="attendance">🗡 Attendance</button>
         <button class="nav-btn" data-view="my-splits">💰 My Splits</button>
+        <button class="nav-btn" data-view="leaderboard">🏆 Leaderboard</button>
+        <button class="nav-btn" data-view="rules">📜 Rules</button>
         ${App.user.isAdmin ? `
         <button class="nav-btn" data-view="drops">💎 Drops</button>
         <button class="nav-btn" data-view="inventory">🎒 Inventory</button>
@@ -285,21 +287,22 @@ function _buildShell() {
         <button class="nav-btn" data-view="roster">👥 Roster</button>` : ''}
       </div>
       <div class="header-right">
-        <div id="char-switcher"></div>
         <span id="header-username" class="header-user"></span>
         <span id="header-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}">${App.user.isAdmin ? 'Admin' : 'Member'}</span>
       </div>
     </header>
 
     <main id="main-content">
-      <div id="view-home"       class="view active"></div>
-      <div id="view-attendance" class="view"></div>
-      <div id="view-my-splits"  class="view"></div>
-      <div id="view-drops"      class="view"></div>
-      <div id="view-inventory"  class="view"></div>
-      <div id="view-payouts"    class="view"></div>
-      <div id="view-roster"     class="view"></div>
-      <div id="view-confirm"    class="view"></div>
+      <div id="view-home"        class="view active"></div>
+      <div id="view-attendance"  class="view"></div>
+      <div id="view-my-splits"   class="view"></div>
+      <div id="view-leaderboard" class="view"></div>
+      <div id="view-rules"       class="view"></div>
+      <div id="view-drops"       class="view"></div>
+      <div id="view-inventory"   class="view"></div>
+      <div id="view-payouts"     class="view"></div>
+      <div id="view-roster"      class="view"></div>
+      <div id="view-confirm"     class="view"></div>
     </main>
 
     <nav id="mobile-nav">
@@ -329,6 +332,8 @@ function _buildShell() {
         <div id="sidebar-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}" style="margin-top:4px">${App.user.isAdmin ? 'Admin' : 'Member'}</div>
       </div>
       <div class="sidebar-links">
+        <button class="sidebar-link" data-view="leaderboard">🏆 Leaderboard</button>
+        <button class="sidebar-link" data-view="rules">📜 Rules</button>
         ${App.user.isAdmin ? `
         <button class="sidebar-link" data-view="drops">💎 Drops</button>
         <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
@@ -340,7 +345,6 @@ function _buildShell() {
   const char = getActiveChar();
   document.getElementById('header-username').textContent  = char?.ign || App.user.email;
   document.getElementById('sidebar-username').textContent = char?.ign || App.user.email;
-  _renderCharSwitcher('char-switcher');
   _renderCharSwitcher('sidebar-char-switcher');
 }
 
@@ -396,8 +400,10 @@ function getActiveChar() {
 
 function switchChar(charId) {
   App.activeCharId = charId;
-  _renderCharSwitcher('char-switcher');
   _renderCharSwitcher('sidebar-char-switcher');
+  _renderCharSwitcher('home-char-switcher');
+  _renderCharSwitcher('attendance-char-switcher');
+  _renderCharSwitcher('splits-char-switcher');
   const char = getActiveChar();
   document.getElementById('header-username').textContent  = char?.ign || App.user.email;
   document.getElementById('sidebar-username').textContent = char?.ign || App.user.email;
@@ -412,13 +418,15 @@ function showView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name)?.classList.add('active');
   const map = {
-    home:        renderHome,
-    attendance:  renderAttendance,
-    'my-splits': renderMySplits,
-    drops:       renderDrops,
-    inventory:   renderInventory,
-    payouts:     renderPayouts,
-    roster:      renderRoster,
+    home:          renderHome,
+    attendance:    renderAttendance,
+    'my-splits':   renderMySplits,
+    leaderboard:   renderLeaderboard,
+    rules:         renderRules,
+    drops:         renderDrops,
+    inventory:     renderInventory,
+    payouts:       renderPayouts,
+    roster:        renderRoster,
   };
   map[name]?.();
 }
@@ -446,29 +454,36 @@ function _showPending() {
 function renderHome() {
   const el   = document.getElementById('view-home');
   const char = getActiveChar();
+  const chars = App.user.characters || [];
 
-  // Show skeleton immediately
   el.innerHTML = `
     <div class="section-title">🏠 Home</div>
-    ${char ? `<div class="stats-row">
-      <div class="stat-chip"><div class="stat-chip-label">Character</div><div class="stat-chip-value" style="font-size:1.1rem">${char.ign}</div></div>
-      <div class="stat-chip"><div class="stat-chip-label">My Points</div><div class="stat-chip-value">${(char.points||0).toLocaleString()}</div></div>
-      <div class="stat-chip"><div class="stat-chip-label">Class</div><div class="stat-chip-value" style="font-size:1rem">${char.charClass||'—'}</div></div>
-    </div>` : ''}
-    <div class="section-title">🏆 Leaderboard</div>
-    <div class="card" style="padding:0;overflow:hidden">${Skeleton.leaderboard()}</div>`;
+    <div class="stats-row">
+      <div class="stat-chip" style="flex:1.5">
+        <div class="stat-chip-label">Character</div>
+        <div id="home-char-switcher"></div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-chip-label">My Points</div>
+        <div class="stat-chip-value" id="home-points">${(char?.points||0).toLocaleString()}</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-chip-label">Class</div>
+        <div class="stat-chip-value" style="font-size:1rem" id="home-class">${char?.charClass||'—'}</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.25rem">
+      <button class="btn btn-secondary btn-sm" onclick="showView('leaderboard')">🏆 View Leaderboard</button>
+      <button class="btn btn-secondary btn-sm" onclick="showView('rules')">📜 Alliance Rules</button>
+    </div>`;
 
-  API.read('get_leaderboard').then(lb => {
-    const lbEl = el.querySelector('.card');
-    if (!lbEl) return;
-    lbEl.innerHTML = !lb?.length
-      ? `<div class="empty-state"><span class="empty-state-icon">🏆</span>No points yet.</div>`
-      : lb.map(p => `<div class="leaderboard-row">
-          <span class="lb-rank ${p.rank===1?'top1':p.rank===2?'top2':p.rank===3?'top3':''}">${p.rank===1?'🥇':p.rank===2?'🥈':p.rank===3?'🥉':p.rank}</span>
-          <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${p.charClass||''}</div></div>
-          <div class="lb-points">${p.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
-        </div>`).join('');
-  });
+  // Render char switcher inline in the character chip
+  _renderCharSwitcher('home-char-switcher');
+  // If only one char, show the name as text
+  if (chars.length <= 1 && char) {
+    document.getElementById('home-char-switcher').innerHTML =
+      `<div class="stat-chip-value" style="font-size:1.1rem">${char.ign}</div>`;
+  }
 }
 
 // ============================================================
@@ -477,6 +492,7 @@ function renderHome() {
 function renderAttendance() {
   const el   = document.getElementById('view-attendance');
   const char = getActiveChar();
+  const chars = App.user.characters || [];
   if (!char) {
     el.innerHTML = `<div class="pending-screen"><div class="pending-icon">⚠️</div><div class="pending-title">No Character</div><p class="pending-text">Ask an admin to set up your character.</p></div>`;
     return;
@@ -485,7 +501,10 @@ function renderAttendance() {
   el.innerHTML = `
     <div class="section-title">🗡 Log Attendance</div>
     <div class="card">
-      <p style="color:var(--text-secondary);font-size:.9rem;margin-bottom:1.2rem">Playing as <strong style="color:var(--gold)">${char.ign}</strong> — select every boss you attended.</p>
+      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.2rem;flex-wrap:wrap">
+        <span style="color:var(--text-secondary);font-size:.9rem">Playing as</span>
+        <div id="attendance-char-switcher"></div>
+      </div>
       ${App.config.bossCategories.map(cat => `
         <div class="boss-category-header">${cat.emoji} ${cat.category}</div>
         <div class="boss-grid">${cat.bosses.map(b => `
@@ -506,9 +525,17 @@ function renderAttendance() {
           <span id="sel-count" style="color:var(--text-secondary);font-size:.88rem">0 selected</span>
           <span id="sel-pts"   style="color:var(--gold);font-size:.88rem;margin-left:.75rem"></span>
         </div>
-        <button class="btn btn-primary" id="submit-att-btn" onclick="submitAttendance()">⚔ Submit Attendance</button>
+        <button class="btn btn-primary" id="submit-att-btn" onclick="openAttendanceConfirm()">⚔ Submit Attendance</button>
       </div>
     </div>`;
+
+  // Render char switcher in attendance header
+  _renderCharSwitcher('attendance-char-switcher');
+  if (chars.length <= 1) {
+    document.getElementById('attendance-char-switcher').innerHTML =
+      `<strong style="color:var(--gold)">${char.ign}</strong>`;
+  }
+
   document.querySelectorAll('.boss-check').forEach(label => {
     const cb = label.querySelector('input');
     cb.addEventListener('change', () => { label.classList.toggle('selected', cb.checked); _updateAttSummary(); });
@@ -523,26 +550,57 @@ function _updateAttSummary() {
   document.getElementById('sel-pts').textContent   = checked.length > 0 ? `· +${pts} pts` : '';
 }
 
+function openAttendanceConfirm() {
+  const selected = [...document.querySelectorAll('.boss-check input:checked')].map(cb => cb.value);
+  if (!selected.length) { toast('Select at least one boss.', 'error'); return; }
+  const char = getActiveChar();
+  const bossMap = {}; App.config.bossCategories.forEach(c => c.bosses.forEach(b => { bossMap[b.name] = b.points; }));
+  const totalPts = selected.reduce((s, b) => s + (bossMap[b]||0), 0);
+
+  showModal(`
+    <div class="modal-title">⚔ Confirm Attendance</div>
+    <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:var(--radius);padding:.85rem 1rem;margin-bottom:1rem">
+      <div style="font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-secondary);margin-bottom:.3rem">Submitting as</div>
+      <div style="font-family:var(--font-display);color:var(--gold);font-size:1.1rem">${char.ign}</div>
+    </div>
+    <div style="margin-bottom:1rem">
+      <div style="font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-secondary);margin-bottom:.5rem">Bosses Selected (${selected.length})</div>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem">
+        ${selected.map(b => `<span style="background:var(--gold-glow);border:1px solid var(--border-mid);color:var(--gold);border-radius:99px;padding:.25rem .75rem;font-size:.83rem">${b}</span>`).join('')}
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+      <span style="color:var(--text-secondary);font-size:.88rem">Points to earn</span>
+      <span style="font-family:var(--font-display);color:var(--gold);font-size:1.2rem">+${totalPts}</span>
+    </div>
+    <p style="font-size:.75rem;color:var(--text-muted);text-align:center;margin-bottom:1rem;line-height:1.5">
+      By confirming, you acknowledge that submitting false attendance is a violation of Alliance rules and you will be held responsible.
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="confirm-att-btn" onclick="submitAttendance()">✓ Confirm & Submit</button>
+    </div>`);
+}
+
 function submitAttendance() {
   const selected = [...document.querySelectorAll('.boss-check input:checked')].map(cb => cb.value);
   if (!selected.length) { toast('Select at least one boss.', 'error'); return; }
   const char = getActiveChar();
-  const btn  = document.getElementById('submit-att-btn');
-  btn.disabled = true; btn.textContent = 'Submitting…';
+  const btn  = document.getElementById('confirm-att-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
 
   API.write('submit_attendance', { charId: char.charId, bosses: selected },
     ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs']
   ).then(res => {
+    closeModal();
     if (res.success) {
-      // Update local character points immediately (no re-fetch needed)
       const c = App.user.characters.find(c => c.charId === char.charId);
       if (c) c.points = (c.points||0) + res.pointsEarned;
       _showConfirmation(selected, res.pointsEarned, res.ign);
     } else {
       toast(res.message||'Error', 'error');
-      btn.disabled = false; btn.textContent = '⚔ Submit Attendance';
     }
-  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '⚔ Submit Attendance'; });
+  }).catch(() => { closeModal(); toast('Network error', 'error'); });
 }
 
 // ============================================================
@@ -577,15 +635,26 @@ function _goToAttendance() {
 function renderMySplits() {
   const el   = document.getElementById('view-my-splits');
   const char = getActiveChar();
+  const chars = App.user.characters || [];
   if (!char) { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">💰</span>No character found.</div>`; return; }
 
   // Skeleton — instantly visible
   el.innerHTML = `
     <div class="section-title">💰 My Splits</div>
-    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Showing: <strong style="color:var(--gold)">${char.ign}</strong></p>
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
+      <span style="color:var(--text-secondary);font-size:.85rem">Showing splits for</span>
+      <div id="splits-char-switcher"></div>
+    </div>
     ${Skeleton.cards('', 3)}
     ${Skeleton.table('Gold Payouts', [30, 20, 15, 20], 4)}
     ${Skeleton.table('Attendance Log', [40, 15, 30], 4)}`;
+
+  // Render char switcher
+  _renderCharSwitcher('splits-char-switcher');
+  if (chars.length <= 1) {
+    document.getElementById('splits-char-switcher').innerHTML =
+      `<strong style="color:var(--gold)">${char.ign}</strong>`;
+  }
 
   Promise.all([
     API.read('get_my_payouts',    { charId: char.charId }),
@@ -594,7 +663,10 @@ function renderMySplits() {
     const totalGold = (pays||[]).reduce((s, p) => s + (Number(p.goldShare)||0), 0);
     el.innerHTML = `
       <div class="section-title">💰 My Splits</div>
-      <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Showing: <strong style="color:var(--gold)">${char.ign}</strong></p>
+      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
+        <span style="color:var(--text-secondary);font-size:.85rem">Showing splits for</span>
+        <div id="splits-char-switcher"></div>
+      </div>
       <div class="stats-row">
         <div class="stat-chip"><div class="stat-chip-label">Total Gold Earned</div><div class="stat-chip-value">${totalGold.toLocaleString()}</div></div>
         <div class="stat-chip"><div class="stat-chip-label">Payout Events</div><div class="stat-chip-value">${(pays||[]).length}</div></div>
@@ -619,12 +691,51 @@ function renderMySplits() {
           : `<table class="data-table"><thead><tr><th>Boss</th><th>Points</th><th>Date</th></tr></thead>
               <tbody>${att.map(a=>`<tr><td>${a.boss}</td><td style="color:var(--gold)">+${a.points}</td><td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(a.timestamp)}</td></tr>`).join('')}</tbody></table>`}
       </div>`;
+
+    _renderCharSwitcher('splits-char-switcher');
+    if (chars.length <= 1) {
+      document.getElementById('splits-char-switcher').innerHTML =
+        `<strong style="color:var(--gold)">${char.ign}</strong>`;
+    }
   });
 }
 
 // ============================================================
-//  DROPS  (Admin)
+//  LEADERBOARD  (standalone page)
 // ============================================================
+function renderLeaderboard() {
+  const el = document.getElementById('view-leaderboard');
+  el.innerHTML = `<div class="section-title">🏆 Leaderboard</div><div class="card" style="padding:0;overflow:hidden">${Skeleton.leaderboard()}</div>`;
+
+  API.read('get_leaderboard').then(lb => {
+    el.innerHTML = `
+      <div class="section-title">🏆 Leaderboard</div>
+      <div class="card" style="padding:0;overflow:hidden">
+        ${!lb?.length
+          ? `<div class="empty-state"><span class="empty-state-icon">🏆</span>No points yet.</div>`
+          : lb.map(p => `<div class="leaderboard-row">
+              <span class="lb-rank ${p.rank===1?'top1':p.rank===2?'top2':p.rank===3?'top3':''}">${p.rank===1?'🥇':p.rank===2?'🥈':p.rank===3?'🥉':p.rank}</span>
+              <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${p.charClass||''}</div></div>
+              <div class="lb-points">${p.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
+            </div>`).join('')}
+      </div>`;
+  });
+}
+
+// ============================================================
+//  RULES  (blank for now — fill in later)
+// ============================================================
+function renderRules() {
+  const el = document.getElementById('view-rules');
+  el.innerHTML = `
+    <div class="section-title">📜 Alliance Rules</div>
+    <div class="card">
+      <div class="empty-state">
+        <span class="empty-state-icon">📜</span>
+        Rules coming soon.
+      </div>
+    </div>`;
+}
 function renderDrops() {
   const el = document.getElementById('view-drops');
 
@@ -798,7 +909,6 @@ function openItemModal(boss, itemName) {
     <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem;padding:1rem;background:var(--bg-raised);border-radius:var(--radius);border:1px solid var(--border)">
       <div class="form-group" style="margin:0;flex:1;min-width:120px"><label class="form-label">Gold Per Item</label><input class="form-input" id="item-gold" type="number" min="1" placeholder="e.g. 10000"></div>
       <div class="form-group" style="margin:0;flex:1;min-width:120px"><label class="form-label">Winner (optional)</label><input class="form-input" id="item-winner" placeholder="IGN or —"></div>
-      <button class="btn btn-success" id="sell-btn" onclick="sellSelectedItems()">💰 Mark Selected Sold</button>
     </div>
     <div style="font-size:.8rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary);margin-bottom:.5rem">Drop History — select rows to sell</div>
     <div class="table-scroll" style="max-height:280px;overflow-y:auto">
@@ -815,7 +925,10 @@ function openItemModal(boss, itemName) {
         </tbody>
       </table>
     </div>
-    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+      <button class="btn btn-success" id="sell-btn" onclick="sellSelectedItems()">💰 Mark Selected Sold</button>
+    </div>`);
 }
 
 function toggleHistoryRow(tr) {
@@ -929,7 +1042,7 @@ function togglePaid(cb) {
     { charId: cb.dataset.charId, month: cb.dataset.month, paid: cb.checked },
     ['get_payouts_page']
   ).then(res => {
-    if (res.success) toast(cb.checked ? 'Marked as paid' : 'Unmarked', 'success');
+    if (res.success) toast(cb.checked ? 'Marked as paid' : 'Unmarked as paid (logged)', 'success');
     else { toast('Error', 'error'); cb.checked = !cb.checked; }
   });
 }
@@ -949,6 +1062,7 @@ function renderRoster() {
 
   API.read('get_roster').then(roster => {
     roster = roster || [];
+    window._rosterData = roster;
     const active  = roster.filter(r => r.status === 'active');
     const pending = roster.filter(r => r.status === 'pending');
     el.innerHTML = `
@@ -979,8 +1093,40 @@ function rosterCard(r) {
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
       <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
+      ${chars.length ? `<button class="btn btn-sm btn-danger" onclick="openRemoveCharModal('${r.email}')">− Remove Character</button>` : ''}
     </div>
   </div>`;
+}
+
+function openRemoveCharModal(memberEmail) {
+  const roster = window._rosterData || [];
+  const member = roster.find(r => r.email === memberEmail);
+  const chars  = member?.characters || [];
+  if (!chars.length) { toast('No characters to remove.', 'error'); return; }
+
+  showModal(`
+    <div class="modal-title">− Remove Character</div>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">${memberEmail}</p>
+    <div class="form-group">
+      <label class="form-label">Select Character to Remove</label>
+      <select class="form-select" id="remove-char-select">
+        ${chars.map(c => `<option value="${c.charId}">${c.ign} · Lv${c.level} ${c.charClass}</option>`).join('')}
+      </select>
+    </div>
+    <p style="font-size:.78rem;color:var(--danger);margin-bottom:1rem">This will permanently remove the character. Attendance and payout history will remain in the spreadsheet but the character will no longer appear in the app.</p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="submitRemoveChar('${memberEmail}')">− Remove Character</button>
+    </div>`);
+}
+
+function submitRemoveChar(memberEmail) {
+  const charId = document.getElementById('remove-char-select').value;
+  if (!charId) { toast('Select a character.', 'error'); return; }
+  API.write('remove_character', { charId }, ['get_roster']).then(res => {
+    if (res.success) { toast('Character removed.', 'success'); closeModal(); renderRoster(); }
+    else { toast(res.error||'Error', 'error'); }
+  });
 }
 
 function openRegisterMemberModal(pre='') {
