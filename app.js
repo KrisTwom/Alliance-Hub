@@ -1195,6 +1195,76 @@ function submitAddChar(memberEmail) {
 // ============================================================
 function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
 function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
+
+// ─── SWIPE TO CLOSE (mobile sidebar) ─────────────────────
+// Sidebar slides in from the right, so a rightward swipe closes it.
+// Implemented with raw touch events (no library) and a live drag
+// follow so it feels responsive rather than a fixed-distance toggle.
+(function initSidebarSwipe() {
+  let startX = 0, startY = 0, currentX = 0, dragging = false, isHorizontal = null;
+
+  function onTouchStart(e) {
+    const sidebar = document.getElementById('sidebar');
+    if (!sidebar || sidebar.classList.contains('hidden')) return;
+    const t = e.touches[0];
+    startX = currentX = t.clientX;
+    startY = t.clientY;
+    dragging = true;
+    isHorizontal = null;
+    sidebar.style.transition = 'none';
+  }
+
+  function onTouchMove(e) {
+    if (!dragging) return;
+    const sidebar = document.getElementById('sidebar');
+    if (!sidebar) return;
+    const t = e.touches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+
+    // Decide gesture direction once, early, so vertical scrolls
+    // inside the sidebar (e.g. a long links list) aren't hijacked.
+    if (isHorizontal === null) {
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      isHorizontal = Math.abs(dx) > Math.abs(dy);
+      if (!isHorizontal) { dragging = false; return; }
+    }
+    if (!isHorizontal) return;
+
+    currentX = t.clientX;
+    const delta = Math.max(0, dx); // only allow dragging right (closing direction)
+    if (delta > 0) {
+      e.preventDefault();
+      sidebar.style.transform = `translateX(${delta}px)`;
+      const overlay = document.getElementById('sidebar-overlay');
+      if (overlay) overlay.style.opacity = String(Math.max(0, 1 - delta / 260));
+    }
+  }
+
+  function onTouchEnd() {
+    if (!dragging) return;
+    dragging = false;
+    const sidebar = document.getElementById('sidebar');
+    if (!sidebar) return;
+    sidebar.style.transition = '';
+    sidebar.style.transform = '';
+    const overlay = document.getElementById('sidebar-overlay');
+    if (overlay) overlay.style.opacity = '';
+
+    const draggedDistance = currentX - startX;
+    const sidebarWidth = sidebar.offsetWidth || 260;
+    // Close if swiped past ~30% of the sidebar's width
+    if (isHorizontal && draggedDistance > sidebarWidth * 0.3) {
+      _closeSidebar();
+    }
+    isHorizontal = null;
+  }
+
+  document.addEventListener('touchstart', onTouchStart, { passive: true });
+  document.addEventListener('touchmove',  onTouchMove,  { passive: false });
+  document.addEventListener('touchend',   onTouchEnd,   { passive: true });
+  document.addEventListener('touchcancel', onTouchEnd,  { passive: true });
+})();
 function showModal(html) { document.getElementById('modal-box').innerHTML = html; document.getElementById('modal-overlay').classList.remove('hidden'); }
 function closeModal()    { document.getElementById('modal-overlay').classList.add('hidden'); }
 
