@@ -132,9 +132,6 @@ const API = {
     return data;
   },
 
-  async _fetch(action, params = {}, freshToken = false) {
-    // freshToken=true: include the live Google token (first call after login).
-    // All subsequent calls send just the email (tokens expire in 1 hour).
   async _fetch(action, params = {}) {
     const body = { action, email: App.email, ...params };
     const res  = await fetch(SUPABASE_FUNCTION_URL, {
