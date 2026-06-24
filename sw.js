@@ -39,6 +39,7 @@ self.addEventListener('fetch', event => {
     url.hostname.includes('script.google.com') ||
     url.hostname.includes('accounts.google.com') ||
     url.hostname.includes('googleapis.com')
+    url.hostname.includes('supabase.co')
   ) {
     event.respondWith(fetch(event.request));
     return;
