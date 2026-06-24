@@ -268,7 +268,7 @@ function _buildShell() {
     <header id="main-header">
       <div class="header-left">
         <span class="header-emblem">⚔</span>
-        <span class="header-title">ALLIANCE TRACKER</span>
+        <span class="header-title">KANOS ALLIANCE</span>
       </div>
       <div class="header-center" id="desktop-nav">
         <button class="nav-btn active" data-view="home">🏠 Home</button>
@@ -325,7 +325,6 @@ function _buildShell() {
         <button class="sidebar-close" id="sidebar-close">✕</button>
       </div>
       <div class="sidebar-user">
-        <div id="sidebar-char-switcher"></div>
         <div id="sidebar-username" class="sidebar-uname"></div>
         <div id="sidebar-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}" style="margin-top:4px">${App.user.isAdmin ? 'Admin' : 'Member'}</div>
       </div>
@@ -344,7 +343,6 @@ function _buildShell() {
   const char = getActiveChar();
   document.getElementById('header-username').textContent  = char?.ign || App.user.email;
   document.getElementById('sidebar-username').textContent = char?.ign || App.user.email;
-  _renderCharSwitcher('sidebar-char-switcher');
 }
 
 // ============================================================
@@ -399,7 +397,6 @@ function getActiveChar() {
 
 function switchChar(charId) {
   App.activeCharId = charId;
-  _renderCharSwitcher('sidebar-char-switcher');
   _renderCharSwitcher('home-char-switcher');
   _renderCharSwitcher('attendance-char-switcher');
   _renderCharSwitcher('splits-char-switcher');
@@ -501,21 +498,52 @@ function renderAttendance() {
         <span style="color:var(--text-secondary);font-size:.9rem">Playing as</span>
         <div id="attendance-char-switcher"></div>
       </div>
-      ${App.config.bossCategories.map(cat => `
-        <div class="boss-category-header">${cat.emoji} ${cat.category}</div>
-        <div class="boss-grid">${cat.bosses.map(b => `
-          <label class="boss-check">
-            <input type="checkbox" value="${b.name}">
-            <span class="boss-check-icon">✓</span>
-            ${BOSS_SPRITES[b.name]
-              ? `<img src="${BOSS_SPRITES[b.name]}" class="boss-check-sprite" alt="${b.name}" onerror="this.style.display='none'">`
-              : `<span class="boss-check-emoji">${b.emoji}</span>`}
-            <span class="boss-check-info">
-              <span class="boss-check-name">${b.name}</span>
-              <span class="boss-check-pts">${b.points} pts</span>
-            </span>
-          </label>`).join('')}
-        </div>`).join('')}
+      ${App.config.bossCategories.map(cat => {
+        // For Raid Bosses, split into defined sub-rows
+        if (cat.category === 'Raid Bosses') {
+          const rows = [
+            ['BIGMAMA', 'Ukpana', 'Barslaf'],
+            ['Illust', 'Sephia', 'Aiyo', 'Darlene'],
+            ['Caligo', 'Platanista'],
+            ['Siege'],
+          ];
+          const bossMap = {};
+          cat.bosses.forEach(b => { bossMap[b.name] = b; });
+          return `
+            <div class="boss-category-header">${cat.emoji} ${cat.category}</div>
+            ${rows.map(row => `
+              <div class="boss-grid" style="margin-bottom:.5rem">${row.map(name => {
+                const b = bossMap[name]; if (!b) return '';
+                return `<label class="boss-check">
+                  <input type="checkbox" value="${b.name}">
+                  <span class="boss-check-icon">✓</span>
+                  ${BOSS_SPRITES[b.name]
+                    ? `<img src="${BOSS_SPRITES[b.name]}" class="boss-check-sprite" alt="${b.name}" onerror="this.style.display='none'">`
+                    : `<span class="boss-check-emoji">${b.emoji}</span>`}
+                  <span class="boss-check-info">
+                    <span class="boss-check-name">${b.name}</span>
+                    <span class="boss-check-pts">${b.points} pts</span>
+                  </span>
+                </label>`;
+              }).join('')}</div>`).join('')}`;
+        }
+        // All other categories render normally
+        return `
+          <div class="boss-category-header">${cat.emoji} ${cat.category}</div>
+          <div class="boss-grid">${cat.bosses.map(b => `
+            <label class="boss-check">
+              <input type="checkbox" value="${b.name}">
+              <span class="boss-check-icon">✓</span>
+              ${BOSS_SPRITES[b.name]
+                ? `<img src="${BOSS_SPRITES[b.name]}" class="boss-check-sprite" alt="${b.name}" onerror="this.style.display='none'">`
+                : `<span class="boss-check-emoji">${b.emoji}</span>`}
+              <span class="boss-check-info">
+                <span class="boss-check-name">${b.name}</span>
+                <span class="boss-check-pts">${b.points} pts</span>
+              </span>
+            </label>`).join('')}
+          </div>`;
+      }).join('')}
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-top:.5rem">
         <div>
           <span id="sel-count" style="color:var(--text-secondary);font-size:.88rem">0 selected</span>
@@ -720,7 +748,7 @@ function _loadMySplitsMonth(allPays, paidByMonth, month) {
     <div class="stats-row">
       <div class="stat-chip">
         <div class="stat-chip-label">Total Gold</div>
-        <div class="stat-chip-value">${totalGold.toLocaleString()}</div>
+        <div class="stat-chip-value">${fmtGold(totalGold)}</div>
       </div>
       <div class="stat-chip">
         <div class="stat-chip-label">Items Sold</div>
@@ -736,10 +764,10 @@ function _loadMySplitsMonth(allPays, paidByMonth, month) {
       ${!pays.length
         ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No splits for ${fmtMonth(month)}.</div>`
         : `<table class="data-table">
-            <thead><tr><th>Item Name</th><th>Gold</th><th>Date Sold</th><th style="font-size:.75rem;color:var(--text-muted)">Sale ID</th></tr></thead>
+            <thead><tr><th>Item Name</th><th>Split</th><th>Date Sold</th><th style="font-size:.75rem;color:var(--text-muted)">Sale ID</th></tr></thead>
             <tbody>${pays.map(p=>`<tr>
               <td>${p.itemName||'—'}</td>
-              <td><span class="gold-amount">${Number(p.goldShare).toLocaleString()}</span></td>
+              <td><span class="gold-amount">${fmtGold(p.goldShare)}</span></td>
               <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(p.createdAt)}</td>
               <td style="font-size:.72rem;color:var(--text-muted)">${p.saleId||p.payoutId}</td>
             </tr>`).join('')}</tbody>
@@ -989,26 +1017,35 @@ function renderInventory() {
     });
 
     el.innerHTML = `<div class="section-title">🎒 Inventory</div>` +
-      sortedBosses.map(boss => `
+      sortedBosses.map((boss, idx) => {
+        const hasAvailable = Object.values(merged[boss]).some(d => !d.neverDropped && d.available > 0);
+        const availCount   = Object.values(merged[boss]).reduce((s, d) => s + (d.available || 0), 0);
+        return `
         <div class="inv-section">
-          <div class="inv-section-title">${emojiMap[boss]||'⚔'} ${boss}</div>
-          <div class="inv-grid">
-            ${Object.entries(merged[boss]).map(([itemName, data]) => {
-              const isNever   = data.neverDropped;
-              const isSoldOut = !isNever && data.available === 0;
-              const tileClass = isNever ? 'inv-tile never-dropped' : isSoldOut ? 'inv-tile sold-out' : 'inv-tile';
-              const qtyLabel  = isNever ? 'Not Yet Dropped' : isSoldOut ? 'All Sold' : 'Available';
-              const clickHandler = isNever ? '' : `onclick="openItemModal('${escHtml(boss)}','${escHtml(itemName)}')"`;
-              return `
-                <div class="${tileClass}" ${clickHandler} style="${isNever?'cursor:default;':''}">
-                  <div class="inv-tile-img">🎁</div>
-                  <div class="inv-tile-name">${itemName}</div>
-                  <div class="inv-tile-qty">${isNever ? '—' : data.available}</div>
-                  <div class="inv-tile-qty-label">${qtyLabel}</div>
-                </div>`;
-            }).join('')}
+          <div class="inv-section-title collapsible-header" onclick="toggleCollapsible(this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between">
+            <span>${emojiMap[boss]||'⚔'} ${boss}${availCount > 0 ? ` <span style="font-size:.75rem;color:var(--gold);margin-left:.5rem">${availCount} available</span>` : ''}</span>
+            <span class="collapsible-arrow" style="font-size:.75rem;color:var(--text-secondary)">▼</span>
           </div>
-        </div>`).join('');
+          <div class="collapsible-body${idx === 0 ? '' : ' collapsed'}" style="max-height:${idx === 0 ? 'none' : '0'}">
+            <div class="inv-grid" style="padding-top:.5rem">
+              ${Object.entries(merged[boss]).map(([itemName, data]) => {
+                const isNever   = data.neverDropped;
+                const isSoldOut = !isNever && data.available === 0;
+                const tileClass = isNever ? 'inv-tile never-dropped' : isSoldOut ? 'inv-tile sold-out' : 'inv-tile';
+                const qtyLabel  = isNever ? 'Not Yet Dropped' : isSoldOut ? 'All Sold' : 'Available';
+                const clickHandler = isNever ? '' : `onclick="openItemModal('${escHtml(boss)}','${escHtml(itemName)}')"`;
+                return `
+                  <div class="${tileClass}" ${clickHandler} style="${isNever?'cursor:default;':''}">
+                    <div class="inv-tile-img">🎁</div>
+                    <div class="inv-tile-name">${itemName}</div>
+                    <div class="inv-tile-qty">${isNever ? '—' : data.available}</div>
+                    <div class="inv-tile-qty-label">${qtyLabel}</div>
+                  </div>`;
+              }).join('')}
+            </div>
+          </div>
+        </div>`;
+      }).join('');
 
     window._inventoryData = merged;
   });
@@ -1404,6 +1441,7 @@ function toast(msg, type='') {
 function fmtDate(raw)  { if(!raw) return '—'; const d = new Date(raw); return isNaN(d) ? String(raw) : d.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric'}); }
 function fmtTime(raw)  { if(!raw) return '';  const d = new Date(raw); return isNaN(d) ? '' : d.toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit'}); }
 function fmtMonth(m)   { if(!m) return '—'; const [y,mo] = m.split('-'); return new Date(y, mo-1, 1).toLocaleDateString(undefined, {month:'long',year:'numeric'}); }
+function fmtGold(n)    { n = Number(n)||0; if(n >= 1_000_000) return (n/1_000_000).toFixed(n%1_000_000===0?0:1).replace(/\.0$/,'')+'m'; if(n >= 1_000) return (n/1_000).toFixed(n%1_000===0?0:1).replace(/\.0$/,'')+'k'; return n.toLocaleString(); }
 function escHtml(s)    { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // ============================================================
