@@ -1,7 +1,7 @@
 // ============================================================
 //  CONFIG
 // ============================================================
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbwCPJnrh6kNvhsLw8YAE_4O6nwSQNi4fNX8c_UbTksmtPelirWQeVwi3t33UKCQsCVuTA/exec';
+const SUPABASE_FUNCTION_URL = 'https://<YOUR_PROJECT_REF>.supabase.co/functions/v1/alliance';
 
 // ============================================================
 //  STATE
@@ -115,14 +115,15 @@ const Cache = {
 const API = {
   // Cacheable read — returns cached data instantly if fresh,
   // otherwise fetches and caches the result.
-  async read(action, params = {}) {
-    const cached = Cache.get(action, params);
-    if (cached !== null) return cached;
-
-    const data = await this._fetch(action, params);
-    Cache.set(action, params, data);
-    return data;
-  },
+  async _fetch(action, params = {}) {
+     const body = { action, email: App.email, ...params };
+     const res  = await fetch(SUPABASE_FUNCTION_URL, {
+       method:  'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body:    JSON.stringify(body),
+     });
+     return res.json();
+   },
 
   // Write — never cached, always live. Busts relevant caches after.
   async write(action, params = {}, bustKeys = []) {
