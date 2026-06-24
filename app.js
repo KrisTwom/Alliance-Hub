@@ -100,6 +100,7 @@ const Cache = {
     }
     if (payload.myPayouts) {
       Object.entries(payload.myPayouts).forEach(([charId, data]) => {
+        // data may be the old array shape or new {payouts, paidByMonth} shape
         put('get_my_payouts', { charId }, data);
       });
     }
@@ -131,15 +132,18 @@ const API = {
     return data;
   },
 
+  async _fetch(action, params = {}, freshToken = false) {
+    // freshToken=true: include the live Google token (first call after login).
+    // All subsequent calls send just the email (tokens expire in 1 hour).
   async _fetch(action, params = {}) {
-     const body = { action, email: App.email, ...params };
-     const res  = await fetch(SUPABASE_FUNCTION_URL, {
-       method:  'POST',
-       headers: { 'Content-Type': 'application/json' },
-       body:    JSON.stringify(body),
-     });
-     return res.json();
-   },
+    const body = { action, email: App.email, ...params };
+    const res  = await fetch(SUPABASE_FUNCTION_URL, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    return res.json();
+  },
 };
 
 // ============================================================
@@ -231,9 +235,9 @@ window.initAllianceTracker = async function(email) {
   try {
     // Single batch call — fetches user, config, leaderboard,
     // attendance, payouts, and admin data all at once.
-    const allData = await API._fetch('get_all_data', {}, true /*freshToken*/);
-    if (allData?.error) throw new Error('GAS error: ' + allData.error);
-    if (!allData?.config?.bossCategories) throw new Error('Config missing — check GAS deployment URL');
+    const allData = await API._fetch('get_all_data', {});
+    if (allData?.error) throw new Error(allData.error);
+    if (!allData?.config?.bossCategories) throw new Error('Config missing — check your Supabase Edge Function deployment');
 
     // Hydrate app state
     App.user   = allData.user;
@@ -254,7 +258,7 @@ window.initAllianceTracker = async function(email) {
     showView('home');
 
   } catch(err) {
-    showError(err.message || 'Could not reach the server. Check your GAS deployment.');
+    showError(err.message || 'Could not reach the server. Check your Supabase Edge Function.');
   }
 };
 
@@ -273,6 +277,7 @@ function _buildShell() {
         <button class="nav-btn active" data-view="home">🏠 Home</button>
         <button class="nav-btn" data-view="attendance">🗡 Attendance</button>
         <button class="nav-btn" data-view="my-splits">💰 My Splits</button>
+        <button class="nav-btn" data-view="my-attendance">📋 Attendance History</button>
         <button class="nav-btn" data-view="leaderboard">🏆 Leaderboard</button>
         <button class="nav-btn" data-view="rules">📜 Rules</button>
         ${App.user.isAdmin ? `
@@ -291,6 +296,7 @@ function _buildShell() {
       <div id="view-home"        class="view active"></div>
       <div id="view-attendance"  class="view"></div>
       <div id="view-my-splits"   class="view"></div>
+      <div id="view-my-attendance" class="view"></div>
       <div id="view-leaderboard" class="view"></div>
       <div id="view-rules"       class="view"></div>
       <div id="view-drops"       class="view"></div>
@@ -327,6 +333,7 @@ function _buildShell() {
         <div id="sidebar-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}" style="margin-top:4px">${App.user.isAdmin ? 'Admin' : 'Member'}</div>
       </div>
       <div class="sidebar-links">
+        <button class="sidebar-link" data-view="my-attendance">📋 Attendance History</button>
         <button class="sidebar-link" data-view="leaderboard">🏆 Leaderboard</button>
         <button class="sidebar-link" data-view="rules">📜 Rules</button>
         ${App.user.isAdmin ? `
@@ -413,15 +420,16 @@ function showView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name)?.classList.add('active');
   const map = {
-    home:          renderHome,
-    attendance:    renderAttendance,
-    'my-splits':   renderMySplits,
-    leaderboard:   renderLeaderboard,
-    rules:         renderRules,
-    drops:         renderDrops,
-    inventory:     renderInventory,
-    payouts:       renderPayouts,
-    roster:        renderRoster,
+    home:              renderHome,
+    attendance:        renderAttendance,
+    'my-splits':       renderMySplits,
+    'my-attendance':   renderMyAttendanceHistory,
+    leaderboard:       renderLeaderboard,
+    rules:             renderRules,
+    drops:             renderDrops,
+    inventory:         renderInventory,
+    payouts:           renderPayouts,
+    roster:            renderRoster,
   };
   map[name]?.();
 }
@@ -466,10 +474,6 @@ function renderHome() {
         <div class="stat-chip-label">Class</div>
         <div class="stat-chip-value" style="font-size:1rem" id="home-class">${char?.charClass||'—'}</div>
       </div>
-    </div>
-    <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.25rem">
-      <button class="btn btn-secondary btn-sm" onclick="showView('leaderboard')">🏆 View Leaderboard</button>
-      <button class="btn btn-secondary btn-sm" onclick="showView('rules')">📜 Alliance Rules</button>
     </div>`;
 
   // Render char switcher inline in the character chip
@@ -625,71 +629,178 @@ function _goToAttendance() {
 }
 
 // ============================================================
-//  MY SPLITS
+//  MY SPLITS  (monthly, with dropdown)
 // ============================================================
+let _mySplitsMonth = null;
+
 function renderMySplits() {
-  const el   = document.getElementById('view-my-splits');
-  const char = getActiveChar();
+  const el    = document.getElementById('view-my-splits');
+  const char  = getActiveChar();
   const chars = App.user.characters || [];
   if (!char) { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">💰</span>No character found.</div>`; return; }
 
-  // Skeleton — instantly visible
   el.innerHTML = `
     <div class="section-title">💰 My Splits</div>
     <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
       <span style="color:var(--text-secondary);font-size:.85rem">Showing splits for</span>
       <div id="splits-char-switcher"></div>
     </div>
-    ${Skeleton.cards('', 3)}
-    ${Skeleton.table('Gold Payouts', [30, 20, 15, 20], 4)}
-    ${Skeleton.table('Attendance Log', [40, 15, 30], 4)}`;
+    ${Skeleton.spinner()}`;
 
-  // Render char switcher
   _renderCharSwitcher('splits-char-switcher');
   if (chars.length <= 1) {
     document.getElementById('splits-char-switcher').innerHTML =
       `<strong style="color:var(--gold)">${char.ign}</strong>`;
   }
 
-  Promise.all([
-    API.read('get_my_payouts',    { charId: char.charId }),
-    API.read('get_my_attendance', { charId: char.charId }),
-  ]).then(([pays, att]) => {
-    const totalGold = (pays||[]).reduce((s, p) => s + (Number(p.goldShare)||0), 0);
+  API.read('get_my_payouts', { charId: char.charId }).then(res => {
+    const pays = res?.payouts || [];
+    const paidByMonth = res?.paidByMonth || {};
+
+    // Build list of months from payout data
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    const monthSet = new Set(pays.map(p => p.month).filter(Boolean));
+    monthSet.add(currentMonth);
+    const months = [...monthSet].sort().reverse();
+
+    if (!_mySplitsMonth || !months.includes(_mySplitsMonth)) _mySplitsMonth = months[0];
+
     el.innerHTML = `
-      <div class="section-title">💰 My Splits</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1rem">
+        <div class="section-title" style="margin-bottom:0">💰 My Splits</div>
+        <select class="month-select" id="my-splits-month-select" onchange="switchMySplitsMonth(this.value)">
+          ${months.map(m => `<option value="${m}"${m===_mySplitsMonth?' selected':''}>${fmtMonth(m)}${m===currentMonth?' (Ongoing)':''}</option>`).join('')}
+        </select>
+      </div>
       <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
         <span style="color:var(--text-secondary);font-size:.85rem">Showing splits for</span>
         <div id="splits-char-switcher"></div>
       </div>
-      <div class="stats-row">
-        <div class="stat-chip"><div class="stat-chip-label">Total Gold Earned</div><div class="stat-chip-value">${totalGold.toLocaleString()}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Payout Events</div><div class="stat-chip-value">${(pays||[]).length}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Bosses Attended</div><div class="stat-chip-value">${(att||[]).length}</div></div>
-      </div>
-      <div class="section-title" style="font-size:.95rem">Gold Payouts</div>
-      <div class="table-scroll">
-        ${!(pays||[]).length
-          ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No payouts yet.</div>`
-          : `<table class="data-table"><thead><tr><th>Sale ID</th><th>Gold</th><th>Month</th><th>Date</th></tr></thead>
-              <tbody>${pays.map(p=>`<tr>
-                <td style="font-size:.78rem;color:var(--text-secondary)">${p.saleId||p.payoutId}</td>
-                <td><span class="gold-amount">${Number(p.goldShare).toLocaleString()}</span></td>
-                <td>${p.month||'—'}</td>
-                <td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(p.createdAt)}</td>
-              </tr>`).join('')}</tbody></table>`}
-      </div>
-      <div class="section-title" style="font-size:.95rem;margin-top:1.25rem">Attendance Log</div>
-      <div class="table-scroll">
-        ${!(att||[]).length
-          ? `<div class="empty-state"><span class="empty-state-icon">🗡</span>No attendance yet.</div>`
-          : `<table class="data-table"><thead><tr><th>Boss</th><th>Points</th><th>Date</th></tr></thead>
-              <tbody>${att.map(a=>`<tr><td>${a.boss}</td><td style="color:var(--gold)">+${a.points}</td><td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(a.timestamp)}</td></tr>`).join('')}</tbody></table>`}
-      </div>`;
+      <div id="my-splits-content">${Skeleton.cards('', 3)}</div>`;
 
     _renderCharSwitcher('splits-char-switcher');
     if (chars.length <= 1) {
       document.getElementById('splits-char-switcher').innerHTML =
+        `<strong style="color:var(--gold)">${char.ign}</strong>`;
+    }
+
+    _loadMySplitsMonth(pays, paidByMonth, _mySplitsMonth);
+  });
+}
+
+function switchMySplitsMonth(month) {
+  _mySplitsMonth = month;
+  const char = getActiveChar();
+  if (!char) return;
+  API.read('get_my_payouts', { charId: char.charId }).then(res => {
+    _loadMySplitsMonth(res?.payouts || [], res?.paidByMonth || {}, month);
+  });
+}
+
+function _loadMySplitsMonth(allPays, paidByMonth, month) {
+  const el = document.getElementById('my-splits-content');
+  if (!el) return;
+
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  const isOngoing = month === currentMonth;
+
+  const pays = allPays.filter(p => p.month === month);
+  const totalGold = pays.reduce((s, p) => s + (Number(p.goldShare)||0), 0);
+  const itemsSold = pays.length;
+
+  let statusLabel, statusColor;
+  if (isOngoing) {
+    statusLabel = 'Ongoing'; statusColor = '#e0b400';
+  } else if (paidByMonth[month] === 'Paid') {
+    statusLabel = 'Claimed'; statusColor = 'var(--success, #4caf50)';
+  } else {
+    statusLabel = 'Unclaimed'; statusColor = 'var(--danger)';
+  }
+
+  el.innerHTML = `
+    <div class="stats-row">
+      <div class="stat-chip">
+        <div class="stat-chip-label">Total Gold</div>
+        <div class="stat-chip-value">${totalGold.toLocaleString()}</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-chip-label">Items Sold</div>
+        <div class="stat-chip-value">${itemsSold}</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-chip-label">Status</div>
+        <div class="stat-chip-value" style="font-size:1rem;color:${statusColor}">${statusLabel}</div>
+      </div>
+    </div>
+    <div class="section-title" style="font-size:.95rem">Gold Payout Table</div>
+    <div class="table-scroll">
+      ${!pays.length
+        ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No splits for ${fmtMonth(month)}.</div>`
+        : `<table class="data-table">
+            <thead><tr><th>Item Name</th><th>Gold</th><th>Date Sold</th><th style="font-size:.75rem;color:var(--text-muted)">Sale ID</th></tr></thead>
+            <tbody>${pays.map(p=>`<tr>
+              <td>${p.itemName||'—'}</td>
+              <td><span class="gold-amount">${Number(p.goldShare).toLocaleString()}</span></td>
+              <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(p.createdAt)}</td>
+              <td style="font-size:.72rem;color:var(--text-muted)">${p.saleId||p.payoutId}</td>
+            </tr>`).join('')}</tbody>
+          </table>`}
+    </div>`;
+}
+
+// ============================================================
+//  MY ATTENDANCE HISTORY  (separate page)
+// ============================================================
+function renderMyAttendanceHistory() {
+  const el   = document.getElementById('view-my-attendance');
+  const char = getActiveChar();
+  const chars = App.user.characters || [];
+  if (!char) { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">📋</span>No character found.</div>`; return; }
+
+  el.innerHTML = `
+    <div class="section-title">📋 My Attendance History</div>
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
+      <span style="color:var(--text-secondary);font-size:.85rem">Showing history for</span>
+      <div id="att-history-char-switcher"></div>
+    </div>
+    ${Skeleton.table('', [40, 15, 30], 6)}`;
+
+  _renderCharSwitcher('att-history-char-switcher');
+  if (chars.length <= 1) {
+    document.getElementById('att-history-char-switcher').innerHTML =
+      `<strong style="color:var(--gold)">${char.ign}</strong>`;
+  }
+
+  API.read('get_my_attendance', { charId: char.charId }).then(att => {
+    att = att || [];
+    el.innerHTML = `
+      <div class="section-title">📋 My Attendance History</div>
+      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
+        <span style="color:var(--text-secondary);font-size:.85rem">Showing history for</span>
+        <div id="att-history-char-switcher"></div>
+      </div>
+      <div class="stats-row" style="margin-bottom:1rem">
+        <div class="stat-chip"><div class="stat-chip-label">Total Bosses</div><div class="stat-chip-value">${att.length}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Total Points</div><div class="stat-chip-value">${att.reduce((s,a)=>s+(Number(a.points)||0),0).toLocaleString()}</div></div>
+      </div>
+      <div class="table-scroll">
+        ${!att.length
+          ? `<div class="empty-state"><span class="empty-state-icon">🗡</span>No attendance recorded yet.</div>`
+          : `<table class="data-table">
+              <thead><tr><th>Boss</th><th>Points</th><th>Date</th></tr></thead>
+              <tbody>${att.map(a=>`<tr>
+                <td>${a.boss}</td>
+                <td style="color:var(--gold)">+${a.points}</td>
+                <td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(a.timestamp)}</td>
+              </tr>`).join('')}</tbody>
+            </table>`}
+      </div>`;
+
+    _renderCharSwitcher('att-history-char-switcher');
+    if (chars.length <= 1) {
+      document.getElementById('att-history-char-switcher').innerHTML =
         `<strong style="color:var(--gold)">${char.ign}</strong>`;
     }
   });
@@ -765,6 +876,19 @@ function renderDrops() {
   });
 }
 
+function toggleDropQty(cb) {
+  const qtyInput = cb.closest('label').querySelector('.drop-qty');
+  if (cb.checked) {
+    qtyInput.disabled = false;
+    qtyInput.style.opacity = '1';
+    if (!qtyInput.value || qtyInput.value === '0') qtyInput.value = '1';
+  } else {
+    qtyInput.disabled = true;
+    qtyInput.style.opacity = '.35';
+    qtyInput.value = '0';
+  }
+}
+
 function openRunModal(idx) {
   const run = window._runs[idx];
   const drops = App.config.bossDrops[run.boss] || [];
@@ -793,9 +917,9 @@ function openRunModal(idx) {
         ${drops.map(item => {
           const saved = savedDrops.find(d => d.itemName === item);
           return `<label style="display:flex;align-items:center;gap:.75rem;font-size:.9rem;cursor:pointer">
-            <input type="checkbox" class="drop-check" value="${item}" ${saved?'checked':''} style="accent-color:var(--gold)">
+            <input type="checkbox" class="drop-check" value="${item}" ${saved?'checked':''} style="accent-color:var(--gold)" onchange="toggleDropQty(this)">
             <span style="flex:1">${item}</span>
-            <input type="number" min="1" max="99" value="${saved?.qty||1}" class="form-input drop-qty" data-item="${item}" style="width:60px;padding:.3rem .5rem;font-size:.85rem">
+            <input type="number" min="0" max="99" value="${saved?.qty||0}" class="form-input drop-qty" data-item="${item}" style="width:60px;padding:.3rem .5rem;font-size:.85rem" ${saved?'':'disabled style="width:60px;padding:.3rem .5rem;font-size:.85rem;opacity:.35"'}>
           </label>`;
         }).join('')}
       </div>
@@ -902,7 +1026,11 @@ function openItemModal(boss, itemName) {
       <div><div style="font-family:var(--font-display);font-size:2rem;color:var(--text-secondary);line-height:1">${data.totalQty}</div><div style="font-size:.78rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.1em">Total Dropped</div></div>
     </div>
     <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem;padding:1rem;background:var(--bg-raised);border-radius:var(--radius);border:1px solid var(--border)">
-      <div class="form-group" style="margin:0;flex:1;min-width:120px"><label class="form-label">Gold Per Item</label><input class="form-input" id="item-gold" type="number" min="1" placeholder="e.g. 10000"></div>
+      <div class="form-group" style="margin:0;flex:1;min-width:120px">
+        <label class="form-label">Gold Per Item</label>
+        <input class="form-input" id="item-gold-display" type="text" placeholder="e.g. 10,000" oninput="formatGoldInput(this)" inputmode="numeric">
+        <input type="hidden" id="item-gold">
+      </div>
       <div class="form-group" style="margin:0;flex:1;min-width:120px"><label class="form-label">Winner (optional)</label><input class="form-input" id="item-winner" placeholder="IGN or —"></div>
     </div>
     <div style="font-size:.8rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary);margin-bottom:.5rem">Drop History — select rows to sell</div>
@@ -924,6 +1052,13 @@ function openItemModal(boss, itemName) {
       <button class="btn btn-secondary" onclick="closeModal()">Close</button>
       <button class="btn btn-success" id="sell-btn" onclick="sellSelectedItems()">💰 Mark Selected Sold</button>
     </div>`);
+}
+
+function formatGoldInput(input) {
+  const raw = input.value.replace(/[^0-9]/g, '');
+  const num = parseInt(raw, 10);
+  input.value = isNaN(num) ? '' : num.toLocaleString();
+  document.getElementById('item-gold').value = isNaN(num) ? '' : num;
 }
 
 function toggleHistoryRow(tr) {
