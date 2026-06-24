@@ -115,6 +115,22 @@ const Cache = {
 const API = {
   // Cacheable read — returns cached data instantly if fresh,
   // otherwise fetches and caches the result.
+  async read(action, params = {}) {
+    const cached = Cache.get(action, params);
+    if (cached !== null) return cached;
+
+    const data = await this._fetch(action, params);
+    Cache.set(action, params, data);
+    return data;
+  },
+
+  // Write — never cached, always live. Busts relevant caches after.
+  async write(action, params = {}, bustKeys = []) {
+    const data = await this._fetch(action, params);
+    if (bustKeys.length) Cache.bust(...bustKeys);
+    return data;
+  },
+
   async _fetch(action, params = {}) {
      const body = { action, email: App.email, ...params };
      const res  = await fetch(SUPABASE_FUNCTION_URL, {
@@ -124,28 +140,6 @@ const API = {
      });
      return res.json();
    },
-
-  // Write — never cached, always live. Busts relevant caches after.
-  async write(action, params = {}, bustKeys = []) {
-    const data = await this._fetch(action, params);
-    if (bustKeys.length) Cache.bust(...bustKeys);
-    return data;
-  },
-
-  async _fetch(action, params = {}, freshToken = false) {
-    // freshToken=true: include the live Google token (first call after login).
-    // All subsequent calls send just the email (tokens expire in 1 hour).
-    const authPayload = freshToken && window.getFreshAuthPayload
-      ? window.getFreshAuthPayload()
-      : (window.getAuthPayload ? window.getAuthPayload() : { email: App.email });
-    const body = { action, email: App.email, ...authPayload, ...params };
-    const res  = await fetch(GAS_URL, {
-      method:  'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body:    JSON.stringify(body),
-    });
-    return res.json();
-  },
 };
 
 // ============================================================
