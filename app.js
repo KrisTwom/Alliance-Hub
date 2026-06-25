@@ -453,30 +453,268 @@ function renderHome() {
   const char = getActiveChar();
   const chars = App.user.characters || [];
 
-  el.innerHTML = `
-    <div class="section-title">🏠 Home</div>
-    <div class="stats-row">
-      <div class="stat-chip" style="flex:1.5">
-        <div class="stat-chip-label">Character</div>
-        <div id="home-char-switcher"></div>
-      </div>
-      <div class="stat-chip">
-        <div class="stat-chip-label">My Points</div>
-        <div class="stat-chip-value" id="home-points">${(char?.points||0).toLocaleString()}</div>
-      </div>
-      <div class="stat-chip">
-        <div class="stat-chip-label">Class</div>
-        <div class="stat-chip-value" style="font-size:1rem" id="home-class">${char?.charClass||'—'}</div>
-      </div>
-    </div>`;
-
-  // Render char switcher inline in the character chip
+  // Fetch leaderboard + attendance for live stats
+  el.innerHTML = _homeShell(char, null, null);
   _renderCharSwitcher('home-char-switcher');
-  // If only one char, show the name as text
   if (chars.length <= 1 && char) {
-    document.getElementById('home-char-switcher').innerHTML =
-      `<div class="stat-chip-value" style="font-size:1.1rem">${char.ign}</div>`;
+    const sw = document.getElementById('home-char-switcher');
+    if (sw) sw.innerHTML = '';
   }
+
+  Promise.all([
+    API.read('get_leaderboard'),
+    API.read('get_my_attendance', { charId: char?.charId }),
+    API.read('get_my_payouts',    { charId: char?.charId }),
+  ]).then(([lb, att, paysRes]) => {
+    const rank       = lb?.findIndex(p => p.charId === char?.charId);
+    const rankNum    = rank != null && rank >= 0 ? rank + 1 : null;
+    const topPct     = rankNum && lb?.length ? ((rankNum / lb.length) * 100).toFixed(1) : null;
+    const bossCount  = (att || []).length;
+    const pays       = paysRes?.payouts || [];
+    const totalGold  = pays.reduce((s, p) => s + (Number(p.goldShare)||0), 0);
+    const splitEvents = pays.length;
+    el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, splitEvents }, att || []);
+    _renderCharSwitcher('home-char-switcher');
+    if (chars.length <= 1 && char) {
+      const sw = document.getElementById('home-char-switcher');
+      if (sw) sw.innerHTML = '';
+    }
+  });
+}
+
+function _homeShell(char, stats, att) {
+  const rankNum    = stats?.rankNum;
+  const topPct     = stats?.topPct;
+  const bossCount  = stats?.bossCount ?? '—';
+  const totalGold  = stats ? fmtGold(stats.totalGold) : '—';
+  const splitEvents = stats?.splitEvents ?? '—';
+
+  // Recent activity from attendance (last 4)
+  const recent = (att || []).slice(0, 4);
+
+  return `
+  <style>
+    #view-home {
+      background: #000;
+      min-height: 100%;
+      padding: 0;
+      font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+    }
+    .h-toprow {
+      display: flex; justify-content: flex-end;
+      padding: 14px 16px 0;
+    }
+    .h-bell {
+      width: 40px; height: 40px; border-radius: 10px;
+      background: #0a0f1e; border: 1px solid #1a3060;
+      display: flex; align-items: center; justify-content: center;
+      position: relative; cursor: pointer;
+    }
+    .h-bell-icon { font-size: 20px; color: #8aaad4; }
+    .h-bell-dot {
+      position: absolute; top: 7px; right: 7px;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #3a7bd5; border: 1.5px solid #000;
+    }
+    .h-hero {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      padding: 12px 16px 0;
+    }
+    .h-welcome {
+      font-size: 11px; font-weight: 600; color: #3a7bd5;
+      letter-spacing: .18em; text-transform: uppercase; margin-bottom: 4px;
+    }
+    .h-name {
+      font-size: 30px; font-weight: 700; color: #e8f0ff;
+      line-height: 1.1; margin-bottom: 10px;
+      font-family: 'Rajdhani', sans-serif;
+    }
+    .h-meta {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 13px; color: #4a72a0; flex-wrap: wrap;
+    }
+    .h-meta-sep { color: #1a3a6a; }
+    .h-meta-item { display: flex; align-items: center; gap: 4px; color: #5a82b8; }
+    .h-meta-item i { font-size: 14px; color: #3a62a0; }
+    .h-logo {
+      width: 120px; height: 120px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      margin-top: -10px; position: relative;
+    }
+    .h-logo img { width: 100%; height: 100%; object-fit: contain; }
+    .h-logo-glow {
+      position: absolute; inset: 0; border-radius: 50%;
+      background: radial-gradient(circle at 50% 55%, rgba(40,90,210,0.35) 0%, transparent 65%);
+      pointer-events: none;
+    }
+    .h-stat-grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 10px; padding: 18px 14px 6px;
+    }
+    .h-stat-card {
+      background: #080f20;
+      border: 2.5px solid #1e4a9a;
+      border-radius: 16px;
+      padding: 14px 12px 12px;
+      display: flex; align-items: center; gap: 10px;
+      position: relative; overflow: hidden; cursor: pointer;
+    }
+    .h-stat-card::after {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, #3a7bd5 40%, #6aa3ff 50%, #3a7bd5 60%, transparent);
+    }
+    .h-stat-icon {
+      width: 48px; height: 48px; border-radius: 50%;
+      background: #040e22; border: 1.5px solid #1a3a7a;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .h-stat-icon i { font-size: 22px; color: #3a7bd5; }
+    .h-stat-body { flex: 1; min-width: 0; }
+    .h-stat-label { font-size: 9px; color: #3a5a90; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
+    .h-stat-value { font-size: 22px; font-weight: 700; color: #5b9cf6; line-height: 1; font-family: 'Rajdhani', sans-serif; }
+    .h-stat-sub { font-size: 11px; color: #2a4a78; margin-top: 2px; }
+    .h-stat-arrow { font-size: 14px; color: #1a3a6a; align-self: center; }
+
+    .h-act-hdr {
+      padding: 14px 16px 8px;
+      font-size: 11px; font-weight: 700; color: #3a7bd5;
+      letter-spacing: .2em; text-transform: uppercase;
+    }
+    .h-act-list {
+      margin: 0 12px 16px;
+      background: #04080f;
+      border: 1px solid #0d1f3a;
+      border-radius: 16px; overflow: hidden;
+    }
+    .h-act-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid #080f20;
+    }
+    .h-act-row:last-child { border-bottom: none; }
+    .h-act-thumb {
+      width: 50px; height: 50px; border-radius: 10px;
+      background: #070e20; border: 1px solid #1a2a50;
+      flex-shrink: 0; overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; color: #2a4a80;
+    }
+    .h-act-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 9px; }
+    .h-act-mid { flex: 1; min-width: 0; }
+    .h-act-boss { font-size: 15px; font-weight: 600; color: #c8d8f0; margin-bottom: 1px; }
+    .h-act-right { text-align: right; flex-shrink: 0; }
+    .h-act-time { font-size: 11px; color: #2a4070; margin-bottom: 4px; }
+    .h-act-pts { display: flex; align-items: center; gap: 5px; justify-content: flex-end; }
+    .h-act-pts-num { font-size: 14px; font-weight: 700; color: #5b9cf6; font-family: 'Rajdhani', sans-serif; }
+    .h-pts-coin {
+      width: 20px; height: 20px; border-radius: 50%;
+      background: #050e24; border: 1.5px solid #1e4a9a;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .h-pts-coin i { font-size: 11px; color: #3a7bd5; }
+  </style>
+
+  <div class="h-toprow">
+    <div class="h-bell">
+      <i class="ti ti-bell h-bell-icon" aria-hidden="true"></i>
+      <div class="h-bell-dot"></div>
+    </div>
+  </div>
+
+  <div class="h-hero">
+    <div style="flex:1;padding-right:8px">
+      <div class="h-welcome">Welcome Back</div>
+      <div class="h-name">Hey, ${char?.ign || 'Adventurer'}</div>
+      <div class="h-meta">
+        <div class="h-meta-item"><i class="ti ti-shield" aria-hidden="true"></i> Lv. ${char?.level || '—'}</div>
+        <span class="h-meta-sep">•</span>
+        <div class="h-meta-item"><i class="ti ti-bow" aria-hidden="true"></i> ${char?.charClass || '—'}</div>
+        <span class="h-meta-sep">•</span>
+        <div class="h-meta-item"><i class="ti ti-moon" aria-hidden="true"></i> ${char?.guild || char?.faction || '—'}</div>
+        <div id="home-char-switcher" style="margin-left:4px"></div>
+      </div>
+    </div>
+    <div class="h-logo">
+      <div class="h-logo-glow"></div>
+      <img src="/icons/Kanos Alliance Symbol.png" alt="Kanos Alliance" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
+      <span style="display:none;font-size:44px;font-weight:700;color:#5b9cf6;font-family:sans-serif">K</span>
+    </div>
+  </div>
+
+  <div class="h-stat-grid">
+    <div class="h-stat-card" onclick="showView('leaderboard')">
+      <div class="h-stat-icon"><i class="ti ti-trophy" aria-hidden="true"></i></div>
+      <div class="h-stat-body">
+        <div class="h-stat-label">Leaderboard Rank</div>
+        <div class="h-stat-value">${rankNum ? '#'+rankNum : '—'}</div>
+        <div class="h-stat-sub">${topPct ? 'Top '+topPct+'%' : 'No rank yet'}</div>
+      </div>
+      <i class="ti ti-chevron-right h-stat-arrow" aria-hidden="true"></i>
+    </div>
+    <div class="h-stat-card" onclick="showView('my-splits')">
+      <div class="h-stat-icon"><i class="ti ti-coin" aria-hidden="true"></i></div>
+      <div class="h-stat-body">
+        <div class="h-stat-label">Lifetime Splits</div>
+        <div class="h-stat-value">${totalGold}</div>
+        <div class="h-stat-sub">Gold earned</div>
+      </div>
+      <i class="ti ti-chevron-right h-stat-arrow" aria-hidden="true"></i>
+    </div>
+    <div class="h-stat-card" onclick="showView('my-attendance')">
+      <div class="h-stat-icon"><i class="ti ti-sword" aria-hidden="true"></i></div>
+      <div class="h-stat-body">
+        <div class="h-stat-label">Total Bosses Killed</div>
+        <div class="h-stat-value">${bossCount}</div>
+        <div class="h-stat-sub">Bosses</div>
+      </div>
+      <i class="ti ti-chevron-right h-stat-arrow" aria-hidden="true"></i>
+    </div>
+    <div class="h-stat-card" onclick="showView('my-splits')">
+      <div class="h-stat-icon"><i class="ti ti-calendar-stats" aria-hidden="true"></i></div>
+      <div class="h-stat-body">
+        <div class="h-stat-label">Split Events</div>
+        <div class="h-stat-value">${splitEvents}</div>
+        <div class="h-stat-sub">Events</div>
+      </div>
+      <i class="ti ti-chevron-right h-stat-arrow" aria-hidden="true"></i>
+    </div>
+  </div>
+
+  <div class="h-act-hdr">Recent Activity</div>
+  <div class="h-act-list">
+    ${!recent.length
+      ? `<div class="h-act-row"><div class="h-act-mid" style="color:#2a4a78;text-align:center;padding:.5rem 0">No activity yet.</div></div>`
+      : recent.map(a => {
+          const sprite = BOSS_SPRITES[a.boss];
+          const thumb = sprite
+            ? `<img src="${sprite}" alt="${a.boss}" onerror="this.style.display='none'">`
+            : `<i class="ti ti-sword" aria-hidden="true"></i>`;
+          const ago = _timeAgo(a.timestamp);
+          return `<div class="h-act-row">
+            <div class="h-act-thumb">${thumb}</div>
+            <div class="h-act-mid">
+              <div class="h-act-boss">${a.boss}</div>
+            </div>
+            <div class="h-act-right">
+              <div class="h-act-time">${ago}</div>
+              <div class="h-act-pts">
+                <span class="h-act-pts-num">+${a.points}</span>
+                <div class="h-pts-coin"><i class="ti ti-star" aria-hidden="true"></i></div>
+              </div>
+            </div>
+          </div>`;
+        }).join('')}
+  </div>`;
+}
+
+function _timeAgo(raw) {
+  if (!raw) return '';
+  const diff = Date.now() - new Date(raw).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
 }
 
 // ============================================================
