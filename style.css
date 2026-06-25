@@ -301,15 +301,12 @@ html,body {
 
   /* Push content down below iOS status bar */
   #main-content {
-    padding: calc(env(safe-area-inset-top, 0px) + 1rem) 1rem 0;
+    padding: calc(env(safe-area-inset-top, 0px) + .75rem) 1rem 0;
     padding-bottom: calc(var(--mob-nav-h) + env(safe-area-inset-bottom, 0px) + 1rem);
   }
 
-  /* Home page has its own internal padding via h-toprow */
+  /* Home page has its own internal padding via h-toprow inline style */
   #view-home.view.active { padding: 0; }
-  #view-home .h-toprow {
-    padding-top: calc(env(safe-area-inset-top, 0px) + 14px);
-  }
 
   /* Nav must grow to cover home indicator bar */
   #mobile-nav {
