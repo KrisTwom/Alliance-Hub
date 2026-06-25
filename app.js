@@ -449,17 +449,10 @@ function _showPending() {
 //  HOME
 // ============================================================
 function renderHome() {
-  const el   = document.getElementById('view-home');
+  const el  = document.getElementById('view-home');
   const char = getActiveChar();
-  const chars = App.user.characters || [];
 
-  // Fetch leaderboard + attendance for live stats
   el.innerHTML = _homeShell(char, null, null);
-  _renderCharSwitcher('home-char-switcher');
-  if (chars.length <= 1 && char) {
-    const sw = document.getElementById('home-char-switcher');
-    if (sw) sw.innerHTML = '';
-  }
 
   Promise.all([
     API.read('get_leaderboard'),
@@ -474,11 +467,6 @@ function renderHome() {
     const totalGold  = pays.reduce((s, p) => s + (Number(p.goldShare)||0), 0);
     const splitEvents = pays.length;
     el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, splitEvents }, att || []);
-    _renderCharSwitcher('home-char-switcher');
-    if (chars.length <= 1 && char) {
-      const sw = document.getElementById('home-char-switcher');
-      if (sw) sw.innerHTML = '';
-    }
   });
 }
 
@@ -624,14 +612,31 @@ function _homeShell(char, stats, att) {
   <div class="h-hero">
     <div style="flex:1;padding-right:8px">
       <div class="h-welcome">Welcome Back</div>
-      <div class="h-name">Hey, ${char?.ign || 'Adventurer'}</div>
-      <div class="h-meta">
+      <div class="h-name" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        ${App.user.characters && App.user.characters.length > 1
+          ? `<select onchange="switchChar(this.value)" style="
+              background:transparent;border:none;outline:none;
+              font-size:30px;font-weight:700;color:#e8f0ff;
+              font-family:'Rajdhani',sans-serif;line-height:1.1;
+              cursor:pointer;padding:0;margin:0;
+              -webkit-appearance:none;appearance:none;
+              background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22 viewBox=%220 0 10 6%22><path fill=%22%233a7bd5%22 d=%22M0 0l5 6 5-6z%22/></svg>');
+              background-repeat:no-repeat;background-position:right 4px center;
+              padding-right:18px;
+            ">
+              ${App.user.characters.map(c =>
+                `<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:#06090f;font-size:16px">${c.ign}</option>`
+              ).join('')}
+            </select>`
+          : `<span>${char?.ign || 'Adventurer'}</span>`
+        }
+      </div>
+      <div class="h-meta" style="margin-top:6px">
         <div class="h-meta-item"><i class="ti ti-shield" aria-hidden="true"></i> Lv. ${char?.level || '—'}</div>
         <span class="h-meta-sep">•</span>
         <div class="h-meta-item"><i class="ti ti-bow" aria-hidden="true"></i> ${char?.charClass || '—'}</div>
         <span class="h-meta-sep">•</span>
         <div class="h-meta-item"><i class="ti ti-moon" aria-hidden="true"></i> ${char?.guild || char?.faction || '—'}</div>
-        <div id="home-char-switcher" style="margin-left:4px"></div>
       </div>
     </div>
     <div class="h-logo">
@@ -749,8 +754,8 @@ function renderAttendance() {
           cat.bosses.forEach(b => { bossMap[b.name] = b; });
           return `
             <div class="boss-category-header">${cat.emoji} ${cat.category}</div>
-            ${rows.map(row => `
-              <div class="boss-grid" style="margin-bottom:.5rem">${row.map(name => {
+            ${rows.map((row, rowIdx) => `
+              <div class="boss-grid" style="margin-bottom:${rowIdx < rows.length - 1 ? '1rem' : '.5rem'}">${row.map(name => {
                 const b = bossMap[name]; if (!b) return '';
                 return `<label class="boss-check">
                   <input type="checkbox" value="${b.name}">
