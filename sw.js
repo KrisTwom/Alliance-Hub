@@ -1,6 +1,6 @@
 // ── Bump this version string on every deploy to invalidate stale caches ──
 // e.g. alliance-tracker-v2, v3, or use a build hash injected at deploy time.
-const CACHE_NAME = 'alliance-tracker-v5';
+const CACHE_NAME = 'alliance-tracker-v6';
 // app.js and index.html are excluded from precache — they're fetched
 // network-first so auth/logic fixes always land without a hard refresh.
 const STATIC_ASSETS = [
@@ -39,7 +39,6 @@ self.addEventListener('fetch', event => {
     url.hostname.includes('script.google.com') ||
     url.hostname.includes('accounts.google.com') ||
     url.hostname.includes('googleapis.com')
-    url.hostname.includes('supabase.co')
   ) {
     event.respondWith(fetch(event.request));
     return;
