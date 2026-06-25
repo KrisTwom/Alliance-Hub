@@ -304,6 +304,7 @@ function _buildShell() {
     </main>
 
     <nav id="mobile-nav">
+      <div class="nav-indicator" id="nav-indicator"></div>
       <button class="mob-nav-btn active" data-view="home">
         <span class="mob-nav-icon">🏠</span><span class="mob-nav-label">Home</span>
       </button>
@@ -348,6 +349,16 @@ function _buildShell() {
 // ============================================================
 //  NAV WIRING
 // ============================================================
+function _moveNavIndicator(view) {
+  const indicator = document.getElementById('nav-indicator');
+  if (!indicator) return;
+  // Map view name to tab index (0-3)
+  const tabMap = { home: 0, attendance: 1, 'my-splits': 2 };
+  const idx = tabMap[view] ?? null;
+  if (idx === null) return; // sidebar views don't move the indicator
+  indicator.style.left = (idx * 25) + '%';
+}
+
 function _initNav() {
   document.querySelectorAll('#desktop-nav .nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -360,6 +371,7 @@ function _initNav() {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      _moveNavIndicator(btn.dataset.view);
       showView(btn.dataset.view);
     });
   });
@@ -376,6 +388,93 @@ function _initNav() {
   document.getElementById('modal-overlay')?.addEventListener('click', e => {
     if (e.target.id === 'modal-overlay') closeModal();
   });
+
+  // ── PULL-TO-REFRESH ───────────────────────────────────────
+  let _ptrStartY = 0, _ptrDelta = 0, _ptrActive = false, _ptrIndicator = null;
+  const PTR_THRESHOLD = 72;
+
+  function _getPtrIndicator() {
+    if (!_ptrIndicator) {
+      _ptrIndicator = document.createElement('div');
+      _ptrIndicator.id = 'ptr-indicator';
+      _ptrIndicator.style.cssText = `
+        position:fixed;top:0;left:0;right:0;z-index:9000;
+        display:flex;align-items:center;justify-content:center;
+        height:0;overflow:hidden;
+        background:linear-gradient(180deg,rgba(0,0,0,0.95),transparent);
+        transition:height .15s ease;pointer-events:none;
+      `;
+      _ptrIndicator.innerHTML = `<div style="display:flex;align-items:center;gap:8px;color:#5b9cf6;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;letter-spacing:.1em;opacity:0;transition:opacity .2s" id="ptr-inner">
+        <div id="ptr-spinner" style="width:18px;height:18px;border:2px solid #1a3a6a;border-top-color:#5b9cf6;border-radius:50%;transition:transform .1s linear"></div>
+        <span id="ptr-label">Pull to refresh</span>
+      </div>`;
+      document.body.appendChild(_ptrIndicator);
+    }
+    return _ptrIndicator;
+  }
+
+  document.addEventListener('touchstart', e => {
+    const content = document.getElementById('main-content');
+    if (!content) return;
+    const atTop = content.scrollTop === 0 || window.scrollY === 0;
+    if (!atTop) return;
+    _ptrStartY = e.touches[0].clientY;
+    _ptrActive = true;
+    _ptrDelta = 0;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', e => {
+    if (!_ptrActive) return;
+    _ptrDelta = Math.max(0, e.touches[0].clientY - _ptrStartY);
+    if (_ptrDelta < 8) return;
+    const ind = _getPtrIndicator();
+    const h = Math.min(_ptrDelta * 0.5, PTR_THRESHOLD);
+    ind.style.height = h + 'px';
+    const inner = document.getElementById('ptr-inner');
+    const spinner = document.getElementById('ptr-spinner');
+    const label = document.getElementById('ptr-label');
+    if (inner) inner.style.opacity = Math.min(1, (_ptrDelta - 8) / 40);
+    if (spinner) spinner.style.transform = `rotate(${_ptrDelta * 3}deg)`;
+    const ready = _ptrDelta >= PTR_THRESHOLD;
+    if (label) label.textContent = ready ? 'Release to refresh' : 'Pull to refresh';
+    if (spinner) spinner.style.borderTopColor = ready ? '#7ab4ff' : '#5b9cf6';
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => {
+    if (!_ptrActive) return;
+    _ptrActive = false;
+    const ind = _getPtrIndicator();
+    if (_ptrDelta >= PTR_THRESHOLD) {
+      // Trigger refresh of current view
+      ind.style.height = '48px';
+      const label = document.getElementById('ptr-label');
+      const spinner = document.getElementById('ptr-spinner');
+      if (label) label.textContent = 'Refreshing…';
+      if (spinner) spinner.style.animation = 'spinner-spin 0.6s linear infinite';
+      // Bust caches and re-render current view
+      const active = document.querySelector('.view.active');
+      const viewName = active?.id?.replace('view-', '');
+      if (viewName) {
+        Cache.bust(
+          'get_leaderboard','get_my_attendance','get_my_payouts',
+          'get_grouped_runs','get_inventory','get_payouts_page',
+          'get_available_months','get_roster'
+        );
+        setTimeout(() => {
+          showView(viewName);
+          ind.style.height = '0';
+          const inner = document.getElementById('ptr-inner');
+          if (inner) inner.style.opacity = '0';
+          if (spinner) spinner.style.animation = '';
+        }, 600);
+      }
+    } else {
+      ind.style.height = '0';
+      const inner = document.getElementById('ptr-inner');
+      if (inner) inner.style.opacity = '0';
+    }
+    _ptrDelta = 0;
+  }, { passive: true });
 }
 
 // ============================================================
@@ -413,6 +512,7 @@ function switchChar(charId) {
 function showView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name)?.classList.add('active');
+  _moveNavIndicator(name);
   const map = {
     home:              renderHome,
     attendance:        renderAttendance,
@@ -478,7 +578,7 @@ function _homeShell(char, stats, att) {
   const splitEvents = stats?.splitEvents ?? '—';
 
   // Recent activity from attendance (last 4)
-  const recent = (att || []).slice(0, 4);
+  const recent = (att || []).slice(0, 6);
 
   return `
   <style>
@@ -564,7 +664,7 @@ function _homeShell(char, stats, att) {
     .h-stat-arrow { font-size: 14px; color: #1a3a6a; align-self: center; }
 
     .h-act-hdr {
-      padding: 14px 16px 8px;
+      padding: 10px 16px 6px;
       font-size: 11px; font-weight: 700; color: #3a7bd5;
       letter-spacing: .2em; text-transform: uppercase;
     }
@@ -575,31 +675,26 @@ function _homeShell(char, stats, att) {
       border-radius: 16px; overflow: hidden;
     }
     .h-act-row {
-      display: flex; align-items: center; gap: 12px;
-      padding: 12px 14px;
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 12px;
       border-bottom: 1px solid #080f20;
     }
     .h-act-row:last-child { border-bottom: none; }
     .h-act-thumb {
-      width: 50px; height: 50px; border-radius: 10px;
+      width: 32px; height: 32px; border-radius: 7px;
       background: #070e20; border: 1px solid #1a2a50;
       flex-shrink: 0; overflow: hidden;
       display: flex; align-items: center; justify-content: center;
-      font-size: 22px; color: #2a4a80;
+      font-size: 15px; color: #2a4a80;
     }
-    .h-act-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 9px; }
+    .h-act-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
     .h-act-mid { flex: 1; min-width: 0; }
-    .h-act-boss { font-size: 15px; font-weight: 600; color: #c8d8f0; margin-bottom: 1px; }
+    .h-act-boss { font-size: 13px; font-weight: 600; color: #c8d8f0; }
     .h-act-right { text-align: right; flex-shrink: 0; }
-    .h-act-time { font-size: 11px; color: #2a4070; margin-bottom: 4px; }
-    .h-act-pts { display: flex; align-items: center; gap: 5px; justify-content: flex-end; }
-    .h-act-pts-num { font-size: 14px; font-weight: 700; color: #5b9cf6; font-family: 'Rajdhani', sans-serif; }
-    .h-pts-coin {
-      width: 20px; height: 20px; border-radius: 50%;
-      background: #050e24; border: 1.5px solid #1e4a9a;
-      display: flex; align-items: center; justify-content: center;
-    }
-    .h-pts-coin i { font-size: 11px; color: #3a7bd5; }
+    .h-act-time { font-size: 10px; color: #2a4070; margin-bottom: 2px; }
+    .h-act-pts { display: flex; align-items: center; gap: 3px; justify-content: flex-end; }
+    .h-act-pts-num { font-size: 12px; font-weight: 700; color: #5b9cf6; font-family: 'Rajdhani', sans-serif; }
+    .h-act-pts-label { font-size: 10px; color: #2a5090; font-weight: 600; letter-spacing: .04em; }
   </style>
 
   <div class="h-toprow">
@@ -704,7 +799,7 @@ function _homeShell(char, stats, att) {
               <div class="h-act-time">${ago}</div>
               <div class="h-act-pts">
                 <span class="h-act-pts-num">+${a.points}</span>
-                <div class="h-pts-coin"><i class="ti ti-star" aria-hidden="true"></i></div>
+                <span class="h-act-pts-label">pts</span>
               </div>
             </div>
           </div>`;
@@ -755,7 +850,7 @@ function renderAttendance() {
           return `
             <div class="boss-category-header">${cat.emoji} ${cat.category}</div>
             ${rows.map((row, rowIdx) => `
-              <div class="boss-grid" style="margin-bottom:${rowIdx < rows.length - 1 ? '1rem' : '.5rem'}">${row.map(name => {
+              <div class="boss-grid" style="margin-bottom:${rowIdx < rows.length - 1 ? '2rem' : '.5rem'}">${row.map(name => {
                 const b = bossMap[name]; if (!b) return '';
                 return `<label class="boss-check">
                   <input type="checkbox" value="${b.name}">
