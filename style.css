@@ -301,7 +301,7 @@ html,body {
 
   /* Push content down below iOS status bar */
   #main-content {
-    padding: calc(env(safe-area-inset-top, 0px) + .75rem) 1rem 0;
+    padding: calc(env(safe-area-inset-top, 0px) + .25rem) 1rem 0;
     padding-bottom: calc(var(--mob-nav-h) + env(safe-area-inset-bottom, 0px) + 1rem);
   }
 

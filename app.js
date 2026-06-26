@@ -590,7 +590,7 @@ function _homeShell(char, stats, att) {
     }
     .h-toprow {
       display: flex; justify-content: flex-end;
-      padding: calc(env(safe-area-inset-top, 0px) + 14px) 16px 0;
+      padding: calc(env(safe-area-inset-top, 0px) + 2px) 16px 0;
     }
     .h-bell {
       width: 40px; height: 40px; border-radius: 10px;
