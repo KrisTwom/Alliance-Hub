@@ -221,11 +221,11 @@ window.initAllianceTracker = async function(email) {
     if (loadingScreen) loadingScreen.style.display = 'none';
     appEl.style.display = 'flex';
     appEl.innerHTML = `
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:2rem;text-align:center;gap:1rem;">
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:2rem;text-align:center;gap:1rem;background:#000;">
         <div style="font-size:3rem">⚠️</div>
-        <div style="font-family:'Cinzel',serif;color:#e0c97f;font-size:1.1rem;letter-spacing:.1em">Connection Failed</div>
-        <div style="color:#8a8474;font-size:.9rem;max-width:320px">${msg}</div>
-        <button onclick="location.reload()" style="margin-top:.5rem;padding:.6rem 1.5rem;background:#e0c97f;color:#0a0c14;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Retry</button>
+        <div style="font-family:'Inter',sans-serif;color:var(--gold);font-size:1.1rem;letter-spacing:.1em">Connection Failed</div>
+        <div style="color:var(--text-secondary);font-size:.9rem;max-width:320px">${msg}</div>
+        <button onclick="location.reload()" style="margin-top:.5rem;padding:.6rem 1.5rem;background:var(--gold);color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:700;">Retry</button>
       </div>`;
   }
 
@@ -277,6 +277,7 @@ function _buildShell() {
         <button class="nav-btn" data-view="my-attendance">📋 Attendance History</button>
         <button class="nav-btn" data-view="leaderboard">🏆 Leaderboard</button>
         <button class="nav-btn" data-view="rules">📜 Rules</button>
+        <button class="nav-btn" data-view="guide">📖 Guide</button>
         ${App.user.isAdmin ? `
         <button class="nav-btn" data-view="drops">💎 Drops</button>
         <button class="nav-btn" data-view="inventory">🎒 Inventory</button>
@@ -296,6 +297,7 @@ function _buildShell() {
       <div id="view-my-attendance" class="view"></div>
       <div id="view-leaderboard" class="view"></div>
       <div id="view-rules"       class="view"></div>
+      <div id="view-guide"       class="view"></div>
       <div id="view-drops"       class="view"></div>
       <div id="view-inventory"   class="view"></div>
       <div id="view-payouts"     class="view"></div>
@@ -333,6 +335,7 @@ function _buildShell() {
         <button class="sidebar-link" data-view="my-attendance">📋 Attendance History</button>
         <button class="sidebar-link" data-view="leaderboard">🏆 Leaderboard</button>
         <button class="sidebar-link" data-view="rules">📜 Rules</button>
+        <button class="sidebar-link" data-view="guide">📖 App & Alliance Guide</button>
         ${App.user.isAdmin ? `
         <button class="sidebar-link" data-view="drops">💎 Drops</button>
         <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
@@ -496,9 +499,9 @@ function getActiveChar() {
 
 function switchChar(charId) {
   App.activeCharId = charId;
-  _renderCharSwitcher('home-char-switcher');
   _renderCharSwitcher('attendance-char-switcher');
   _renderCharSwitcher('splits-char-switcher');
+  _renderCharSwitcher('att-history-char-switcher');
   const char = getActiveChar();
   document.getElementById('header-username').textContent  = char?.ign || App.user.email;
   document.getElementById('sidebar-username').textContent = char?.ign || App.user.email;
@@ -520,6 +523,7 @@ function showView(name) {
     'my-attendance':   renderMyAttendanceHistory,
     leaderboard:       renderLeaderboard,
     rules:             renderRules,
+    guide:             renderGuide,
     drops:             renderDrops,
     inventory:         renderInventory,
     payouts:           renderPayouts,
@@ -549,10 +553,11 @@ function _showPending() {
 //  HOME
 // ============================================================
 function renderHome() {
-  const el  = document.getElementById('view-home');
+  const el   = document.getElementById('view-home');
   const char = getActiveChar();
 
-  el.innerHTML = _homeShell(char, null, null);
+  // Render immediately with skeleton stats
+  el.innerHTML = _homeShell(char, null, []);
 
   Promise.all([
     API.read('get_leaderboard'),
@@ -566,245 +571,138 @@ function renderHome() {
     const pays       = paysRes?.payouts || [];
     const totalGold  = pays.reduce((s, p) => s + (Number(p.goldShare)||0), 0);
     const splitEvents = pays.length;
-    el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, splitEvents }, att || []);
+    const charPoints = char?.points || 0;
+    el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, splitEvents, charPoints }, att || []);
   });
 }
 
 function _homeShell(char, stats, att) {
-  const rankNum    = stats?.rankNum;
-  const topPct     = stats?.topPct;
-  const bossCount  = stats?.bossCount ?? '—';
-  const totalGold  = stats ? fmtGold(stats.totalGold) : '—';
+  const rankNum     = stats?.rankNum;
+  const topPct      = stats?.topPct;
+  const bossCount   = stats?.bossCount ?? '—';
+  const totalGold   = stats ? fmtGold(stats.totalGold) : '—';
   const splitEvents = stats?.splitEvents ?? '—';
+  const charPoints  = stats?.charPoints ?? '—';
+  const recent      = (att || []).slice(0, 6);
 
-  // Recent activity from attendance (last 4)
-  const recent = (att || []).slice(0, 6);
+  const safeTop = `env(safe-area-inset-top, 0px)`;
 
   return `
-  <style>
-    #view-home {
-      background: #000;
-      min-height: 100%;
-      padding: 0;
-      font-family: 'Rajdhani', 'Segoe UI', sans-serif;
-    }
-    .h-toprow {
-      display: flex; justify-content: flex-end;
-      padding: calc(env(safe-area-inset-top, 0px) + 2px) 16px 0;
-    }
-    .h-bell {
-      width: 40px; height: 40px; border-radius: 10px;
-      background: #0a0f1e; border: 1px solid #1a3060;
-      display: flex; align-items: center; justify-content: center;
-      position: relative; cursor: pointer;
-    }
-    .h-bell-icon { font-size: 20px; color: #8aaad4; }
-    .h-bell-dot {
-      position: absolute; top: 7px; right: 7px;
-      width: 8px; height: 8px; border-radius: 50%;
-      background: #3a7bd5; border: 1.5px solid #000;
-    }
-    .h-hero {
-      display: flex; align-items: flex-start; justify-content: space-between;
-      padding: 12px 16px 0;
-    }
-    .h-welcome {
-      font-size: 11px; font-weight: 600; color: #3a7bd5;
-      letter-spacing: .18em; text-transform: uppercase; margin-bottom: 4px;
-    }
-    .h-name {
-      font-size: 30px; font-weight: 700; color: #e8f0ff;
-      line-height: 1.1; margin-bottom: 10px;
-      font-family: 'Rajdhani', sans-serif;
-    }
-    .h-meta {
-      display: flex; align-items: center; gap: 6px;
-      font-size: 13px; color: #4a72a0; flex-wrap: wrap;
-    }
-    .h-meta-sep { color: #1a3a6a; }
-    .h-meta-item { display: flex; align-items: center; gap: 4px; color: #5a82b8; }
-    .h-meta-item i { font-size: 14px; color: #3a62a0; }
-    .h-logo {
-      width: 120px; height: 120px; flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center;
-      margin-top: -10px; position: relative;
-    }
-    .h-logo img { width: 100%; height: 100%; object-fit: contain; }
-    .h-logo-glow {
-      position: absolute; inset: 0; border-radius: 50%;
-      background: radial-gradient(circle at 50% 55%, rgba(40,90,210,0.35) 0%, transparent 65%);
-      pointer-events: none;
-    }
-    .h-stat-grid {
-      display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
-      gap: 10px; padding: 18px 14px 6px;
-    }
-    .h-stat-card {
-      background: #080f20;
-      border: 2.5px solid #1e4a9a;
-      border-radius: 16px;
-      padding: 14px 12px 12px;
-      display: flex; align-items: center; gap: 10px;
-      position: relative; overflow: hidden; cursor: pointer;
-    }
-    .h-stat-card::after {
-      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-      background: linear-gradient(90deg, transparent, #3a7bd5 40%, #6aa3ff 50%, #3a7bd5 60%, transparent);
-    }
-    .h-stat-icon {
-      width: 48px; height: 48px; border-radius: 50%;
-      background: #040e22; border: 1.5px solid #1a3a7a;
-      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-    }
-    .h-stat-icon i { font-size: 22px; color: #3a7bd5; }
-    .h-stat-body { flex: 1; min-width: 0; }
-    .h-stat-label { font-size: 9px; color: #3a5a90; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
-    .h-stat-value { font-size: 22px; font-weight: 700; color: #5b9cf6; line-height: 1; font-family: 'Rajdhani', sans-serif; }
-    .h-stat-sub { font-size: 11px; color: #2a4a78; margin-top: 2px; }
-    .h-stat-arrow { font-size: 14px; color: #1a3a6a; align-self: center; }
+  <div style="background:#000;min-height:100%;font-family:'Inter',sans-serif;padding-bottom:1rem;">
 
-    .h-act-hdr {
-      padding: 10px 16px 6px;
-      font-size: 11px; font-weight: 700; color: #3a7bd5;
-      letter-spacing: .2em; text-transform: uppercase;
-    }
-    .h-act-list {
-      margin: 0 12px 16px;
-      background: #04080f;
-      border: 1px solid #0d1f3a;
-      border-radius: 16px; overflow: hidden;
-    }
-    .h-act-row {
-      display: flex; align-items: center; gap: 10px;
-      padding: 7px 12px;
-      border-bottom: 1px solid #080f20;
-    }
-    .h-act-row:last-child { border-bottom: none; }
-    .h-act-thumb {
-      width: 32px; height: 32px; border-radius: 7px;
-      background: #070e20; border: 1px solid #1a2a50;
-      flex-shrink: 0; overflow: hidden;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 15px; color: #2a4a80;
-    }
-    .h-act-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
-    .h-act-mid { flex: 1; min-width: 0; }
-    .h-act-boss { font-size: 13px; font-weight: 600; color: #c8d8f0; }
-    .h-act-right { text-align: right; flex-shrink: 0; }
-    .h-act-time { font-size: 10px; color: #2a4070; margin-bottom: 2px; }
-    .h-act-pts { display: flex; align-items: center; gap: 3px; justify-content: flex-end; }
-    .h-act-pts-num { font-size: 12px; font-weight: 700; color: #5b9cf6; font-family: 'Rajdhani', sans-serif; }
-    .h-act-pts-label { font-size: 10px; color: #2a5090; font-weight: 600; letter-spacing: .04em; }
-  </style>
+    <!-- HERO -->
+    <div style="padding:calc(${safeTop} + 18px) 20px 0;">
+      <div style="font-size:11px;font-weight:600;color:#4a7ad4;letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;">WELCOME BACK</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <div style="font-size:32px;font-weight:800;color:#ffffff;letter-spacing:-.5px;display:flex;align-items:center;gap:8px;flex:1">
+          ${App.user.characters && App.user.characters.length > 1
+            ? `<select onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:#fff;font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:#06090f;font-size:16px">${c.ign}</option>`).join('')}</select>`
+            : `<span>${char?.ign || 'Adventurer'}</span>`}
+        </div>
+        <div style="width:36px;height:36px;border-radius:10px;background:#0d1220;border:1px solid #1a2d50;display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;">
+          <span style="font-size:18px;">🔔</span>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid #0d1525;">
+        <span style="color:#4a7ad4;font-weight:700;">Lv.${char?.level||'—'}</span>
+        <span style="color:#2a3a55;">|</span>
+        <span style="color:#8899aa;">${char?.charClass||'—'}</span>
+        <span style="color:#2a3a55;">|</span>
+        <span style="display:flex;align-items:center;gap:4px;color:#8899aa;">🛡 ${char?.guild||char?.faction||'—'}</span>
+      </div>
+    </div>
 
-  <div class="h-toprow">
-    <div class="h-bell">
-      <i class="ti ti-bell h-bell-icon" aria-hidden="true"></i>
-      <div class="h-bell-dot"></div>
+    <!-- SUBMIT ATTENDANCE CTA -->
+    <div style="margin:16px 16px 0;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px;display:flex;align-items:center;gap:14px;cursor:pointer;" onclick="showView('attendance');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='attendance')});_moveNavIndicator('attendance');">
+      <div style="width:52px;height:52px;border-radius:12px;background:#111c30;border:1px solid #1e3560;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:26px;">📋</div>
+      <div style="flex:1;">
+        <div style="font-size:17px;font-weight:700;color:#ffffff;margin-bottom:3px;">Submit Attendance</div>
+        <div style="font-size:12px;color:#4a6080;">Earn points for your alliance!</div>
+      </div>
+      <div style="width:32px;height:32px;border-radius:50%;background:#1a3a7a;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <span style="color:#5b9cf6;font-size:16px;font-weight:700;">›</span>
+      </div>
     </div>
-  </div>
 
-  <div class="h-hero">
-    <div style="flex:1;padding-right:8px">
-      <div class="h-welcome">Welcome Back</div>
-      <div class="h-name" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-        ${App.user.characters && App.user.characters.length > 1
-          ? `<select onchange="switchChar(this.value)" style="
-              background:transparent;border:none;outline:none;
-              font-size:30px;font-weight:700;color:#e8f0ff;
-              font-family:'Rajdhani',sans-serif;line-height:1.1;
-              cursor:pointer;padding:0;margin:0;
-              -webkit-appearance:none;appearance:none;
-              background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22 viewBox=%220 0 10 6%22><path fill=%22%233a7bd5%22 d=%22M0 0l5 6 5-6z%22/></svg>');
-              background-repeat:no-repeat;background-position:right 4px center;
-              padding-right:18px;
-            ">
-              ${App.user.characters.map(c =>
-                `<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:#06090f;font-size:16px">${c.ign}</option>`
-              ).join('')}
-            </select>`
-          : `<span>${char?.ign || 'Adventurer'}</span>`
-        }
-      </div>
-      <div class="h-meta" style="margin-top:6px">
-        <div class="h-meta-item"><i class="ti ti-shield" aria-hidden="true"></i> Lv. ${char?.level || '—'}</div>
-        <span class="h-meta-sep">•</span>
-        <div class="h-meta-item"><i class="ti ti-bow" aria-hidden="true"></i> ${char?.charClass || '—'}</div>
-        <span class="h-meta-sep">•</span>
-        <div class="h-meta-item"><i class="ti ti-moon" aria-hidden="true"></i> ${char?.guild || char?.faction || '—'}</div>
+    <!-- YOUR OVERVIEW -->
+    <div style="padding:20px 20px 0;">
+      <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:14px;">Your Overview</div>
+      <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none;">
+        <div style="flex:0 0 auto;width:140px;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px 14px;cursor:pointer;" onclick="showView('leaderboard')">
+          <div style="font-size:26px;margin-bottom:10px;">⭐</div>
+          <div style="font-size:11px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Total Points</div>
+          <div style="font-size:22px;font-weight:800;color:#ffffff;">${charPoints === '—' ? '—' : Number(charPoints).toLocaleString()}</div>
+        </div>
+        <div style="flex:0 0 auto;width:140px;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px 14px;cursor:pointer;" onclick="showView('my-splits')">
+          <div style="font-size:26px;margin-bottom:10px;">💰</div>
+          <div style="font-size:11px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Lifetime Gold</div>
+          <div style="font-size:22px;font-weight:800;color:#ffffff;">${totalGold}</div>
+        </div>
+        <div style="flex:0 0 auto;width:140px;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px 14px;cursor:pointer;" onclick="showView('leaderboard')">
+          <div style="font-size:26px;margin-bottom:10px;">🏆</div>
+          <div style="font-size:11px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Your Rank</div>
+          <div style="font-size:22px;font-weight:800;color:#ffffff;">${rankNum ? '#'+rankNum : '—'}</div>
+          ${topPct ? `<div style="font-size:11px;color:#4a7ad4;margin-top:4px;">Top ${topPct}%</div>` : ''}
+        </div>
+        <div style="flex:0 0 auto;width:140px;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px 14px;cursor:pointer;" onclick="showView('my-splits')">
+          <div style="font-size:26px;margin-bottom:10px;">📅</div>
+          <div style="font-size:11px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Split Events</div>
+          <div style="font-size:22px;font-weight:800;color:#ffffff;">${splitEvents}</div>
+        </div>
       </div>
     </div>
-    <div class="h-logo">
-      <div class="h-logo-glow"></div>
-      <img src="/icons/Kanos Alliance Symbol.png" alt="Kanos Alliance" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
-      <span style="display:none;font-size:44px;font-weight:700;color:#5b9cf6;font-family:sans-serif">K</span>
-    </div>
-  </div>
 
-  <div class="h-stat-grid">
-    <div class="h-stat-card" onclick="showView('leaderboard')">
-      <div class="h-stat-icon"><i class="ti ti-trophy" aria-hidden="true"></i></div>
-      <div class="h-stat-body">
-        <div class="h-stat-label">Leaderboard Rank</div>
-        <div class="h-stat-value">${rankNum ? '#'+rankNum : '—'}</div>
-        <div class="h-stat-sub">${topPct ? 'Top '+topPct+'%' : 'No rank yet'}</div>
+    <!-- RECENT ACTIVITY -->
+    <div style="padding:20px 20px 0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div style="font-size:16px;font-weight:700;color:#ffffff;">Recent Activity</div>
+        <button onclick="showView('my-attendance')" style="background:none;border:none;color:#4a7ad4;font-size:13px;font-weight:600;cursor:pointer;padding:0;">View All</button>
       </div>
-      <i class="ti ti-chevron-right h-stat-arrow" aria-hidden="true"></i>
-    </div>
-    <div class="h-stat-card" onclick="showView('my-splits')">
-      <div class="h-stat-icon"><i class="ti ti-coin" aria-hidden="true"></i></div>
-      <div class="h-stat-body">
-        <div class="h-stat-label">Lifetime Splits</div>
-        <div class="h-stat-value">${totalGold}</div>
-        <div class="h-stat-sub">Gold earned</div>
+      <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;overflow:hidden;">
+        ${!recent.length
+          ? `<div style="padding:24px;text-align:center;color:#2a3a55;font-size:13px;">No activity yet.</div>`
+          : recent.map((a, i) => {
+              const sprite = BOSS_SPRITES[a.boss];
+              const thumb = sprite
+                ? `<img src="${sprite}" alt="${a.boss}" style="width:100%;height:100%;object-fit:cover;border-radius:8px;" onerror="this.style.display='none'">`
+                : `<span style="font-size:16px;">⚔️</span>`;
+              const ago = _timeAgo(a.timestamp);
+              return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;${i < recent.length-1 ? 'border-bottom:1px solid #0a1020;' : ''}">
+                <div style="width:38px;height:38px;border-radius:10px;background:#111c30;border:1px solid #1a2d50;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">${thumb}</div>
+                <div style="flex:1;min-width:0;">
+                  <div style="font-size:14px;font-weight:600;color:#e0eaff;">${a.boss}</div>
+                </div>
+                <div style="font-size:12px;color:#3a5070;flex-shrink:0;">${ago}</div>
+              </div>`;
+            }).join('')}
       </div>
-      <i class="ti ti-chevron-right h-stat-arrow" aria-hidden="true"></i>
     </div>
-    <div class="h-stat-card" onclick="showView('my-attendance')">
-      <div class="h-stat-icon"><i class="ti ti-sword" aria-hidden="true"></i></div>
-      <div class="h-stat-body">
-        <div class="h-stat-label">Total Bosses Killed</div>
-        <div class="h-stat-value">${bossCount}</div>
-        <div class="h-stat-sub">Bosses</div>
-      </div>
-      <i class="ti ti-chevron-right h-stat-arrow" aria-hidden="true"></i>
-    </div>
-    <div class="h-stat-card" onclick="showView('my-splits')">
-      <div class="h-stat-icon"><i class="ti ti-calendar-stats" aria-hidden="true"></i></div>
-      <div class="h-stat-body">
-        <div class="h-stat-label">Split Events</div>
-        <div class="h-stat-value">${splitEvents}</div>
-        <div class="h-stat-sub">Events</div>
-      </div>
-      <i class="ti ti-chevron-right h-stat-arrow" aria-hidden="true"></i>
-    </div>
-  </div>
 
-  <div class="h-act-hdr">Recent Activity</div>
-  <div class="h-act-list">
-    ${!recent.length
-      ? `<div class="h-act-row"><div class="h-act-mid" style="color:#2a4a78;text-align:center;padding:.5rem 0">No activity yet.</div></div>`
-      : recent.map(a => {
-          const sprite = BOSS_SPRITES[a.boss];
-          const thumb = sprite
-            ? `<img src="${sprite}" alt="${a.boss}" onerror="this.style.display='none'">`
-            : `<i class="ti ti-sword" aria-hidden="true"></i>`;
-          const ago = _timeAgo(a.timestamp);
-          return `<div class="h-act-row">
-            <div class="h-act-thumb">${thumb}</div>
-            <div class="h-act-mid">
-              <div class="h-act-boss">${a.boss}</div>
-            </div>
-            <div class="h-act-right">
-              <div class="h-act-time">${ago}</div>
-              <div class="h-act-pts">
-                <span class="h-act-pts-num">+${a.points}</span>
-                <span class="h-act-pts-label">pts</span>
-              </div>
-            </div>
-          </div>`;
-        }).join('')}
+    <!-- QUICK ACTIONS -->
+    <div style="padding:20px 20px 0;">
+      <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:14px;">Quick Actions</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
+        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('my-splits');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='my-splits')});_moveNavIndicator('my-splits');">
+          <div style="font-size:24px;margin-bottom:8px;">💰</div>
+          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">My Splits</div>
+        </div>
+        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('leaderboard')">
+          <div style="font-size:24px;margin-bottom:8px;">🏆</div>
+          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">Leaderboard</div>
+        </div>
+        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('rules')">
+          <div style="font-size:24px;margin-bottom:8px;">📜</div>
+          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">Rules</div>
+        </div>
+        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('guide')">
+          <div style="font-size:24px;margin-bottom:8px;">📖</div>
+          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">Guide</div>
+        </div>
+      </div>
+    </div>
+
   </div>`;
+}
 }
 
 function _timeAgo(raw) {
@@ -1202,6 +1100,18 @@ function renderRules() {
       <div class="empty-state">
         <span class="empty-state-icon">📜</span>
         Rules coming soon.
+      </div>
+    </div>`;
+}
+
+function renderGuide() {
+  const el = document.getElementById('view-guide');
+  el.innerHTML = `
+    <div class="section-title">📖 App & Alliance Guide</div>
+    <div class="card">
+      <div class="empty-state">
+        <span class="empty-state-icon">📖</span>
+        Guide coming soon.
       </div>
     </div>`;
 }
