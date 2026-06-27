@@ -613,47 +613,47 @@ function _homeShell(char, stats, att) {
     </div>
 
     <!-- SUBMIT ATTENDANCE CTA -->
-    <div style="margin:16px 16px 0;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px;display:flex;align-items:center;gap:14px;cursor:pointer;" onclick="showView('attendance');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='attendance')});_moveNavIndicator('attendance');">
-      <div style="width:52px;height:52px;border-radius:12px;background:#111c30;border:1px solid #1e3560;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:26px;">📋</div>
+    <div style="margin:14px 16px 0;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px;display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="showView('attendance');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='attendance')});_moveNavIndicator('attendance');">
+      <div style="width:44px;height:44px;border-radius:10px;background:#111c30;border:1px solid #1e3560;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:22px;">📋</div>
       <div style="flex:1;">
-        <div style="font-size:17px;font-weight:700;color:#ffffff;margin-bottom:3px;">Submit Attendance</div>
+        <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:2px;">Submit Attendance</div>
         <div style="font-size:12px;color:#4a6080;">Earn points for your alliance!</div>
       </div>
-      <div style="width:32px;height:32px;border-radius:50%;background:#1a3a7a;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-        <span style="color:#5b9cf6;font-size:16px;font-weight:700;">›</span>
+      <div style="width:28px;height:28px;border-radius:50%;background:#1a3a7a;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <span style="color:#5b9cf6;font-size:15px;font-weight:700;">›</span>
       </div>
     </div>
 
     <!-- YOUR OVERVIEW -->
-    <div style="padding:20px 20px 0;">
-      <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:14px;">Your Overview</div>
-      <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none;">
-        <div style="flex:0 0 auto;width:140px;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px 14px;cursor:pointer;" onclick="showView('leaderboard')">
-          <div style="font-size:26px;margin-bottom:10px;">⭐</div>
-          <div style="font-size:11px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Total Points</div>
-          <div style="font-size:22px;font-weight:800;color:#ffffff;">${charPoints === '—' ? '—' : Number(charPoints).toLocaleString()}</div>
+    <div style="padding:16px 20px 0;">
+      <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:10px;">Your Overview</div>
+      <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none;">
+        <div style="flex:0 0 auto;width:120px;background:#0d1525;border:1px solid #1a2d50;border-radius:12px;padding:12px 10px;cursor:pointer;" onclick="showView('leaderboard')">
+          <div style="font-size:18px;margin-bottom:6px;">⭐</div>
+          <div style="font-size:9px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Total Points</div>
+          <div style="font-size:18px;font-weight:800;color:#ffffff;line-height:1;">${charPoints === '—' ? '—' : Number(charPoints).toLocaleString()}</div>
         </div>
-        <div style="flex:0 0 auto;width:140px;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px 14px;cursor:pointer;" onclick="showView('my-splits')">
-          <div style="font-size:26px;margin-bottom:10px;">💰</div>
-          <div style="font-size:11px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Lifetime Gold</div>
-          <div style="font-size:22px;font-weight:800;color:#ffffff;">${totalGold}</div>
+        <div style="flex:0 0 auto;width:120px;background:#0d1525;border:1px solid #1a2d50;border-radius:12px;padding:12px 10px;cursor:pointer;" onclick="showView('my-splits')">
+          <div style="font-size:18px;margin-bottom:6px;">💰</div>
+          <div style="font-size:9px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Lifetime Gold</div>
+          <div style="font-size:18px;font-weight:800;color:#ffffff;line-height:1;">${totalGold}</div>
         </div>
-        <div style="flex:0 0 auto;width:140px;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px 14px;cursor:pointer;" onclick="showView('leaderboard')">
-          <div style="font-size:26px;margin-bottom:10px;">🏆</div>
-          <div style="font-size:11px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Your Rank</div>
-          <div style="font-size:22px;font-weight:800;color:#ffffff;">${rankNum ? '#'+rankNum : '—'}</div>
-          ${topPct ? `<div style="font-size:11px;color:#4a7ad4;margin-top:4px;">Top ${topPct}%</div>` : ''}
+        <div style="flex:0 0 auto;width:120px;background:#0d1525;border:1px solid #1a2d50;border-radius:12px;padding:12px 10px;cursor:pointer;" onclick="showView('leaderboard')">
+          <div style="font-size:18px;margin-bottom:6px;">🏆</div>
+          <div style="font-size:9px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Your Rank</div>
+          <div style="font-size:18px;font-weight:800;color:#ffffff;line-height:1;">${rankNum ? '#'+rankNum : '—'}</div>
+          ${topPct ? `<div style="font-size:10px;color:#4a7ad4;margin-top:3px;">Top ${topPct}%</div>` : ''}
         </div>
-        <div style="flex:0 0 auto;width:140px;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:16px 14px;cursor:pointer;" onclick="showView('my-splits')">
-          <div style="font-size:26px;margin-bottom:10px;">📅</div>
-          <div style="font-size:11px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Split Events</div>
-          <div style="font-size:22px;font-weight:800;color:#ffffff;">${splitEvents}</div>
+        <div style="flex:0 0 auto;width:120px;background:#0d1525;border:1px solid #1a2d50;border-radius:12px;padding:12px 10px;cursor:pointer;" onclick="showView('my-splits')">
+          <div style="font-size:18px;margin-bottom:6px;">📅</div>
+          <div style="font-size:9px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Split Events</div>
+          <div style="font-size:18px;font-weight:800;color:#ffffff;line-height:1;">${splitEvents}</div>
         </div>
       </div>
     </div>
 
     <!-- RECENT ACTIVITY -->
-    <div style="padding:20px 20px 0;">
+    <div style="padding:14px 20px 0;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
         <div style="font-size:16px;font-weight:700;color:#ffffff;">Recent Activity</div>
         <button onclick="showView('my-attendance')" style="background:none;border:none;color:#4a7ad4;font-size:13px;font-weight:600;cursor:pointer;padding:0;">View All</button>
@@ -679,7 +679,7 @@ function _homeShell(char, stats, att) {
     </div>
 
     <!-- QUICK ACTIONS -->
-    <div style="padding:20px 20px 0;">
+    <div style="padding:14px 20px 0;">
       <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:14px;">Quick Actions</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
         <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('my-splits');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='my-splits')});_moveNavIndicator('my-splits');">
@@ -702,6 +702,7 @@ function _homeShell(char, stats, att) {
     </div>
 
   </div>`;
+}
 }
 
 function _timeAgo(raw) {

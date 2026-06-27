@@ -141,14 +141,15 @@ html,body {
 }
 
 .mob-nav-btn {
-    color:#71717A;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:3px; background:transparent; border:none; cursor:pointer;
+  color:#71717A; font-family:var(--font-body);
+  padding:.5rem 0; transition:color var(--transition);
+  height:100%; width:100%;
+  -webkit-tap-highlight-color:transparent;
 }
-.mob-nav-btn.active {
-    color:white;
-}
-.mob-nav-btn.active .mob-nav-icon {
-    color:#4D8DFF;
-}
+.mob-nav-btn.active { color:white; }
+.mob-nav-btn.active .mob-nav-icon { color:#4D8DFF; }
 .mob-nav-btn:active { opacity:.7; }
 .mob-nav-icon  { font-size:1.3rem; line-height:1; }
 .mob-nav-label { font-size:.7rem; font-weight:700; letter-spacing:.06em; }
