@@ -703,7 +703,6 @@ function _homeShell(char, stats, att) {
 
   </div>`;
 }
-}
 
 function _timeAgo(raw) {
   if (!raw) return '';
