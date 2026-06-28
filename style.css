@@ -130,7 +130,7 @@ html,body {
   background:rgba(4,6,14,0.97);
   border-top:1px solid #0d2040;
   z-index:200; display:none;
-  grid-template-columns:repeat(4,1fr);
+  flex-direction:row;
   align-items:center;
   box-shadow:
     0 -4px 24px rgba(0,0,0,.95),
@@ -138,6 +138,14 @@ html,body {
     0 -8px 40px rgba(0,0,0,.8);
   -webkit-backdrop-filter:blur(24px);
   backdrop-filter:blur(24px);
+}
+.nav-indicator {
+  position:absolute; top:0; left:0; height:2px; width:25%;
+  background:linear-gradient(90deg,transparent,#5b9cf6,#7ab4ff,#5b9cf6,transparent);
+  transition:left .25s cubic-bezier(.4,0,.2,1);
+  box-shadow:0 0 10px rgba(91,156,246,0.8),0 0 20px rgba(91,156,246,0.4);
+  border-radius:0 0 2px 2px;
+  pointer-events:none;
 }
 
 .mob-nav-btn {
@@ -389,22 +397,24 @@ html,body {
 /* ── RESPONSIVE ──────────────────────────── */
 @media (max-width:700px) {
   #main-header { display:none; }
-  #mobile-nav { display:grid; }
+  #mobile-nav { display:flex; }
 
   /* Push content down below iOS status bar */
   #main-content {
-    padding: calc(env(safe-area-inset-top, 0px) + .25rem) 1rem 0;
+    padding: calc(env(safe-area-inset-top, 0px) + .25rem) .75rem 0;
     padding-bottom: calc(var(--mob-nav-h) + env(safe-area-inset-bottom, 0px) + 1rem);
   }
 
-  /* Home page has its own internal padding via h-toprow inline style */
-  #view-home.view.active { padding: 0; }
+  /* Home page manages its own padding internally */
+  #view-home.view.active { padding: 0 !important; }
 
   /* Nav must grow to cover home indicator bar */
   #mobile-nav {
     height: calc(var(--mob-nav-h) + env(safe-area-inset-bottom, 0px));
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
+
+  .mob-nav-btn { flex:1; }
 
   .boss-grid { grid-template-columns:repeat(2,1fr); }
   .boss-check { padding:.5rem .6rem; gap:.4rem; }

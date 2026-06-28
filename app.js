@@ -591,7 +591,7 @@ function _homeShell(char, stats, att) {
   <div style="background:#000;min-height:100%;font-family:'Inter',sans-serif;padding-bottom:1rem;">
 
     <!-- HERO -->
-    <div style="padding:calc(${safeTop} + 18px) 20px 0;">
+    <div style="padding:calc(${safeTop} + 14px) 12px 0;">
       <div style="font-size:11px;font-weight:600;color:#4a7ad4;letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;">WELCOME BACK</div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <div style="font-size:32px;font-weight:800;color:#ffffff;letter-spacing:-.5px;display:flex;align-items:center;gap:8px;flex:1">
@@ -613,7 +613,7 @@ function _homeShell(char, stats, att) {
     </div>
 
     <!-- SUBMIT ATTENDANCE CTA -->
-    <div style="margin:14px 16px 0;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px;display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="showView('attendance');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='attendance')});_moveNavIndicator('attendance');">
+    <div style="margin:10px 12px 0;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:12px;display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="showView('attendance');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='attendance')});_moveNavIndicator('attendance');">
       <div style="width:44px;height:44px;border-radius:10px;background:#111c30;border:1px solid #1e3560;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:22px;">📋</div>
       <div style="flex:1;">
         <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:2px;">Submit Attendance</div>
@@ -625,35 +625,35 @@ function _homeShell(char, stats, att) {
     </div>
 
     <!-- YOUR OVERVIEW -->
-    <div style="padding:16px 20px 0;">
-      <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:10px;">Your Overview</div>
-      <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none;">
-        <div style="flex:0 0 auto;width:120px;background:#0d1525;border:1px solid #1a2d50;border-radius:12px;padding:12px 10px;cursor:pointer;" onclick="showView('leaderboard')">
-          <div style="font-size:18px;margin-bottom:6px;">⭐</div>
-          <div style="font-size:9px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Total Points</div>
-          <div style="font-size:18px;font-weight:800;color:#ffffff;line-height:1;">${charPoints === '—' ? '—' : Number(charPoints).toLocaleString()}</div>
+    <div style="padding:12px 12px 0;">
+      <div style="font-size:15px;font-weight:700;color:#ffffff;margin-bottom:8px;">Your Overview</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">
+        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
+          <div style="font-size:16px;margin-bottom:5px;">⭐</div>
+          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Total Points</div>
+          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;word-break:break-all;">${charPoints === '—' ? '—' : fmtGold(charPoints)}</div>
         </div>
-        <div style="flex:0 0 auto;width:120px;background:#0d1525;border:1px solid #1a2d50;border-radius:12px;padding:12px 10px;cursor:pointer;" onclick="showView('my-splits')">
-          <div style="font-size:18px;margin-bottom:6px;">💰</div>
-          <div style="font-size:9px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Lifetime Gold</div>
-          <div style="font-size:18px;font-weight:800;color:#ffffff;line-height:1;">${totalGold}</div>
+        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
+          <div style="font-size:16px;margin-bottom:5px;">💰</div>
+          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Lifetime Gold</div>
+          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;">${totalGold}</div>
         </div>
-        <div style="flex:0 0 auto;width:120px;background:#0d1525;border:1px solid #1a2d50;border-radius:12px;padding:12px 10px;cursor:pointer;" onclick="showView('leaderboard')">
-          <div style="font-size:18px;margin-bottom:6px;">🏆</div>
-          <div style="font-size:9px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Your Rank</div>
-          <div style="font-size:18px;font-weight:800;color:#ffffff;line-height:1;">${rankNum ? '#'+rankNum : '—'}</div>
-          ${topPct ? `<div style="font-size:10px;color:#4a7ad4;margin-top:3px;">Top ${topPct}%</div>` : ''}
+        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
+          <div style="font-size:16px;margin-bottom:5px;">🏆</div>
+          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Your Rank</div>
+          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;">${rankNum ? '#'+rankNum : '—'}</div>
+          ${topPct ? `<div style="font-size:9px;color:#4a7ad4;margin-top:2px;">Top ${topPct}%</div>` : ''}
         </div>
-        <div style="flex:0 0 auto;width:120px;background:#0d1525;border:1px solid #1a2d50;border-radius:12px;padding:12px 10px;cursor:pointer;" onclick="showView('my-splits')">
-          <div style="font-size:18px;margin-bottom:6px;">📅</div>
-          <div style="font-size:9px;color:#4a6080;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Split Events</div>
-          <div style="font-size:18px;font-weight:800;color:#ffffff;line-height:1;">${splitEvents}</div>
+        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
+          <div style="font-size:16px;margin-bottom:5px;">📅</div>
+          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Split Events</div>
+          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;">${splitEvents}</div>
         </div>
       </div>
     </div>
 
     <!-- RECENT ACTIVITY -->
-    <div style="padding:14px 20px 0;">
+    <div style="padding:12px 12px 0;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
         <div style="font-size:16px;font-weight:700;color:#ffffff;">Recent Activity</div>
         <button onclick="showView('my-attendance')" style="background:none;border:none;color:#4a7ad4;font-size:13px;font-weight:600;cursor:pointer;padding:0;">View All</button>
@@ -679,7 +679,7 @@ function _homeShell(char, stats, att) {
     </div>
 
     <!-- QUICK ACTIONS -->
-    <div style="padding:14px 20px 0;">
+    <div style="padding:12px 12px 0;">
       <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:14px;">Quick Actions</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
         <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('my-splits');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='my-splits')});_moveNavIndicator('my-splits');">
