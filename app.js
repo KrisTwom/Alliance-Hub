@@ -16,11 +16,11 @@ const BOSS_SPRITES = {
   'Darlene':      '/sprites/boss sprites/darlene the witch.png',
   'Caligo':       '/sprites/boss sprites/caligo.png',
   'Platanista':   '/sprites/boss sprites/platanista.png',
-  'Siege':        null,
+  'Siege':        '/sprites/boss sprites/siege.webp',
   'Devilang':     '/sprites/boss sprites/devilang.png',
   'Actaemon':     '/sprites/boss sprites/actaemon.png',
   'Billiard':     '/sprites/boss sprites/billiard.png',
-  'Faith':        null,
+  'Faith':        '/sprites/boss sprites/faith.png',
   'Soul Lich':    '/sprites/boss sprites/soul lich.png',
   'Library Boss': '/sprites/boss sprites/primal knowledge.png'
 };

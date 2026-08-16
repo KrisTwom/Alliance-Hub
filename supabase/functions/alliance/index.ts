@@ -70,7 +70,7 @@ const BOSS_DROPS: Record<string, string[]> = {
   'Actaemon':     ['Relic of Infinity','Actaemon Horn','Weap S','Arm S'],
   'Billiard':     ['Spartan Shield','Execution Rune','Torture Rune','Bio Magic Rune','Corruption Rune','Weap S','Arm S'],
   'Faith':        ['Breath','Mercy Rune','Penitence Rune','Resurrection Rune','Atonement Rune','Weap S','Arm S'],
-  'Soul Lich':    ['Surge Cycle','Tree Armor'],
+  'Soul Lich':    ['Surge Cycle','Tree Armor', 'Weap S', 'Arm S'],
   'Library Boss': ['Broken Oath','Rune Piece','Pure Knowledge'],
 };
 
