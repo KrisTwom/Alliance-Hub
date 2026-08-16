@@ -185,16 +185,25 @@ async function getLeaderboard(supabase: ReturnType<typeof db>) {
 async function getCurrentUser(supabase: ReturnType<typeof db>, email: string) {
   if (!email) return { error: 'No email provided' };
 
-  const { data: rosterRow } = await supabase
+  // NOTE: both errors are checked and thrown here. Previously they were
+  // silently discarded, which meant a transient Supabase hiccup on this
+  // specific query got treated as "no roster row found" -> status
+  // defaulted to 'unregistered', showing already-approved members the
+  // pending/awaiting-approval screen until they refreshed. Now a failed
+  // query surfaces as a real error (Connection Failed screen in app.js)
+  // instead of a wrong status.
+  const { data: rosterRow, error: rosterErr } = await supabase
     .from('roster')
     .select('status')
     .eq('email', email)
     .maybeSingle();
+  if (rosterErr) throw rosterErr;
 
-  const { data: chars } = await supabase
+  const { data: chars, error: charsErr } = await supabase
     .from('characters')
     .select('*')
     .eq('email', email);
+  if (charsErr) throw charsErr;
 
   return {
     email,
@@ -256,7 +265,8 @@ async function getAllData(supabase: ReturnType<typeof db>, email: string) {
 // ============================================================
 async function requestAccess(supabase: ReturnType<typeof db>, email: string) {
   if (!email) return { error: 'No email' };
-  const { data: existing } = await supabase.from('roster').select('email').eq('email', email).maybeSingle();
+  const { data: existing, error: exErr } = await supabase.from('roster').select('email').eq('email', email).maybeSingle();
+  if (exErr) throw exErr;
   if (existing) return { success: true };
   const { error } = await supabase.from('roster').insert({ email, status: 'pending' });
   if (error) throw error;
@@ -265,7 +275,8 @@ async function requestAccess(supabase: ReturnType<typeof db>, email: string) {
 
 async function requestAccessWithInfo(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
   if (!email) return { error: 'No email' };
-  const { data: existing } = await supabase.from('roster').select('status').eq('email', email).maybeSingle();
+  const { data: existing, error: exErr } = await supabase.from('roster').select('status').eq('email', email).maybeSingle();
+  if (exErr) throw exErr;
   if (existing) return { success: true, status: existing.status };
   const { error } = await supabase.from('roster').insert({
     email, status: 'pending',
@@ -317,7 +328,8 @@ async function adminRegisterMember(supabase: ReturnType<typeof db>, email: strin
   if (!isAdmin(email)) return { error: 'Unauthorized' };
   const memberEmail = (data.memberEmail as string || '').toLowerCase().trim();
 
-  const { data: existing } = await supabase.from('roster').select('email').eq('email', memberEmail).maybeSingle();
+  const { data: existing, error: exErr } = await supabase.from('roster').select('email').eq('email', memberEmail).maybeSingle();
+  if (exErr) throw exErr;
   if (!existing) {
     const { error } = await supabase.from('roster').insert({ email: memberEmail, status: 'active', registered_by: email });
     if (error) throw error;
