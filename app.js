@@ -49,7 +49,7 @@ const ITEM_SPRITES = {
   'Bio Magic rune':      '/sprites/item sprites/mage_rune.webp',
   'Corruption rune':     '/sprites/item sprites/breaker_rune.webp',
   'Aiyo Orb':            '/sprites/item sprites/Pure-Magic-Orb.webp',
-  'Aiyo Glove':          '/sprites/item sprites/ai.webp',
+  'Aiyo Glove':          '/sprites/item sprites/aiyo_glove.webp',
   'Faded Ring':          '/sprites/item sprites/Faded-Ring.webp',
   'Maze Treasure':       '/sprites/item sprites/raid_treasure.webp',
   'Caligo hand':         '/sprites/item sprites/caligo_hand.webp',
@@ -66,6 +66,7 @@ const ITEM_SPRITES = {
   'Relic of Infinity':   '/sprites/item sprites/Relic-of-Infinity.webp',
   'Actaemon Horn':       '/sprites/item sprites/Actaemons-horn.webp',
   'Spartan Shield':      '/sprites/item sprites/Spartan-Shield.webp',
+  'Tree Armor':          '/sprites/item sprites/tree_armor.webp',
   'Broken Oath':         '/sprites/item sprites/Broken-Oath.webp',
   'Rune Piece':          '/sprites/item sprites/Rune-Piece.webp',
   'Pure Knowledge':      '/sprites/item sprites/Pure-Knowledge.webp'
