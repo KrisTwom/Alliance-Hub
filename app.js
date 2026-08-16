@@ -566,6 +566,25 @@ function switchChar(charId) {
   if (active) showView(active.id.replace('view-', ''));
 }
 
+// Native <select> elements size their box to the WIDEST option in the list,
+// not the currently selected one — so with a longer-named alt character in
+// the list, the dropdown arrow (positioned relative to the select's own box)
+// ends up floating far past the shorter selected name. This measures the
+// selected option's actual rendered text width and pins the select's width
+// to just that, so the arrow always sits right next to the visible text.
+function _sizeSelectToContent(selectEl) {
+  if (!selectEl) return;
+  const selectedText = selectEl.options[selectEl.selectedIndex]?.text || '';
+  const cs = getComputedStyle(selectEl);
+  const probe = document.createElement('span');
+  probe.style.cssText = `position:absolute;left:-9999px;top:-9999px;white-space:nowrap;visibility:hidden;font-family:${cs.fontFamily};font-size:${cs.fontSize};font-weight:${cs.fontWeight};letter-spacing:${cs.letterSpacing};`;
+  probe.textContent = selectedText;
+  document.body.appendChild(probe);
+  const textWidth = probe.getBoundingClientRect().width;
+  probe.remove();
+  selectEl.style.width = Math.ceil(textWidth) + 24 + 'px'; // +24px reserves room for the arrow
+}
+
 // ============================================================
 //  VIEW ROUTER
 // ============================================================
@@ -615,6 +634,7 @@ function renderHome() {
 
   // Render immediately with skeleton stats
   el.innerHTML = _homeShell(char, null, []);
+  _sizeSelectToContent(document.getElementById('home-char-select'));
 
   Promise.all([
     API.read('get_leaderboard'),
@@ -630,6 +650,7 @@ function renderHome() {
     const splitEvents = pays.length;
     const charPoints = char?.points || 0;
     el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, splitEvents, charPoints }, att || []);
+    _sizeSelectToContent(document.getElementById('home-char-select'));
   });
 }
 
@@ -653,7 +674,7 @@ function _homeShell(char, stats, att) {
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <div style="font-size:32px;font-weight:800;color:#ffffff;letter-spacing:-.5px;display:flex;align-items:center;gap:8px;flex:1">
           ${App.user.characters && App.user.characters.length > 1
-            ? `<select onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:#fff;font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:#06090f;font-size:16px">${c.ign}</option>`).join('')}</select>`
+            ? `<select id="home-char-select" onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:#fff;font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:#06090f;font-size:16px">${c.ign}</option>`).join('')}</select>`
             : `<span>${char?.ign || 'Adventurer'}</span>`}
         </div>
         <div style="width:36px;height:36px;border-radius:10px;background:#0d1220;border:1px solid #1a2d50;display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;">
@@ -721,11 +742,11 @@ function _homeShell(char, stats, att) {
           : recent.map((a, i) => {
               const sprite = BOSS_SPRITES[a.boss];
               const thumb = sprite
-                ? `<img src="${sprite}" alt="${a.boss}" style="width:100%;height:100%;object-fit:cover;border-radius:8px;" onerror="this.style.display='none'">`
+                ? `<img src="${sprite}" alt="${a.boss}" style="width:100%;height:100%;object-fit:contain;border-radius:8px;" onerror="this.style.display='none'">`
                 : `<span style="font-size:16px;">⚔️</span>`;
               const ago = _timeAgo(a.timestamp);
               return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;${i < recent.length-1 ? 'border-bottom:1px solid #0a1020;' : ''}">
-                <div style="width:38px;height:38px;border-radius:10px;background:#111c30;border:1px solid #1a2d50;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">${thumb}</div>
+                <div style="width:38px;height:38px;padding:5px;box-sizing:border-box;border-radius:10px;background:#111c30;border:1px solid #1a2d50;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">${thumb}</div>
                 <div style="flex:1;min-width:0;">
                   <div style="font-size:14px;font-weight:600;color:#e0eaff;">${a.boss}</div>
                 </div>
@@ -1171,6 +1192,22 @@ function renderGuide() {
       </div>
     </div>`;
 }
+// Formats the raw `drops` payload — usually a JSON string like
+// '[{"itemName":"Actaemon Horn","qty":1}]' — into a readable "Item ×2, Item"
+// string for the Drops table cell, instead of dumping raw JSON on screen.
+function _fmtDropsCell(dropsRaw) {
+  if (!dropsRaw) return '—';
+  let items = dropsRaw;
+  if (typeof dropsRaw === 'string') {
+    try { items = JSON.parse(dropsRaw); } catch(e) { return escHtml(dropsRaw); }
+  }
+  if (!Array.isArray(items) || !items.length) return '—';
+  return items.map(d => {
+    const qty = Number(d.qty) || 1;
+    return escHtml(d.itemName || '') + (qty > 1 ? ` ×${qty}` : '');
+  }).join(', ');
+}
+
 function renderDrops() {
   const el = document.getElementById('view-drops');
 
@@ -1194,7 +1231,7 @@ function renderDrops() {
                 <tr onclick="openRunModal(${i})">
                   <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
                   <td><strong>${r.boss}</strong></td>
-                  <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.drops||'—'}</td>
+                  <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_fmtDropsCell(r.drops)}</td>
                   <td><span style="color:var(--gold)">${r.participantCount}</span> players</td>
                   <td><span class="status ${r.status==='Confirmed'?'status-confirmed':'status-pending'}">${r.status}</span></td>
                 </tr>`).join('')}

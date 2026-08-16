@@ -253,15 +253,15 @@ html,body {
 /* ── INVENTORY TILES ─────────────────────── */
 .inv-section { margin-bottom:1.25rem; }
 .inv-section-title { font-family:var(--font-display); font-size:.9rem; color:var(--text-secondary); letter-spacing:.15em; text-transform:uppercase; margin-bottom:.75rem; display:flex; align-items:center; gap:.5rem; font-weight:700; }
-.inv-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:.75rem; }
-.inv-tile { background:#06090f; border:1px solid var(--border); border-radius:var(--radius-lg); padding:.85rem; cursor:pointer; transition:all var(--transition); display:flex; flex-direction:column; gap:.5rem; -webkit-tap-highlight-color:transparent; }
+.inv-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(92px,1fr)); gap:.5rem; }
+.inv-tile { background:#06090f; border:1px solid var(--border); border-radius:var(--radius); padding:.5rem; cursor:pointer; transition:all var(--transition); display:flex; flex-direction:column; gap:.3rem; -webkit-tap-highlight-color:transparent; }
 .inv-tile:hover { border-color:var(--gold-dim); transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,0,0,.6); }
 .inv-tile:active { transform:scale(.97); }
-.inv-tile-img   { width:100%; aspect-ratio:1; background:var(--bg-raised); border-radius:var(--radius); display:flex; align-items:center; justify-content:center; font-size:2rem; border:1px solid var(--border); overflow:hidden; }
+.inv-tile-img   { width:100%; aspect-ratio:1; background:var(--bg-raised); border-radius:calc(var(--radius) - 4px); display:flex; align-items:center; justify-content:center; font-size:1.3rem; border:1px solid var(--border); overflow:hidden; }
 .inv-tile-img img { width:78%; height:78%; object-fit:contain; image-rendering:pixelated; }
-.inv-tile-name  { font-size:.82rem; font-weight:600; color:var(--text-primary); line-height:1.3; }
-.inv-tile-qty   { font-family:var(--font-display); font-size:1.3rem; color:var(--gold); font-weight:700; }
-.inv-tile-qty-label { font-size:.7rem; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.08em; }
+.inv-tile-name  { font-size:.68rem; font-weight:600; color:var(--text-primary); line-height:1.25; }
+.inv-tile-qty   { font-family:var(--font-display); font-size:1rem; color:var(--gold); font-weight:700; }
+.inv-tile-qty-label { font-size:.58rem; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.06em; }
 .inv-tile.sold-out { opacity:.4; }
 .inv-tile.sold-out .inv-tile-qty { color:var(--text-muted); }
 
@@ -428,7 +428,7 @@ html,body {
   .boss-check { padding:.5rem .6rem; gap:.4rem; }
   .boss-check-sprite { width:32px; height:32px; max-width:32px; max-height:32px; }
   #toast { bottom:calc(var(--mob-nav-h) + var(--nav-safe-clearance) + .75rem); }
-  .inv-grid { grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); }
+  .inv-grid { grid-template-columns:repeat(auto-fill,minmax(78px,1fr)); }
 }
 @media (min-width:701px) {
   #mobile-nav { display:none !important; }
