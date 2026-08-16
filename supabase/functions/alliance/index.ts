@@ -546,7 +546,17 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
       participant_ids: participantStr, drops: dropsStr, status: 'Confirmed',
       notes, confirmed_at: now, confirmed_by: email,
     });
-    if (error) throw error;
+    if (error) {
+      // 23505 = Postgres unique_violation. Means another admin's confirm_run
+      // for this exact boss + window already landed a moment earlier — the
+      // DB-level constraint (see migration) is what actually stops the race,
+      // this just turns it into a clean error instead of a duplicate run +
+      // duplicate inventory rows.
+      if (error.code === '23505') {
+        return { error: 'This run was just confirmed by another admin. Refresh to see it.' };
+      }
+      throw error;
+    }
     await writeToInventory(supabase, finalRunId!, boss, drops, now);
   }
 
