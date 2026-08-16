@@ -25,6 +25,62 @@ const BOSS_SPRITES = {
   'Library Boss': '/sprites/boss sprites/primal knowledge.png'
 };
 
+// Item sprites live in /sprites/item sprites/ — same folder convention as
+// BOSS_SPRITES above. Several items intentionally share one icon (e.g. all
+// three raid treasures, the four class runes reused across two boss tiers).
+const ITEM_SPRITES = {
+  'Weap S':              '/sprites/item sprites/weapon_enchant_scroll.webp',
+  'Arm S':               '/sprites/item sprites/armor_enchant_scroll.webp',
+  'Mother Nature':       '/sprites/item sprites/mother_nature.webp',
+  'Passionate cloak':    '/sprites/item sprites/passionate_cloak.webp',
+  'harden body 2':       '/sprites/item sprites/warrior_skillbook.webp',
+  'Chainstrike 4':       '/sprites/item sprites/breaker_skillbook.webp',
+  'Swamp Treasure':      '/sprites/item sprites/raid_treasure.webp',
+  'Snowfield Treasure':  '/sprites/item sprites/raid_treasure.webp',
+  'Broken Necklace':     '/sprites/item sprites/broken-necklace.webp',
+  'Breath':              '/sprites/item sprites/breath.webp',
+  'Mercy rune':          '/sprites/item sprites/warrior_rune.webp',
+  'Penitence rune':      '/sprites/item sprites/ranger_rune.webp',
+  'Resurrection rune':   '/sprites/item sprites/mage_rune.webp',
+  'Atonement rune':      '/sprites/item sprites/breaker_rune.webp',
+  '5 color leather':     '/sprites/item sprites/five-colored-leather.webp',
+  'Execution rune':      '/sprites/item sprites/warrior_rune.webp',
+  'Torture rune':        '/sprites/item sprites/ranger_rune.webp',
+  'Bio Magic rune':      '/sprites/item sprites/mage_rune.webp',
+  'Corruption rune':     '/sprites/item sprites/breaker_rune.webp',
+  'Aiyo Orb':            '/sprites/item sprites/Pure-Magic-Orb.webp',
+  'Aiyo Glove':          '/sprites/item sprites/ai.webp',
+  'Faded Ring':          '/sprites/item sprites/Faded-Ring.webp',
+  'Maze Treasure':       '/sprites/item sprites/raid_treasure.webp',
+  'Caligo hand':         '/sprites/item sprites/caligo_hand.webp',
+  'Caligo scales':       '/sprites/item sprites/Caligo_Scales.webp',
+  'Caligo Glove':        '/sprites/item sprites/Caligo-Gloves.webp',
+  'Caligo Boots':        '/sprites/item sprites/Caligo-Boots.webp',
+  'Otherworld Belt':     '/sprites/item sprites/Otherworld-Belt.webp',
+  'Surge Cycle':         '/sprites/item sprites/Surge-Cycle.webp',
+  'Giant rune':          '/sprites/item sprites/warrior_rune.webp',
+  'Depredation rune':    '/sprites/item sprites/ranger_rune.webp',
+  'Judgement rune':      '/sprites/item sprites/mage_rune.webp',
+  'Supremacy rune':      '/sprites/item sprites/breaker_rune.webp',
+  'Wingwing Boots':      '/sprites/item sprites/Wingwing-Boots.webp',
+  'Relic of Infinity':   '/sprites/item sprites/Relic-of-Infinity.webp',
+  'Actaemon Horn':       '/sprites/item sprites/Actaemons-horn.webp',
+  'Spartan Shield':      '/sprites/item sprites/Spartan-Shield.webp',
+  'Broken Oath':         '/sprites/item sprites/Broken-Oath.webp',
+  'Rune Piece':          '/sprites/item sprites/Rune-Piece.webp',
+  'Pure Knowledge':      '/sprites/item sprites/Pure-Knowledge.webp'
+};
+
+// Exact-match first; falls back to a case/whitespace-insensitive match so
+// small casing differences between this map and config item names don't
+// silently break icons.
+function getItemSprite(itemName) {
+  if (ITEM_SPRITES[itemName]) return ITEM_SPRITES[itemName];
+  const norm = String(itemName).trim().toLowerCase();
+  const key = Object.keys(ITEM_SPRITES).find(k => k.trim().toLowerCase() === norm);
+  return key ? ITEM_SPRITES[key] : null;
+}
+
 const App = {
   user:         null,
   config:       null,
@@ -1281,9 +1337,13 @@ function renderInventory() {
                 const tileClass = isNever ? 'inv-tile never-dropped' : isSoldOut ? 'inv-tile sold-out' : 'inv-tile';
                 const qtyLabel  = isNever ? 'Not Yet Dropped' : isSoldOut ? 'All Sold' : 'Available';
                 const clickHandler = isNever ? '' : `onclick="openItemModal('${escHtml(boss)}','${escHtml(itemName)}')"`;
+                const sprite = getItemSprite(itemName);
+                const imgHtml = sprite
+                  ? `<img src="${sprite}" alt="${escHtml(itemName)}" onerror="this.parentElement.textContent='🎁'">`
+                  : '🎁';
                 return `
                   <div class="${tileClass}" ${clickHandler} style="${isNever?'cursor:default;':''}">
-                    <div class="inv-tile-img">🎁</div>
+                    <div class="inv-tile-img">${imgHtml}</div>
                     <div class="inv-tile-name">${itemName}</div>
                     <div class="inv-tile-qty">${isNever ? '—' : data.available}</div>
                     <div class="inv-tile-qty-label">${qtyLabel}</div>
@@ -1300,8 +1360,12 @@ function renderInventory() {
 
 function openItemModal(boss, itemName) {
   const data = window._inventoryData?.[boss]?.[itemName]; if (!data) return;
+  const modalSprite = getItemSprite(itemName);
+  const modalIcon = modalSprite
+    ? `<img src="${modalSprite}" alt="${escHtml(itemName)}" style="width:28px;height:28px;object-fit:contain;vertical-align:-6px;margin-right:.4rem" onerror="this.remove()">`
+    : '🎁 ';
   showModal(`
-    <div class="modal-title">🎁 ${itemName}</div>
+    <div class="modal-title">${modalIcon}${itemName}</div>
     <div style="display:flex;gap:1.5rem;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap">
       <div><div style="font-family:var(--font-display);font-size:3rem;color:var(--gold);line-height:1">${data.available}</div><div style="font-size:.78rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.1em">Available</div></div>
       <div><div style="font-family:var(--font-display);font-size:2rem;color:var(--text-secondary);line-height:1">${data.totalQty}</div><div style="font-size:.78rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.1em">Total Dropped</div></div>
