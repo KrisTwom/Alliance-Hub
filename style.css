@@ -86,7 +86,7 @@ html,body {
 }
 @media all and (display-mode: standalone) {
   body::before { content:''; position:fixed; top:0; left:0; right:0; height:env(safe-area-inset-top,0px); background:#000; z-index:9999; }
-  #mobile-nav { height:calc(var(--mob-nav-h) + env(safe-area-inset-bottom,34px)); padding-bottom:env(safe-area-inset-bottom,34px); }
+  #mobile-nav { height:calc(var(--mob-nav-h) + env(safe-area-inset-bottom,34px)); }
   #main-content { padding-bottom:calc(var(--mob-nav-h) + env(safe-area-inset-bottom,34px) + 1.5rem); }
 }
 .header-left  { display:flex; align-items:center; gap:.6rem; }
@@ -411,7 +411,6 @@ html,body {
   /* Nav must grow to cover home indicator bar */
   #mobile-nav {
     height: calc(var(--mob-nav-h) + env(safe-area-inset-bottom, 0px));
-    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 
   .mob-nav-btn { flex:1; }
