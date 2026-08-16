@@ -86,7 +86,7 @@ html,body {
 }
 @media all and (display-mode: standalone) {
   body::before { content:''; position:fixed; top:0; left:0; right:0; height:env(safe-area-inset-top,0px); background:#000; z-index:9999; }
-  #mobile-nav { height:calc(var(--mob-nav-h) + env(safe-area-inset-bottom,34px)); }
+  #mobile-nav { height:calc(var(--mob-nav-h) + var(--nav-safe-clearance)); }
   #main-content { padding-bottom:calc(var(--mob-nav-h) + env(safe-area-inset-bottom,34px) + 1.5rem); }
 }
 .header-left  { display:flex; align-items:center; gap:.6rem; }
@@ -402,7 +402,7 @@ html,body {
   /* Push content down below iOS status bar */
   #main-content {
     padding: calc(env(safe-area-inset-top, 0px) + .25rem) .75rem 0;
-    padding-bottom: calc(var(--mob-nav-h) + env(safe-area-inset-bottom, 0px) + 1rem);
+    padding-bottom: calc(var(--mob-nav-h) + var(--nav-safe-clearance) + 1rem);
   }
 
   /* Home page manages its own padding internally */
@@ -410,7 +410,7 @@ html,body {
 
   /* Nav must grow to cover home indicator bar */
   #mobile-nav {
-    height: calc(var(--mob-nav-h) + env(safe-area-inset-bottom, 0px));
+    height: calc(var(--mob-nav-h) + var(--nav-safe-clearance));
   }
 
   .mob-nav-btn { flex:1; }
@@ -418,7 +418,7 @@ html,body {
   .boss-grid { grid-template-columns:repeat(2,1fr); }
   .boss-check { padding:.5rem .6rem; gap:.4rem; }
   .boss-check-sprite { width:32px; height:32px; max-width:32px; max-height:32px; }
-  #toast { bottom:calc(var(--mob-nav-h) + env(safe-area-inset-bottom, 0px) + .75rem); }
+  #toast { bottom: calc(var(--mob-nav-h) + var(--nav-safe-clearance) + .75rem); }
   .inv-grid { grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); }
 }
 @media (min-width:701px) {
