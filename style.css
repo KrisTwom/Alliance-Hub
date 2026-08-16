@@ -43,6 +43,13 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
+
+  /* Capped bottom-nav clearance: on notched iPhones the raw safe-bottom
+     inset (~34px) is more buffer than the bar actually needs above the
+     home-indicator gesture zone. Capping it keeps the bar closer to how
+     it looks on Android/desktop while still avoiding the gesture area.
+     Tune the 16px value up/down if it looks off on a real device. */
+  --nav-safe-clearance: min(env(safe-area-inset-bottom, 0px), 16px);
 }
 
 *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
@@ -87,7 +94,7 @@ html,body {
 @media all and (display-mode: standalone) {
   body::before { content:''; position:fixed; top:0; left:0; right:0; height:env(safe-area-inset-top,0px); background:#000; z-index:9999; }
   #mobile-nav { height:calc(var(--mob-nav-h) + var(--nav-safe-clearance)); }
-  #main-content { padding-bottom:calc(var(--mob-nav-h) + env(safe-area-inset-bottom,34px) + 1.5rem); }
+  #main-content { padding-bottom:calc(var(--mob-nav-h) + var(--nav-safe-clearance) + 1.5rem); }
 }
 .header-left  { display:flex; align-items:center; gap:.6rem; }
 .header-emblem { font-size:1.3rem; filter:drop-shadow(0 0 6px var(--gold)); color:var(--gold); }
@@ -118,7 +125,7 @@ html,body {
 }
 
 /* ── MAIN CONTENT ───────────────────────── */
-#main-content { flex:1; padding:1.5rem; max-width:1100px; width:100%; margin:0 auto; padding-bottom:calc(var(--mob-nav-h) + var(--safe-bottom) + 1rem); }
+#main-content { flex:1; padding:1.5rem; max-width:1100px; width:100%; margin:0 auto; padding-bottom:calc(var(--mob-nav-h) + var(--nav-safe-clearance) + 1rem); }
 .view { display:none; }
 .view.active { display:block; animation:fade-in .3s ease; }
 @keyframes fade-in { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
@@ -384,7 +391,7 @@ html,body {
 .modal-actions { display:flex; gap:.6rem; justify-content:flex-end; margin-top:1.2rem; flex-wrap:wrap; }
 
 /* ── TOAST ───────────────────────────────── */
-#toast { position:fixed; bottom:calc(var(--mob-nav-h) + var(--safe-bottom) + 1rem); left:50%; transform:translateX(-50%) translateY(80px); background:#06090f; border:1px solid var(--border-mid); color:var(--text-primary); font-size:.9rem; padding:.7rem 1.4rem; border-radius:99px; box-shadow:0 8px 32px rgba(0,0,0,.8); z-index:9998; transition:transform .3s ease,opacity .3s ease; opacity:0; white-space:nowrap; }
+#toast { position:fixed; bottom:calc(var(--mob-nav-h) + var(--nav-safe-clearance) + 1rem); left:50%; transform:translateX(-50%) translateY(80px); background:#06090f; border:1px solid var(--border-mid); color:var(--text-primary); font-size:.9rem; padding:.7rem 1.4rem; border-radius:99px; box-shadow:0 8px 32px rgba(0,0,0,.8); z-index:9998; transition:transform .3s ease,opacity .3s ease; opacity:0; white-space:nowrap; }
 #toast.show    { transform:translateX(-50%) translateY(0); opacity:1; }
 #toast.success { border-color:rgba(78,203,113,.4); color:var(--success); }
 #toast.error   { border-color:rgba(224,85,85,.4);  color:var(--danger); }
@@ -408,7 +415,8 @@ html,body {
   /* Home page manages its own padding internally */
   #view-home.view.active { padding: 0 !important; }
 
-  /* Nav must grow to cover home indicator bar */
+  /* Nav must grow slightly to clear the home indicator bar, capped via
+     --nav-safe-clearance so it doesn't look oversized vs Android/desktop */
   #mobile-nav {
     height: calc(var(--mob-nav-h) + var(--nav-safe-clearance));
   }
@@ -418,7 +426,7 @@ html,body {
   .boss-grid { grid-template-columns:repeat(2,1fr); }
   .boss-check { padding:.5rem .6rem; gap:.4rem; }
   .boss-check-sprite { width:32px; height:32px; max-width:32px; max-height:32px; }
-  #toast { bottom: calc(var(--mob-nav-h) + var(--nav-safe-clearance) + .75rem); }
+  #toast { bottom:calc(var(--mob-nav-h) + var(--nav-safe-clearance) + .75rem); }
   .inv-grid { grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); }
 }
 @media (min-width:701px) {
