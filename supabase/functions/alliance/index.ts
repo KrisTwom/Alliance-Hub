@@ -70,7 +70,7 @@ const BOSS_DROPS: Record<string, string[]> = {
   'Actaemon':     ['Relic of Infinity','Actaemon Horn','Weap S','Arm S'],
   'Billiard':     ['Spartan Shield','Execution Rune','Torture Rune','Bio Magic Rune','Corruption Rune','Weap S','Arm S'],
   'Faith':        ['Breath','Mercy Rune','Penitence Rune','Resurrection Rune','Atonement Rune','Weap S','Arm S'],
-  'Soul Lich':    ['Surge Cycle','Tree Armor', 'Weap S', 'Arm S'],
+  'Soul Lich':    ['Surge Cycle','Tree Armor','Weap S', 'Arm S'],
   'Library Boss': ['Broken Oath','Rune Piece','Pure Knowledge'],
 };
 
@@ -144,6 +144,8 @@ Deno.serve(async (req) => {
       case 'remove_character':    return ok(await removeCharacter(supabase, email, data.charId as string));
       case 'get_grouped_runs':    return ok(await getGroupedRuns(supabase, email));
       case 'confirm_run':         return ok(await confirmRun(supabase, email, data.runData as Record<string, unknown>));
+      case 'get_window_resets':   return ok(await getWindowResets(supabase, email));
+      case 'reset_window':        return ok(await resetWindow(supabase, email, data.boss as string));
       case 'get_inventory':       return ok(await getInventory(supabase, email));
       case 'mark_items_sold':     return ok(await markItemsSold(supabase, email, data));
       case 'get_payouts_page':    return ok(await getPayoutsPage(supabase, email, data.month as string));
@@ -470,6 +472,14 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
 
   const { data: savedRuns } = await supabase.from('runs').select('*');
 
+  // Per-boss manual window resets (see resetWindow()). Any reset_at
+  // timestamp here forces a hard break in the grouping chain for that
+  // boss, even if the next submission would otherwise land inside the
+  // normal 2h window — e.g. after an emergency maintenance respawn.
+  const { data: resetRows } = await supabase.from('window_resets').select('boss, reset_at');
+  const resetMap: Record<string, number> = {};
+  (resetRows || []).forEach(r => { resetMap[r.boss] = new Date(r.reset_at).getTime(); });
+
   // Group attendance into run windows (mirrors GAS logic)
   const bossGroups: Record<string, Array<{ ts: number; charId: string; ign: string; email: string }>> = {};
   (attRows || []).forEach(r => {
@@ -480,11 +490,15 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   const runs: Array<{ boss: string; windowStart: number; windowEnd: number; participants: Array<{ charId: string; ign: string; email: string }> }> = [];
   Object.keys(bossGroups).forEach(boss => {
     const entries = bossGroups[boss].sort((a, b) => a.ts - b.ts);
+    const resetMs = resetMap[boss];
     let windowStart: number | null = null;
     let windowEntries: typeof entries = [];
     entries.forEach(e => {
+      // A reset forces a break if it falls strictly between the current
+      // window's start and this entry — regardless of the 2h threshold.
+      const crossesReset = resetMs != null && windowStart !== null && windowStart < resetMs && e.ts >= resetMs;
       if (windowStart === null) { windowStart = e.ts; windowEntries = [e]; }
-      else if (e.ts - windowStart! <= GROUP_WINDOW_MS) { windowEntries.push(e); }
+      else if (!crossesReset && e.ts - windowStart! <= GROUP_WINDOW_MS) { windowEntries.push(e); }
       else {
         runs.push(buildRun(boss, windowStart!, windowEntries));
         windowStart = e.ts; windowEntries = [e];
@@ -520,6 +534,35 @@ function buildRun(boss: string, windowStart: number, entries: Array<{ charId: st
   const participants: Array<{ charId: string; ign: string; email: string }> = [];
   entries.forEach(e => { if (!seen.has(e.charId)) { seen.add(e.charId); participants.push({ charId: e.charId, ign: e.ign, email: e.email }); } });
   return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, participants };
+}
+
+// ============================================================
+//  WINDOW RESETS (emergency maintenance handling)
+// ============================================================
+// Forces a hard break in a boss's grouping chain as of "now", so any
+// attendance submitted after this point starts a brand new run window
+// instead of merging into whatever window was open before — even if
+// it's submitted less than GROUP_WINDOW_MS after the last kill.
+// Does NOT touch already-confirmed runs or attendance rows; it only
+// affects how *future* get_grouped_runs calls bucket new submissions.
+async function resetWindow(supabase: ReturnType<typeof db>, email: string, boss: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!boss) return { error: 'Boss is required' };
+
+  const resetAt = new Date().toISOString();
+  const { error } = await supabase.from('window_resets').upsert({
+    boss, reset_at: resetAt, reset_by: email,
+  });
+  if (error) throw error;
+
+  return { success: true, boss, resetAt };
+}
+
+async function getWindowResets(supabase: ReturnType<typeof db>, email: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  const { data, error } = await supabase.from('window_resets').select('boss, reset_at, reset_by').order('reset_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(r => ({ boss: r.boss, resetAt: r.reset_at, resetBy: r.reset_by }));
 }
 
 async function confirmRun(supabase: ReturnType<typeof db>, email: string, runData: Record<string, unknown>) {

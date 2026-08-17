@@ -102,6 +102,7 @@ const Cache = {
     get_my_attendance:    2  * 60 * 1000,   // 2 min
     get_my_payouts:       2  * 60 * 1000,
     get_grouped_runs:     90 * 1000,        // 90 sec (changes when attendance submitted)
+    get_window_resets:    60 * 1000,
     get_inventory:        2  * 60 * 1000,
     get_payouts_page:     2  * 60 * 1000,
     get_available_months: 5  * 60 * 1000,
@@ -290,7 +291,12 @@ window.initAllianceTracker = async function(email) {
     // Single batch call — fetches user, config, leaderboard,
     // attendance, payouts, and admin data all at once.
     const allData = await API._fetch('get_all_data', {});
-    if (allData?.error) throw new Error(allData.error);
+    if (allData?.error) {
+      const errMsg = typeof allData.error === 'string'
+        ? allData.error
+        : (allData.error.message || allData.error.hint || JSON.stringify(allData.error));
+      throw new Error(errMsg);
+    }
     if (!allData?.config?.bossCategories) throw new Error('Config missing — check your Supabase Edge Function deployment');
 
     // Hydrate app state
@@ -1219,7 +1225,10 @@ function renderDrops() {
 
   API.read('get_grouped_runs').then(runs => {
     el.innerHTML = `
-      <div class="section-title">💎 Boss Runs</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
+        <div class="section-title" style="margin-bottom:0">💎 Boss Runs</div>
+        ${App.user.isAdmin ? `<button class="btn btn-secondary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openResetWindowModal()">🔄 Reset Window</button>` : ''}
+      </div>
       <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
       <div class="table-scroll">
         <table class="data-table">
@@ -1240,6 +1249,42 @@ function renderDrops() {
       </div>`;
     window._runs = runs || [];
   });
+}
+
+// ============================================================
+//  RESET WINDOW (admin — emergency maintenance handling)
+// ============================================================
+function openResetWindowModal() {
+  const bosses = (App.config.bossCategories || []).flatMap(c => c.bosses.map(b => b.name));
+
+  showModal(`
+    <div class="modal-title">🔄 Reset Boss Window</div>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem;line-height:1.5">
+      Use this after an emergency maintenance/respawn. It forces the next attendance
+      submissions for the selected boss into a brand-new run window, even if they land
+      within 2 hours of the last one. Already-confirmed runs are not affected.
+    </p>
+    <div class="form-group">
+      <label class="form-label">Boss</label>
+      <select id="reset-window-boss" class="form-input">
+        ${bosses.map(b => `<option value="${b}">${b}</option>`).join('')}
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="reset-window-btn" onclick="submitWindowReset()">🔄 Reset Window</button>
+    </div>`);
+}
+
+function submitWindowReset() {
+  const boss = document.getElementById('reset-window-boss').value;
+  const btn  = document.getElementById('reset-window-btn');
+  btn.disabled = true; btn.textContent = '⏳ Resetting…';
+
+  API.write('reset_window', { boss }, ['get_grouped_runs', 'get_window_resets']).then(res => {
+    if (res.success) { toast(`Window reset for ${boss}`, 'success'); closeModal(); renderDrops(); }
+    else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '🔄 Reset Window'; }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '🔄 Reset Window'; });
 }
 
 function toggleDropQty(cb) {
