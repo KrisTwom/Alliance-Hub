@@ -103,6 +103,7 @@ const Cache = {
     get_my_payouts:       2  * 60 * 1000,
     get_grouped_runs:     90 * 1000,        // 90 sec (changes when attendance submitted)
     get_window_resets:    60 * 1000,
+    get_char_attendance:  30 * 1000,
     get_inventory:        2  * 60 * 1000,
     get_payouts_page:     2  * 60 * 1000,
     get_available_months: 5  * 60 * 1000,
@@ -1255,21 +1256,13 @@ function renderDrops() {
 //  RESET WINDOW (admin — emergency maintenance handling)
 // ============================================================
 function openResetWindowModal() {
-  const bosses = (App.config.bossCategories || []).flatMap(c => c.bosses.map(b => b.name));
-
   showModal(`
     <div class="modal-title">🔄 Reset Boss Window</div>
     <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem;line-height:1.5">
       Use this after an emergency maintenance/respawn. It forces the next attendance
-      submissions for the selected boss into a brand-new run window, even if they land
-      within 2 hours of the last one. Already-confirmed runs are not affected.
+      submissions for <strong>every boss</strong> into brand-new run windows, even if they
+      land within 2 hours of the last one. Already-confirmed runs are not affected.
     </p>
-    <div class="form-group">
-      <label class="form-label">Boss</label>
-      <select id="reset-window-boss" class="form-input">
-        ${bosses.map(b => `<option value="${b}">${b}</option>`).join('')}
-      </select>
-    </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" id="reset-window-btn" onclick="submitWindowReset()">🔄 Reset Window</button>
@@ -1277,12 +1270,11 @@ function openResetWindowModal() {
 }
 
 function submitWindowReset() {
-  const boss = document.getElementById('reset-window-boss').value;
-  const btn  = document.getElementById('reset-window-btn');
+  const btn = document.getElementById('reset-window-btn');
   btn.disabled = true; btn.textContent = '⏳ Resetting…';
 
-  API.write('reset_window', { boss }, ['get_grouped_runs', 'get_window_resets']).then(res => {
-    if (res.success) { toast(`Window reset for ${boss}`, 'success'); closeModal(); renderDrops(); }
+  API.write('reset_window', {}, ['get_grouped_runs', 'get_window_resets']).then(res => {
+    if (res.success) { toast('Window reset for all bosses', 'success'); closeModal(); renderDrops(); }
     else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '🔄 Reset Window'; }
   }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '🔄 Reset Window'; });
 }
@@ -1647,7 +1639,7 @@ function rosterCard(r) {
         ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
       </div>
     </div>
-    ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span style="font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
+    ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span onclick="openAttendanceHistoryModal('${c.charId}','${(c.ign||'').replace(/'/g,"\\'")}')" style="cursor:pointer;font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)" title="View attendance history">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
       <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
@@ -1746,6 +1738,47 @@ function submitAddChar(memberEmail) {
     if (res.success) { toast('Character added!', 'success'); closeModal(); renderRoster(); }
     else { toast(res.error||'Error', 'error'); }
   });
+}
+
+// ============================================================
+//  ATTENDANCE HISTORY (admin — view & delete mistake submissions)
+// ============================================================
+function openAttendanceHistoryModal(charId, ign) {
+  showModal(`
+    <div class="modal-title">📋 ${ign} — Attendance History</div>
+    <p style="color:var(--text-secondary);font-size:.8rem;margin-bottom:1rem">Deleting an entry removes it permanently and claws back its points. Entries already part of a confirmed run are locked — edit the run first.</p>
+    <div id="admin-att-list" style="max-height:360px;overflow-y:auto">${Skeleton.table('', [35, 15, 30, 20], 5)}</div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+
+  API.read('get_char_attendance', { charId }).then(rows => {
+    const el = document.getElementById('admin-att-list');
+    if (!el) return; // modal was closed before the response landed
+    rows = rows || [];
+    el.innerHTML = !rows.length
+      ? `<div class="empty-state"><span class="empty-state-icon">📋</span>No attendance recorded.</div>`
+      : `<table class="data-table">
+          <thead><tr><th>Boss</th><th>Pts</th><th>Date</th><th></th></tr></thead>
+          <tbody>${rows.map(r => `
+            <tr>
+              <td>${r.boss}</td>
+              <td style="color:var(--gold)">+${r.points}</td>
+              <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.timestamp)}<br><span style="font-size:.72rem">${fmtTime(r.timestamp)}</span></td>
+              <td>${r.runId
+                ? `<span title="Part of a confirmed run — edit the run to remove" style="opacity:.4;font-size:.85rem">🔒</span>`
+                : `<button class="btn btn-sm btn-danger" onclick="deleteAttendanceEntry('${r.id}','${charId}','${ign.replace(/'/g,"\\'")}')" title="Delete this submission">🗑</button>`}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+  });
+}
+
+function deleteAttendanceEntry(id, charId, ign) {
+  if (!confirm('Permanently delete this attendance entry? This also removes the points it earned.')) return;
+  API.write('delete_attendance', { id }, ['get_roster', 'get_grouped_runs', 'get_leaderboard', 'get_my_attendance', 'get_char_attendance'])
+    .then(res => {
+      if (res.success) { toast('Attendance entry deleted.', 'success'); openAttendanceHistoryModal(charId, ign); }
+      else { toast(res.error || 'Error', 'error'); }
+    }).catch(() => toast('Network error', 'error'));
 }
 
 // ============================================================

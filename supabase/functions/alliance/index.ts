@@ -1,3 +1,84 @@
+
+Claude finished the response
+
+Ran a command
+Ran a command
+Good — the race-condition fix is already in place (23505 handling at line 567). Window is GROUP_WINDOW_MS = 2 * 60 * 60 * 1000 — a flat 2-hour grouping window, entirely computed in JS/TS, nothing in the DB schema itself (no stored config row).
+
+
+Ran 8 commands
+Ran 8 commands
+Good — now the full picture. GROUP_WINDOW_MS = 2 * 60 * 60 * 1000 (2 hours) is a purely computed grouping window: entries for a boss chain together as long as each new submission lands within 2h of the first submission in that chain (non-sliding). Nothing about it is stored — it's recalculated from raw attendance rows every time get_grouped_runs runs, and matched against confirmed runs by boss + window_start.
+
+That has a real consequence for your maintenance scenario: submitting attendance is never blocked (no window check there), but if a boss respawns and gets re-killed within 2h of the prior kill's window start, the new submissions get silently folded into the same window — merging with an already-confirmed run instead of forming a new one, which then requires a super-admin edit to sort out.
+
+The fix is a small window_resets table an admin can write to, which forces a hard break in the grouping chain at that timestamp — a real per-boss "reset window" button, no redeploy needed.
+
+
+Edited 6 files, ran 2 commands, created a file · 7 notes
+Edited 6 files, ran 2 commands, created a file · 7 notes
+All 4 files, ready to paste in:
+
+Answer to your window question: GROUP_WINDOW_MS = 2 hours, hardcoded, and it's non-sliding — a chain of submissions groups together as long as each new one is within 2h of the first entry in that chain. It's recomputed from raw attendance rows on every get_grouped_runs call, nothing about it is persisted.
+
+What I built for the reset case:
+
+migration_window_resets.sql — run this in the Supabase SQL editor first. One tiny table, one row per boss.
+index.ts — new reset_window / get_window_resets actions, and getGroupedRuns now respects a reset as a hard break point in the grouping chain, so anything submitted after it starts a fresh window instead of merging into the previous (possibly already-confirmed) one. Deploy after the migration.
+app.js — a "🔄 Reset Window" button on the Drops page (admin-only), opens a boss picker, calls the new action.
+style.css — the top padding fix from before.
+Deploy order matters here: SQL migration → supabase functions deploy alliance --no-verify-jwt → then push the frontend files. If you deploy the frontend first, the Reset Window button will just fail with an "Unknown action" error until the function catches up — not harmful, just note it.
+
+One thing worth knowing: this doesn't touch already-confirmed runs or already-submitted attendance rows — it only changes how future submissions get bucketed. If maintenance hits mid-window before anything's confirmed yet, you don't even need this — just don't confirm the old run, let people resubmit, and it may or may not naturally split depending on timing. This tool is for the case where the old run's already confirmed and you need a clean new one.
+
+
+Index
+TS 
+
+App
+JS 
+
+Style
+Code · CSS 
+
+Migration window resets
+Code · SQL 
+great, can we remove the boss selection in the reset window? if one boss is reset, they will all reset.
+
+Also, how do we handle mistake submissions? While we can exclude them in the drops page, i'd like to be able to completely remove their attendance submission from the history so cleanliness sake
+
+
+Ran 9 commands, edited 7 files, created a file · 8 notes
+Ran 9 commands, edited 7 files, created a file · 8 notes
+style.css didn't change this round, so just these three.
+
+Reset Window — now global: window_resets is a single-row table (id=1). The button just says "Reset Window" and confirms once — no boss picker. If you already ran the old per-boss migration, drop it first (drop table if exists window_resets; — noted at the top of the SQL file) before running the new one.
+
+Deleting mistake submissions: Added on the Roster page — click any character's chip (the little pill under their name, e.g. IGN · Lv50 Warrior) and it opens their full attendance history with a 🗑 on each row. Deleting:
+
+permanently removes the row (not just excludes it from a run)
+claws back the points it credited to the character, so the leaderboard stays accurate — since submitAttendance adds points immediately at submission, not at confirmation
+is locked (🔒) if the entry is already part of a confirmed run. Deleting it there would desync that run's participant list and the inventory that was already generated from it, so those need a super-admin edit on the run itself first, via the existing Drops → edit flow. Everything not yet confirmed can be deleted freely by any admin.
+Deploy order: SQL migration → deploy the edge function → push the frontend files, same as last time.
+
+
+Index
+TS 
+
+App
+JS 
+
+Migration window resets
+Code · SQL 
+
+You’ve used 90% of your session limit
+
+
+
+
+
+Claude is AI and can make mistakes. Please double-check responses.
+Index · TS
 // ============================================================
 //  ALLIANCE TRACKER — SUPABASE EDGE FUNCTION
 //  File: supabase/functions/alliance/index.ts
@@ -145,7 +226,9 @@ Deno.serve(async (req) => {
       case 'get_grouped_runs':    return ok(await getGroupedRuns(supabase, email));
       case 'confirm_run':         return ok(await confirmRun(supabase, email, data.runData as Record<string, unknown>));
       case 'get_window_resets':   return ok(await getWindowResets(supabase, email));
-      case 'reset_window':        return ok(await resetWindow(supabase, email, data.boss as string));
+      case 'reset_window':        return ok(await resetWindow(supabase, email));
+      case 'get_char_attendance': return ok(await getAttendanceForChar(supabase, email, data.charId as string));
+      case 'delete_attendance':   return ok(await deleteAttendance(supabase, email, data.id as string));
       case 'get_inventory':       return ok(await getInventory(supabase, email));
       case 'mark_items_sold':     return ok(await markItemsSold(supabase, email, data));
       case 'get_payouts_page':    return ok(await getPayoutsPage(supabase, email, data.month as string));
@@ -472,13 +555,13 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
 
   const { data: savedRuns } = await supabase.from('runs').select('*');
 
-  // Per-boss manual window resets (see resetWindow()). Any reset_at
-  // timestamp here forces a hard break in the grouping chain for that
-  // boss, even if the next submission would otherwise land inside the
-  // normal 2h window — e.g. after an emergency maintenance respawn.
-  const { data: resetRows } = await supabase.from('window_resets').select('boss, reset_at');
-  const resetMap: Record<string, number> = {};
-  (resetRows || []).forEach(r => { resetMap[r.boss] = new Date(r.reset_at).getTime(); });
+  // A manual window reset (see resetWindow()) forces a hard break in the
+  // grouping chain for every boss, even if the next submission would
+  // otherwise land inside the normal 2h window — e.g. after an emergency
+  // maintenance respawn. It's intentionally global: if one boss needed a
+  // reset, assume the whole alliance's schedule just got disrupted.
+  const { data: resetRow } = await supabase.from('window_resets').select('reset_at').eq('id', 1).maybeSingle();
+  const globalResetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
 
   // Group attendance into run windows (mirrors GAS logic)
   const bossGroups: Record<string, Array<{ ts: number; charId: string; ign: string; email: string }>> = {};
@@ -490,13 +573,12 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   const runs: Array<{ boss: string; windowStart: number; windowEnd: number; participants: Array<{ charId: string; ign: string; email: string }> }> = [];
   Object.keys(bossGroups).forEach(boss => {
     const entries = bossGroups[boss].sort((a, b) => a.ts - b.ts);
-    const resetMs = resetMap[boss];
     let windowStart: number | null = null;
     let windowEntries: typeof entries = [];
     entries.forEach(e => {
       // A reset forces a break if it falls strictly between the current
       // window's start and this entry — regardless of the 2h threshold.
-      const crossesReset = resetMs != null && windowStart !== null && windowStart < resetMs && e.ts >= resetMs;
+      const crossesReset = globalResetMs != null && windowStart !== null && windowStart < globalResetMs && e.ts >= globalResetMs;
       if (windowStart === null) { windowStart = e.ts; windowEntries = [e]; }
       else if (!crossesReset && e.ts - windowStart! <= GROUP_WINDOW_MS) { windowEntries.push(e); }
       else {
@@ -539,30 +621,77 @@ function buildRun(boss: string, windowStart: number, entries: Array<{ charId: st
 // ============================================================
 //  WINDOW RESETS (emergency maintenance handling)
 // ============================================================
-// Forces a hard break in a boss's grouping chain as of "now", so any
-// attendance submitted after this point starts a brand new run window
-// instead of merging into whatever window was open before — even if
-// it's submitted less than GROUP_WINDOW_MS after the last kill.
+// Forces a hard break in every boss's grouping chain as of "now", so
+// any attendance submitted after this point starts a brand new run
+// window instead of merging into whatever window was open before —
+// even if it's submitted less than GROUP_WINDOW_MS after the last
+// kill. Global on purpose: an emergency maintenance disrupts the
+// whole alliance's schedule, not just one boss.
 // Does NOT touch already-confirmed runs or attendance rows; it only
 // affects how *future* get_grouped_runs calls bucket new submissions.
-async function resetWindow(supabase: ReturnType<typeof db>, email: string, boss: string) {
+async function resetWindow(supabase: ReturnType<typeof db>, email: string) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
-  if (!boss) return { error: 'Boss is required' };
 
   const resetAt = new Date().toISOString();
   const { error } = await supabase.from('window_resets').upsert({
-    boss, reset_at: resetAt, reset_by: email,
+    id: 1, reset_at: resetAt, reset_by: email,
   });
   if (error) throw error;
 
-  return { success: true, boss, resetAt };
+  return { success: true, resetAt };
 }
 
 async function getWindowResets(supabase: ReturnType<typeof db>, email: string) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
-  const { data, error } = await supabase.from('window_resets').select('boss, reset_at, reset_by').order('reset_at', { ascending: false });
+  const { data, error } = await supabase.from('window_resets').select('reset_at, reset_by').eq('id', 1).maybeSingle();
   if (error) throw error;
-  return (data || []).map(r => ({ boss: r.boss, resetAt: r.reset_at, resetBy: r.reset_by }));
+  return data ? { resetAt: data.reset_at, resetBy: data.reset_by } : null;
+}
+
+// ============================================================
+//  ATTENDANCE — admin cleanup of mistake submissions
+// ============================================================
+async function getAttendanceForChar(supabase: ReturnType<typeof db>, email: string, charId: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!charId) return { error: 'charId required' };
+
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('id, ts, boss, points, run_id')
+    .eq('char_id', charId)
+    .order('ts', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(r => ({ id: r.id, timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id }));
+}
+
+// Fully deletes an attendance row (not just excludes it from a run) and
+// claws back the points that were credited to the character at
+// submission time, so the leaderboard stays accurate. If the row is
+// already linked to a confirmed run, deleting it would silently
+// desync that run's participant list and inventory, so it's locked
+// behind super admin — clean that up via the run edit flow first.
+async function deleteAttendance(supabase: ReturnType<typeof db>, email: string, id: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!id) return { error: 'Attendance id required' };
+
+  const { data: row, error: fe } = await supabase.from('attendance').select('*').eq('id', id).maybeSingle();
+  if (fe) throw fe;
+  if (!row) return { error: 'Attendance entry not found — it may have already been deleted.' };
+
+  if (row.run_id && !isSuperAdmin(email)) {
+    return { error: 'This entry is part of a confirmed run. A super admin needs to edit the run before it can be deleted.' };
+  }
+
+  const { error: de } = await supabase.from('attendance').delete().eq('id', id);
+  if (de) throw de;
+
+  const { data: char } = await supabase.from('characters').select('points').eq('char_id', row.char_id).maybeSingle();
+  if (char) {
+    const newPoints = Math.max(0, (Number(char.points) || 0) - (Number(row.points) || 0));
+    await supabase.from('characters').update({ points: newPoints }).eq('char_id', row.char_id);
+  }
+
+  return { success: true, id, pointsRemoved: row.points };
 }
 
 async function confirmRun(supabase: ReturnType<typeof db>, email: string, runData: Record<string, unknown>) {
@@ -879,3 +1008,13 @@ async function markCharPaid(supabase: ReturnType<typeof db>, email: string, data
   }
   return { success: true };
 }
+
+
+
+
+
+
+
+
+
+
