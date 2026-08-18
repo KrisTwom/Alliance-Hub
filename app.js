@@ -935,7 +935,7 @@ function submitAttendance() {
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
 
   API.write('submit_attendance', { charId: char.charId, bosses: selected },
-    ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs']
+    ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs', 'get_late_linked_attendance']
   ).then(res => {
     closeModal();
     if (res.success) {
