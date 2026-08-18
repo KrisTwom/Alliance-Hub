@@ -1,84 +1,3 @@
-
-Claude finished the response
-
-Ran a command
-Ran a command
-Good — the race-condition fix is already in place (23505 handling at line 567). Window is GROUP_WINDOW_MS = 2 * 60 * 60 * 1000 — a flat 2-hour grouping window, entirely computed in JS/TS, nothing in the DB schema itself (no stored config row).
-
-
-Ran 8 commands
-Ran 8 commands
-Good — now the full picture. GROUP_WINDOW_MS = 2 * 60 * 60 * 1000 (2 hours) is a purely computed grouping window: entries for a boss chain together as long as each new submission lands within 2h of the first submission in that chain (non-sliding). Nothing about it is stored — it's recalculated from raw attendance rows every time get_grouped_runs runs, and matched against confirmed runs by boss + window_start.
-
-That has a real consequence for your maintenance scenario: submitting attendance is never blocked (no window check there), but if a boss respawns and gets re-killed within 2h of the prior kill's window start, the new submissions get silently folded into the same window — merging with an already-confirmed run instead of forming a new one, which then requires a super-admin edit to sort out.
-
-The fix is a small window_resets table an admin can write to, which forces a hard break in the grouping chain at that timestamp — a real per-boss "reset window" button, no redeploy needed.
-
-
-Edited 6 files, ran 2 commands, created a file · 7 notes
-Edited 6 files, ran 2 commands, created a file · 7 notes
-All 4 files, ready to paste in:
-
-Answer to your window question: GROUP_WINDOW_MS = 2 hours, hardcoded, and it's non-sliding — a chain of submissions groups together as long as each new one is within 2h of the first entry in that chain. It's recomputed from raw attendance rows on every get_grouped_runs call, nothing about it is persisted.
-
-What I built for the reset case:
-
-migration_window_resets.sql — run this in the Supabase SQL editor first. One tiny table, one row per boss.
-index.ts — new reset_window / get_window_resets actions, and getGroupedRuns now respects a reset as a hard break point in the grouping chain, so anything submitted after it starts a fresh window instead of merging into the previous (possibly already-confirmed) one. Deploy after the migration.
-app.js — a "🔄 Reset Window" button on the Drops page (admin-only), opens a boss picker, calls the new action.
-style.css — the top padding fix from before.
-Deploy order matters here: SQL migration → supabase functions deploy alliance --no-verify-jwt → then push the frontend files. If you deploy the frontend first, the Reset Window button will just fail with an "Unknown action" error until the function catches up — not harmful, just note it.
-
-One thing worth knowing: this doesn't touch already-confirmed runs or already-submitted attendance rows — it only changes how future submissions get bucketed. If maintenance hits mid-window before anything's confirmed yet, you don't even need this — just don't confirm the old run, let people resubmit, and it may or may not naturally split depending on timing. This tool is for the case where the old run's already confirmed and you need a clean new one.
-
-
-Index
-TS 
-
-App
-JS 
-
-Style
-Code · CSS 
-
-Migration window resets
-Code · SQL 
-great, can we remove the boss selection in the reset window? if one boss is reset, they will all reset.
-
-Also, how do we handle mistake submissions? While we can exclude them in the drops page, i'd like to be able to completely remove their attendance submission from the history so cleanliness sake
-
-
-Ran 9 commands, edited 7 files, created a file · 8 notes
-Ran 9 commands, edited 7 files, created a file · 8 notes
-style.css didn't change this round, so just these three.
-
-Reset Window — now global: window_resets is a single-row table (id=1). The button just says "Reset Window" and confirms once — no boss picker. If you already ran the old per-boss migration, drop it first (drop table if exists window_resets; — noted at the top of the SQL file) before running the new one.
-
-Deleting mistake submissions: Added on the Roster page — click any character's chip (the little pill under their name, e.g. IGN · Lv50 Warrior) and it opens their full attendance history with a 🗑 on each row. Deleting:
-
-permanently removes the row (not just excludes it from a run)
-claws back the points it credited to the character, so the leaderboard stays accurate — since submitAttendance adds points immediately at submission, not at confirmation
-is locked (🔒) if the entry is already part of a confirmed run. Deleting it there would desync that run's participant list and the inventory that was already generated from it, so those need a super-admin edit on the run itself first, via the existing Drops → edit flow. Everything not yet confirmed can be deleted freely by any admin.
-Deploy order: SQL migration → deploy the edge function → push the frontend files, same as last time.
-
-
-Index
-TS 
-
-App
-JS 
-
-Migration window resets
-Code · SQL 
-
-You’ve used 90% of your session limit
-
-
-
-
-
-Claude is AI and can make mistakes. Please double-check responses.
-Index · TS
 // ============================================================
 //  ALLIANCE TRACKER — SUPABASE EDGE FUNCTION
 //  File: supabase/functions/alliance/index.ts
@@ -229,6 +148,7 @@ Deno.serve(async (req) => {
       case 'reset_window':        return ok(await resetWindow(supabase, email));
       case 'get_char_attendance': return ok(await getAttendanceForChar(supabase, email, data.charId as string));
       case 'delete_attendance':   return ok(await deleteAttendance(supabase, email, data.id as string));
+      case 'get_late_linked_attendance': return ok(await getLateLinkedAttendance(supabase, email));
       case 'get_inventory':       return ok(await getInventory(supabase, email));
       case 'mark_items_sold':     return ok(await markItemsSold(supabase, email, data));
       case 'get_payouts_page':    return ok(await getPayoutsPage(supabase, email, data.month as string));
@@ -480,10 +400,8 @@ async function getCharDetails(supabase: ReturnType<typeof db>, email: string, ch
   if (!char) return { error: 'Character not found' };
 
   // Find runs this character participated in
-  const { data: allRuns } = await supabase.from('runs').select('run_id, participant_ids');
-  const charRunIds = (allRuns || [])
-    .filter(r => (r.participant_ids || '').split(',').map((id: string) => id.trim()).includes(charId))
-    .map(r => r.run_id);
+  const { data: rpRows } = await supabase.from('run_participants').select('run_id').eq('char_id', charId);
+  const charRunIds = (rpRows || []).map(r => r.run_id);
 
   let itemsWon: unknown[] = [];
   if (charRunIds.length > 0) {
@@ -519,7 +437,7 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
     return { ts: now, email, char_id: charId, ign: char.ign, boss, points: pts, run_id: '' };
   });
 
-  const { error: ae } = await supabase.from('attendance').insert(rows);
+  const { data: inserted, error: ae } = await supabase.from('attendance').insert(rows).select('id, boss, ts');
   if (ae) throw ae;
 
   const { error: ue } = await supabase.from('characters')
@@ -527,7 +445,52 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
     .eq('char_id', charId);
   if (ue) throw ue;
 
+  // A submission can still land inside a run's 2h window after that run
+  // has already been confirmed (e.g. a straggler, or a fast respawn).
+  // Confirming a run only locks in its loot — it was never meant to cut
+  // off attendance — so instead of leaving these orphaned, fold the
+  // submitter straight into the confirmed run's payout split.
+  await linkLateSubmissions(supabase, charId, inserted || []);
+
   return { success: true, count: bosses.length, pointsEarned: totalPoints, ign: char.ign };
+}
+
+// For each newly-submitted row, check whether a Confirmed run already
+// exists for that boss whose window contains this submission's
+// timestamp. If so: stamp the row with that run's id, mark it
+// late_linked (purely informational, for the admin review list), and
+// add the character to run_participants so future — not yet sold —
+// items from that run split to include them. Already-sold items in
+// that run are not retroactively re-split; see deleteAttendance for
+// the corresponding undo path.
+async function linkLateSubmissions(supabase: ReturnType<typeof db>, charId: string, rows: Array<{ id: string; boss: string; ts: string }>) {
+  if (!rows.length) return;
+
+  const bosses = [...new Set(rows.map(r => r.boss))];
+  const { data: confirmedRuns } = await supabase
+    .from('runs')
+    .select('run_id, boss, window_start, window_end')
+    .eq('status', 'Confirmed')
+    .in('boss', bosses);
+  if (!confirmedRuns || !confirmedRuns.length) return;
+
+  for (const row of rows) {
+    const ts = new Date(row.ts).getTime();
+    const match = confirmedRuns.find(r =>
+      r.boss === row.boss &&
+      ts >= new Date(r.window_start).getTime() &&
+      ts <= new Date(r.window_end).getTime()
+    );
+    if (!match) continue;
+
+    await supabase.from('attendance').update({ run_id: match.run_id, late_linked: true }).eq('id', row.id);
+    // ignoreDuplicates so resubmitting doesn't error or double-count —
+    // membership in run_participants is per-character, not per-submission.
+    await supabase.from('run_participants').upsert(
+      { run_id: match.run_id, char_id: charId },
+      { onConflict: 'run_id,char_id', ignoreDuplicates: true }
+    );
+  }
 }
 
 async function getMyAttendance(supabase: ReturnType<typeof db>, email: string, charId: string) {
@@ -554,6 +517,21 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   if (ae) throw ae;
 
   const { data: savedRuns } = await supabase.from('runs').select('*');
+
+  // Confirmed runs are authoritative from run_participants (the actual
+  // payout-split source of truth, including anyone late-linked after
+  // confirmation) rather than the live attendance regroup below — the
+  // regroup is still used for Not Confirmed runs, which don't have a
+  // run_participants row yet.
+  const savedRunIds = (savedRuns || []).map(r => r.run_id).filter(Boolean);
+  const { data: rpRows } = savedRunIds.length
+    ? await supabase.from('run_participants').select('run_id, char_id').in('run_id', savedRunIds)
+    : { data: [] as Array<{ run_id: string; char_id: string }> };
+  const participantsByRun: Record<string, string[]> = {};
+  (rpRows || []).forEach(r => {
+    if (!participantsByRun[r.run_id]) participantsByRun[r.run_id] = [];
+    participantsByRun[r.run_id].push(r.char_id);
+  });
 
   // A manual window reset (see resetWindow()) forces a hard break in the
   // grouping chain for every boss, even if the next submission would
@@ -591,17 +569,25 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
 
   runs.sort((a, b) => b.windowStart - a.windowStart);
 
+  // Lookup for ign/email by charId, used to hydrate run_participants
+  // (which only stores charId) back into the {charId, ign, email} shape
+  // the frontend expects. Built from the same attendance rows above.
+  const charInfo: Record<string, { charId: string; ign: string; email: string }> = {};
+  (attRows || []).forEach(r => { charInfo[r.char_id] = { charId: r.char_id, ign: r.ign, email: r.email }; });
+
   return runs.map(run => {
     const saved = (savedRuns || []).find(r =>
       r.boss === run.boss && Math.abs(new Date(r.window_start).getTime() - run.windowStart) < 60000
     );
+    const confirmedParticipants = saved ? (participantsByRun[saved.run_id] || []).map(id => charInfo[id]).filter(Boolean) : null;
+    const participants = confirmedParticipants || run.participants;
     return {
       runId:            saved ? saved.run_id : null,
       boss:             run.boss,
       windowStart:      new Date(run.windowStart).toISOString(),
       windowEnd:        new Date(run.windowEnd).toISOString(),
-      participants:     run.participants,
-      participantCount: run.participants.length,
+      participants,
+      participantCount: participants.length,
       drops:            saved ? saved.drops : '',
       status:           saved ? saved.status : 'Not Confirmed',
       notes:            saved ? saved.notes  : '',
@@ -657,19 +643,28 @@ async function getAttendanceForChar(supabase: ReturnType<typeof db>, email: stri
 
   const { data, error } = await supabase
     .from('attendance')
-    .select('id, ts, boss, points, run_id')
+    .select('id, ts, boss, points, run_id, late_linked')
     .eq('char_id', charId)
     .order('ts', { ascending: false });
   if (error) throw error;
-  return (data || []).map(r => ({ id: r.id, timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id }));
+  return (data || []).map(r => ({ id: r.id, timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id, lateLinked: !!r.late_linked }));
 }
 
 // Fully deletes an attendance row (not just excludes it from a run) and
 // claws back the points that were credited to the character at
-// submission time, so the leaderboard stays accurate. If the row is
-// already linked to a confirmed run, deleting it would silently
-// desync that run's participant list and inventory, so it's locked
-// behind super admin — clean that up via the run edit flow first.
+// submission time, so the leaderboard stays accurate.
+//
+// If the row is linked to a confirmed run — whether it was part of the
+// original confirm or auto-linked later via a late-but-in-window
+// submission — this is a financial correction (it changes who splits
+// that run's gold), so it stays locked behind super admin, and it also
+// pulls the character out of run_participants so future, not-yet-sold
+// items from that run split correctly without them.
+//
+// One limitation: payouts are computed at sell time, not confirm time.
+// If an item from this run already sold before the mistake is caught,
+// that specific payout already happened and isn't retroactively
+// re-split — we just flag it so the caller knows to check manually.
 async function deleteAttendance(supabase: ReturnType<typeof db>, email: string, id: string) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
   if (!id) return { error: 'Attendance id required' };
@@ -679,7 +674,7 @@ async function deleteAttendance(supabase: ReturnType<typeof db>, email: string, 
   if (!row) return { error: 'Attendance entry not found — it may have already been deleted.' };
 
   if (row.run_id && !isSuperAdmin(email)) {
-    return { error: 'This entry is part of a confirmed run. A super admin needs to edit the run before it can be deleted.' };
+    return { error: 'This entry is part of a confirmed run. A super admin needs to remove it.' };
   }
 
   const { error: de } = await supabase.from('attendance').delete().eq('id', id);
@@ -691,7 +686,42 @@ async function deleteAttendance(supabase: ReturnType<typeof db>, email: string, 
     await supabase.from('characters').update({ points: newPoints }).eq('char_id', row.char_id);
   }
 
-  return { success: true, id, pointsRemoved: row.points };
+  let alreadySold = false;
+  if (row.run_id) {
+    await supabase.from('run_participants').delete().eq('run_id', row.run_id).eq('char_id', row.char_id);
+    const { data: sold } = await supabase.from('sales').select('sale_id').eq('run_id', row.run_id).limit(1);
+    alreadySold = !!(sold && sold.length);
+  }
+
+  return { success: true, id, pointsRemoved: row.points, alreadySold };
+}
+
+// Admin review list: attendance rows that were auto-linked into an
+// already-confirmed run after the fact (see linkLateSubmissions). Purely
+// informational — these already count toward the gold split — this is
+// just visibility so an admin can catch and undo a genuine mistake.
+async function getLateLinkedAttendance(supabase: ReturnType<typeof db>, email: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+
+  const { data: rows, error } = await supabase
+    .from('attendance')
+    .select('id, ts, boss, char_id, ign, points, run_id')
+    .eq('late_linked', true)
+    .order('ts', { ascending: false });
+  if (error) throw error;
+  if (!rows || !rows.length) return [];
+
+  const runIds = [...new Set(rows.map(r => r.run_id).filter(Boolean))];
+  const { data: runs } = runIds.length
+    ? await supabase.from('runs').select('run_id, confirmed_at, confirmed_by').in('run_id', runIds)
+    : { data: [] as Array<{ run_id: string; confirmed_at: string; confirmed_by: string }> };
+  const runMap: Record<string, { confirmedAt: string; confirmedBy: string }> = {};
+  (runs || []).forEach(r => { runMap[r.run_id] = { confirmedAt: r.confirmed_at, confirmedBy: r.confirmed_by }; });
+
+  return rows.map(r => ({
+    id: r.id, timestamp: r.ts, boss: r.boss, charId: r.char_id, ign: r.ign, points: r.points,
+    runId: r.run_id, confirmedAt: runMap[r.run_id]?.confirmedAt || '', confirmedBy: runMap[r.run_id]?.confirmedBy || '',
+  }));
 }
 
 async function confirmRun(supabase: ReturnType<typeof db>, email: string, runData: Record<string, unknown>) {
@@ -745,6 +775,24 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
   }
 
   await linkAttendanceToRun(supabase, finalRunId!, boss, windowStart, participants.map(p => p.charId));
+
+  // run_participants is the payout source of truth (see sellItem).
+  // Upsert whoever is currently checked; on an edit, also remove anyone
+  // who got unchecked — "uncheck to exclude" needs to actually pull them
+  // out of the split, not just skip re-adding them.
+  const currentCharIds = participants.map(p => p.charId);
+  if (currentCharIds.length) {
+    await supabase.from('run_participants').upsert(
+      currentCharIds.map(charId => ({ run_id: finalRunId!, char_id: charId })),
+      { onConflict: 'run_id,char_id', ignoreDuplicates: true }
+    );
+  }
+  if (isEdit) {
+    let removeQuery = supabase.from('run_participants').delete().eq('run_id', finalRunId!);
+    if (currentCharIds.length) removeQuery = removeQuery.not('char_id', 'in', `(${currentCharIds.join(',')})`);
+    await removeQuery;
+  }
+
   return { success: true, runId: finalRunId };
 }
 
@@ -817,11 +865,12 @@ async function getInventory(supabase: ReturnType<typeof db>, email: string) {
 
   const { data: rows, error: ie } = await supabase.from('inventory').select('*');
   if (ie) throw ie;
-  const { data: runsData } = await supabase.from('runs').select('run_id, participant_ids');
+  const { data: rpRows } = await supabase.from('run_participants').select('run_id');
 
   const runMap: Record<string, { participantCount: number }> = {};
-  (runsData || []).forEach(r => {
-    runMap[r.run_id] = { participantCount: (r.participant_ids || '').split(',').filter(Boolean).length };
+  (rpRows || []).forEach(r => {
+    if (!runMap[r.run_id]) runMap[r.run_id] = { participantCount: 0 };
+    runMap[r.run_id].participantCount++;
   });
 
   const bossItems: Record<string, Record<string, { totalQty: number; available: number; history: unknown[] }>> = {};
@@ -880,10 +929,13 @@ async function markItemsSold(supabase: ReturnType<typeof db>, email: string, dat
     // Mark inventory sold
     await supabase.from('inventory').update({ status: 'Sold' }).eq('inv_id', inv.inv_id);
 
-    // Compute payouts
-    const { data: run } = await supabase.from('runs').select('participant_ids').eq('run_id', inv.run_id).maybeSingle();
-    if (run) {
-      const charIds = (run.participant_ids || '').split(',').map((id: string) => id.trim()).filter(Boolean);
+    // Compute payouts — reads run_participants, not the frozen CSV
+    // column, so anyone late-linked into this run after confirmation
+    // (see submitAttendance / linkLateSubmissions) is included in the
+    // split for any item that hadn't sold yet at the time they joined.
+    const { data: rpRows } = await supabase.from('run_participants').select('char_id').eq('run_id', inv.run_id);
+    const charIds = (rpRows || []).map(r => r.char_id);
+    {
       if (charIds.length > 0) {
         const share = Math.floor(totalGold / charIds.length);
         const { data: chars } = await supabase.from('characters').select('char_id, email, ign').in('char_id', charIds);
@@ -1008,13 +1060,3 @@ async function markCharPaid(supabase: ReturnType<typeof db>, email: string, data
   }
   return { success: true };
 }
-
-
-
-
-
-
-
-
-
-

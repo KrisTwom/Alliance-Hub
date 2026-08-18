@@ -104,6 +104,7 @@ const Cache = {
     get_grouped_runs:     90 * 1000,        // 90 sec (changes when attendance submitted)
     get_window_resets:    60 * 1000,
     get_char_attendance:  30 * 1000,
+    get_late_linked_attendance: 60 * 1000,
     get_inventory:        2  * 60 * 1000,
     get_payouts_page:     2  * 60 * 1000,
     get_available_months: 5  * 60 * 1000,
@@ -1231,6 +1232,7 @@ function renderDrops() {
         ${App.user.isAdmin ? `<button class="btn btn-secondary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openResetWindowModal()">🔄 Reset Window</button>` : ''}
       </div>
       <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
+      <div id="late-linked-banner"></div>
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Timestamp</th><th>Boss</th><th>Drops</th><th>Participants</th><th>Status</th></tr></thead>
@@ -1249,6 +1251,44 @@ function renderDrops() {
         </table>
       </div>`;
     window._runs = runs || [];
+    if (App.user.isAdmin) renderLateLinkedBanner();
+  });
+}
+
+// ============================================================
+//  LATE-LINKED REVIEW (admin — attendance auto-folded into an
+//  already-confirmed run's gold split after the fact)
+// ============================================================
+function renderLateLinkedBanner() {
+  const el = document.getElementById('late-linked-banner');
+  if (!el) return;
+  API.read('get_late_linked_attendance').then(rows => {
+    if (!el.isConnected) return; // navigated away before this landed
+    rows = rows || [];
+    if (!rows.length) { el.innerHTML = ''; return; }
+    el.innerHTML = `
+      <div class="collapsible-header" onclick="toggleCollapsible(this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;background:rgba(230,168,66,.08);border:1px solid rgba(230,168,66,.3);border-radius:var(--radius);padding:.7rem 1rem;margin-bottom:1rem">
+        <span style="font-size:.85rem;color:#e6a842">⏱ ${rows.length} submission${rows.length===1?'':'s'} landed after ${rows.length===1?'its':'their'} run was already confirmed — auto-included in the gold split.</span>
+        <span class="collapsible-arrow" style="font-size:.75rem;color:#e6a842">▼</span>
+      </div>
+      <div class="collapsible-body collapsed" style="max-height:0;margin-bottom:1rem">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Char</th><th>Boss</th><th>Submitted</th><th>Confirmed By</th><th></th></tr></thead>
+            <tbody>${rows.map(r => `
+              <tr>
+                <td>${escHtml(r.ign)}</td>
+                <td>${escHtml(r.boss)}</td>
+                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.timestamp)} ${fmtTime(r.timestamp)}</td>
+                <td style="font-size:.78rem;color:var(--text-secondary)">${escHtml(r.confirmedBy||'—')}</td>
+                <td>${App.user.isSuperAdmin
+                  ? `<button class="btn btn-sm btn-danger" onclick="deleteLateLinkedEntry('${r.id}','${String(r.ign).replace(/'/g,"\\'")}')" title="Remove — not a real straggler">🗑</button>`
+                  : `<span title="Only a super admin can remove this" style="opacity:.4;font-size:.85rem">🔒</span>`}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
   });
 }
 
@@ -1746,7 +1786,7 @@ function submitAddChar(memberEmail) {
 function openAttendanceHistoryModal(charId, ign) {
   showModal(`
     <div class="modal-title">📋 ${ign} — Attendance History</div>
-    <p style="color:var(--text-secondary);font-size:.8rem;margin-bottom:1rem">Deleting an entry removes it permanently and claws back its points. Entries already part of a confirmed run are locked — edit the run first.</p>
+    <p style="color:var(--text-secondary);font-size:.8rem;margin-bottom:1rem">Deleting an entry removes it permanently and claws back its points. Entries part of a confirmed run also get pulled out of that run's gold split — super admin only, since it's a financial correction.</p>
     <div id="admin-att-list" style="max-height:360px;overflow-y:auto">${Skeleton.table('', [35, 15, 30, 20], 5)}</div>
     <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
 
@@ -1758,27 +1798,55 @@ function openAttendanceHistoryModal(charId, ign) {
       ? `<div class="empty-state"><span class="empty-state-icon">📋</span>No attendance recorded.</div>`
       : `<table class="data-table">
           <thead><tr><th>Boss</th><th>Pts</th><th>Date</th><th></th></tr></thead>
-          <tbody>${rows.map(r => `
+          <tbody>${rows.map(r => {
+            const lockedForYou = r.runId && !App.user.isSuperAdmin;
+            const canDelete = !r.runId || App.user.isSuperAdmin;
+            return `
             <tr>
-              <td>${r.boss}</td>
+              <td>${r.boss}${r.lateLinked ? ' <span title="Submitted after this run was already confirmed — auto-included in its gold split" style="font-size:.72rem;color:var(--gold)">⏱late</span>' : ''}</td>
               <td style="color:var(--gold)">+${r.points}</td>
               <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.timestamp)}<br><span style="font-size:.72rem">${fmtTime(r.timestamp)}</span></td>
-              <td>${r.runId
-                ? `<span title="Part of a confirmed run — edit the run to remove" style="opacity:.4;font-size:.85rem">🔒</span>`
-                : `<button class="btn btn-sm btn-danger" onclick="deleteAttendanceEntry('${r.id}','${charId}','${ign.replace(/'/g,"\\'")}')" title="Delete this submission">🗑</button>`}</td>
-            </tr>`).join('')}
+              <td>${canDelete
+                ? `<button class="btn btn-sm btn-danger" onclick="deleteAttendanceEntry('${r.id}','${charId}','${ign.replace(/'/g,"\\'")}')" title="Delete this submission">🗑</button>`
+                : lockedForYou
+                  ? `<span title="Part of a confirmed run — only a super admin can remove this" style="opacity:.4;font-size:.85rem">🔒</span>`
+                  : ''}</td>
+            </tr>`;
+          }).join('')}
           </tbody>
         </table>`;
   });
 }
 
 function deleteAttendanceEntry(id, charId, ign) {
-  if (!confirm('Permanently delete this attendance entry? This also removes the points it earned.')) return;
-  API.write('delete_attendance', { id }, ['get_roster', 'get_grouped_runs', 'get_leaderboard', 'get_my_attendance', 'get_char_attendance'])
+  if (!confirm('Permanently delete this attendance entry? This also removes the points it earned, and — if part of a confirmed run — removes them from that run\'s gold split.')) return;
+  _deleteAttendanceCore(id).then(res => {
+    if (res.success) openAttendanceHistoryModal(charId, ign);
+  });
+}
+
+function deleteLateLinkedEntry(id, ign) {
+  if (!confirm(`Remove ${ign}'s late submission? This also removes the points it earned and pulls them out of that run's gold split.`)) return;
+  _deleteAttendanceCore(id).then(res => {
+    if (res.success) renderLateLinkedBanner();
+  });
+}
+
+function _deleteAttendanceCore(id) {
+  return API.write('delete_attendance', { id }, ['get_roster', 'get_grouped_runs', 'get_leaderboard', 'get_my_attendance', 'get_char_attendance', 'get_late_linked_attendance', 'get_inventory'])
     .then(res => {
-      if (res.success) { toast('Attendance entry deleted.', 'success'); openAttendanceHistoryModal(charId, ign); }
-      else { toast(res.error || 'Error', 'error'); }
-    }).catch(() => toast('Network error', 'error'));
+      if (res.success) {
+        toast(
+          res.alreadySold
+            ? 'Deleted. Note: an item from this run already sold — that payout wasn\'t automatically re-split.'
+            : 'Attendance entry deleted.',
+          res.alreadySold ? 'warn' : 'success'
+        );
+      } else {
+        toast(res.error || 'Error', 'error');
+      }
+      return res;
+    }).catch(() => { toast('Network error', 'error'); return { success: false }; });
 }
 
 // ============================================================
@@ -1862,7 +1930,7 @@ function closeModal()    { document.getElementById('modal-overlay').classList.ad
 function toast(msg, type='') {
   const t = document.getElementById('toast');
   t.textContent = msg; t.className = 'show ' + type;
-  clearTimeout(t._timer); t._timer = setTimeout(() => t.className = '', 3200);
+  clearTimeout(t._timer); t._timer = setTimeout(() => t.className = '', type === 'warn' ? 5500 : 3200);
 }
 
 function fmtDate(raw)  { if(!raw) return '—'; const d = new Date(raw); return isNaN(d) ? String(raw) : d.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric'}); }

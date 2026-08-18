@@ -396,6 +396,7 @@ html,body {
 #toast.show    { transform:translateX(-50%) translateY(0); opacity:1; }
 #toast.success { border-color:rgba(78,203,113,.4); color:var(--success); }
 #toast.error   { border-color:rgba(224,85,85,.4);  color:var(--danger); }
+#toast.warn    { border-color:rgba(230,168,66,.45); color:#e6a842; white-space:normal; max-width:min(90vw,420px); text-align:center; }
 
 /* ── SCROLLBAR ───────────────────────────── */
 ::-webkit-scrollbar { width:5px; height:5px; }
