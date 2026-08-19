@@ -105,6 +105,7 @@ const Cache = {
     get_window_resets:    60 * 1000,
     get_char_attendance:  30 * 1000,
     get_late_linked_attendance: 60 * 1000,
+    get_duplicate_attendance:   60 * 1000,
     get_inventory:        2  * 60 * 1000,
     get_payouts_page:     2  * 60 * 1000,
     get_available_months: 5  * 60 * 1000,
@@ -935,7 +936,7 @@ function submitAttendance() {
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
 
   API.write('submit_attendance', { charId: char.charId, bosses: selected },
-    ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs', 'get_late_linked_attendance']
+    ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs', 'get_late_linked_attendance', 'get_duplicate_attendance']
   ).then(res => {
     closeModal();
     if (res.success) {
@@ -1233,6 +1234,7 @@ function renderDrops() {
       </div>
       <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
       <div id="late-linked-banner"></div>
+      <div id="duplicate-banner"></div>
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Timestamp</th><th>Boss</th><th>Drops</th><th>Participants</th><th>Status</th></tr></thead>
@@ -1251,7 +1253,7 @@ function renderDrops() {
         </table>
       </div>`;
     window._runs = runs || [];
-    if (App.user.isAdmin) renderLateLinkedBanner();
+    if (App.user.isAdmin) { renderLateLinkedBanner(); renderDuplicateBanner(); }
   });
 }
 
@@ -1284,6 +1286,44 @@ function renderLateLinkedBanner() {
                 <td>${App.user.isSuperAdmin
                   ? `<button class="btn btn-sm btn-danger" onclick="deleteLateLinkedEntry('${r.id}','${String(r.ign).replace(/'/g,"\\'")}')" title="Remove — not a real straggler">🗑</button>`
                   : `<span title="Only a super admin can remove this" style="opacity:.4;font-size:.85rem">🔒</span>`}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  });
+}
+
+// ============================================================
+//  DUPLICATE SUBMISSIONS (admin — same char, same boss, same
+//  2h window submitted twice; historical safety net for anything
+//  that predates the prevention check in submitAttendance)
+// ============================================================
+function renderDuplicateBanner() {
+  const el = document.getElementById('duplicate-banner');
+  if (!el) return;
+  API.read('get_duplicate_attendance').then(rows => {
+    if (!el.isConnected) return; // navigated away before this landed
+    rows = rows || [];
+    if (!rows.length) { el.innerHTML = ''; return; }
+    el.innerHTML = `
+      <div class="collapsible-header" onclick="toggleCollapsible(this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;background:rgba(230,90,90,.08);border:1px solid rgba(230,90,90,.3);border-radius:var(--radius);padding:.7rem 1rem;margin-bottom:1rem">
+        <span style="font-size:.85rem;color:#e65a5a">⚠ ${rows.length} duplicate submission${rows.length===1?'':'s'} — same character, same boss, same window.</span>
+        <span class="collapsible-arrow" style="font-size:.75rem;color:#e65a5a">▼</span>
+      </div>
+      <div class="collapsible-body collapsed" style="max-height:0;margin-bottom:1rem">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Char</th><th>Boss</th><th>Submitted</th><th>Points</th><th></th></tr></thead>
+            <tbody>${rows.map(r => `
+              <tr>
+                <td>${escHtml(r.ign)}</td>
+                <td>${escHtml(r.boss)}</td>
+                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.timestamp)} ${fmtTime(r.timestamp)}</td>
+                <td style="color:var(--gold)">+${r.points}</td>
+                <td>${(!r.runId || App.user.isSuperAdmin)
+                  ? `<button class="btn btn-sm btn-danger" onclick="deleteDuplicateEntry('${r.id}','${String(r.ign).replace(/'/g,"\\'")}')" title="Delete this duplicate">🗑</button>`
+                  : `<span title="Linked to a confirmed run — only a super admin can remove it" style="opacity:.4;font-size:.85rem">🔒</span>`}</td>
               </tr>`).join('')}
             </tbody>
           </table>
@@ -1832,8 +1872,15 @@ function deleteLateLinkedEntry(id, ign) {
   });
 }
 
+function deleteDuplicateEntry(id, ign) {
+  if (!confirm(`Remove ${ign}'s duplicate submission? This also removes the points it earned.`)) return;
+  _deleteAttendanceCore(id).then(res => {
+    if (res.success) renderDuplicateBanner();
+  });
+}
+
 function _deleteAttendanceCore(id) {
-  return API.write('delete_attendance', { id }, ['get_roster', 'get_grouped_runs', 'get_leaderboard', 'get_my_attendance', 'get_char_attendance', 'get_late_linked_attendance', 'get_inventory'])
+  return API.write('delete_attendance', { id }, ['get_roster', 'get_grouped_runs', 'get_leaderboard', 'get_my_attendance', 'get_char_attendance', 'get_late_linked_attendance', 'get_duplicate_attendance', 'get_inventory'])
     .then(res => {
       if (res.success) {
         toast(

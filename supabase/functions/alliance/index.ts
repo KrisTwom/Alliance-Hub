@@ -149,6 +149,7 @@ Deno.serve(async (req) => {
       case 'get_char_attendance': return ok(await getAttendanceForChar(supabase, email, data.charId as string));
       case 'delete_attendance':   return ok(await deleteAttendance(supabase, email, data.id as string));
       case 'get_late_linked_attendance': return ok(await getLateLinkedAttendance(supabase, email));
+      case 'get_duplicate_attendance': return ok(await getDuplicateAttendance(supabase, email));
       case 'get_inventory':       return ok(await getInventory(supabase, email));
       case 'mark_items_sold':     return ok(await markItemsSold(supabase, email, data));
       case 'get_payouts_page':    return ok(await getPayoutsPage(supabase, email, data.month as string));
@@ -429,12 +430,34 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   const { data: char } = await supabase.from('characters').select('ign, points').eq('char_id', charId).eq('email', email).maybeSingle();
   if (!char) return { success: false, message: 'Invalid character.' };
 
-  const now = new Date().toISOString();
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  // Same char + same boss within the last 2h = a resubmission, not a
+  // second kill (double-tap, refresh-and-resubmit, etc.). Skip it before
+  // it ever creates a duplicate row and double-credits points. This
+  // approximates "same run window" by anchoring to now rather than
+  // replicating the full run-chain grouping logic from getGroupedRuns.
+  const windowFloor = new Date(now.getTime() - GROUP_WINDOW_MS).toISOString();
+  const { data: recent } = await supabase
+    .from('attendance')
+    .select('boss')
+    .eq('char_id', charId)
+    .in('boss', bosses)
+    .gte('ts', windowFloor);
+  const alreadyThisWindow = new Set((recent || []).map(r => r.boss));
+  const duplicateBosses = bosses.filter(b => alreadyThisWindow.has(b));
+  const newBosses = bosses.filter(b => !alreadyThisWindow.has(b));
+
+  if (!newBosses.length) {
+    return { success: false, message: `Already recorded for ${duplicateBosses.join(', ')} in this window.` };
+  }
+
   let totalPoints = 0;
-  const rows = bosses.map(boss => {
+  const rows = newBosses.map(boss => {
     const pts = BOSS_POINTS[boss] || 0;
     totalPoints += pts;
-    return { ts: now, email, char_id: charId, ign: char.ign, boss, points: pts, run_id: '' };
+    return { ts: nowIso, email, char_id: charId, ign: char.ign, boss, points: pts, run_id: '' };
   });
 
   const { data: inserted, error: ae } = await supabase.from('attendance').insert(rows).select('id, boss, ts');
@@ -452,7 +475,10 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   // submitter straight into the confirmed run's payout split.
   await linkLateSubmissions(supabase, charId, inserted || []);
 
-  return { success: true, count: bosses.length, pointsEarned: totalPoints, ign: char.ign };
+  return {
+    success: true, count: newBosses.length, pointsEarned: totalPoints, ign: char.ign,
+    skipped: duplicateBosses.length ? duplicateBosses : undefined,
+  };
 }
 
 // For each newly-submitted row, check whether a Confirmed run already
@@ -721,6 +747,49 @@ async function getLateLinkedAttendance(supabase: ReturnType<typeof db>, email: s
   return rows.map(r => ({
     id: r.id, timestamp: r.ts, boss: r.boss, charId: r.char_id, ign: r.ign, points: r.points,
     runId: r.run_id, confirmedAt: runMap[r.run_id]?.confirmedAt || '', confirmedBy: runMap[r.run_id]?.confirmedBy || '',
+  }));
+}
+
+// Admin review list: same char + same boss with 2+ attendance rows
+// landing within the same 2h window — a duplicate submission (double-tap,
+// refresh-and-resubmit, etc.) rather than two real kills. Historical
+// safety net for anything that slipped in before the prevention check
+// in submitAttendance existed, or any edge case that check doesn't catch.
+async function getDuplicateAttendance(supabase: ReturnType<typeof db>, email: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('id, ts, char_id, ign, boss, points, run_id')
+    .order('ts', { ascending: true });
+  if (error) throw error;
+
+  type Row = { id: string; ts: string; char_id: string; ign: string; boss: string; points: number; run_id: string };
+  const byCharBoss: Record<string, Row[]> = {};
+  (data || []).forEach((r: Row) => {
+    const key = r.char_id + '::' + r.boss;
+    (byCharBoss[key] = byCharBoss[key] || []).push(r);
+  });
+
+  const dupes: Row[] = [];
+  Object.values(byCharBoss).forEach(rows => {
+    let clusterStart: number | null = null;
+    let cluster: Row[] = [];
+    rows.forEach(r => {
+      const t = new Date(r.ts).getTime();
+      if (clusterStart === null) { clusterStart = t; cluster = [r]; }
+      else if (t - clusterStart <= GROUP_WINDOW_MS) { cluster.push(r); }
+      else {
+        if (cluster.length > 1) dupes.push(...cluster);
+        clusterStart = t; cluster = [r];
+      }
+    });
+    if (cluster.length > 1) dupes.push(...cluster);
+  });
+
+  return dupes.map(r => ({
+    id: r.id, timestamp: r.ts, charId: r.char_id, ign: r.ign, boss: r.boss,
+    points: r.points, runId: r.run_id,
   }));
 }
 
