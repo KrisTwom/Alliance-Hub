@@ -19,7 +19,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const ADMIN_EMAILS = (Deno.env.get('ADMIN_EMAILS') || '').split(',').map(e => e.trim()).filter(Boolean);
 const SUPER_ADMIN_EMAILS = (Deno.env.get('SUPER_ADMIN_EMAILS') || '').split(',').map(e => e.trim()).filter(Boolean);
 
-const GROUP_WINDOW_MS = 2 * 60 * 60 * 1000;
+const GROUP_WINDOW_MS = 4 * 60 * 60 * 1000;
 
 const BOSS_CATEGORIES = [
   {
@@ -149,12 +149,24 @@ Deno.serve(async (req) => {
       case 'get_char_attendance': return ok(await getAttendanceForChar(supabase, email, data.charId as string));
       case 'delete_attendance':   return ok(await deleteAttendance(supabase, email, data.id as string));
       case 'get_late_linked_attendance': return ok(await getLateLinkedAttendance(supabase, email));
-      case 'get_duplicate_attendance': return ok(await getDuplicateAttendance(supabase, email));
       case 'get_inventory':       return ok(await getInventory(supabase, email));
       case 'mark_items_sold':     return ok(await markItemsSold(supabase, email, data));
       case 'get_payouts_page':    return ok(await getPayoutsPage(supabase, email, data.month as string));
       case 'get_available_months':return ok(await getAvailableMonths(supabase, email));
       case 'mark_char_paid':      return ok(await markCharPaid(supabase, email, data));
+      case 'add_run_participant': return ok(await addRunParticipant(supabase, email, data));
+
+      // ── Announcements ───────────────────────────────────────
+      case 'get_announcements':   return ok(await getAnnouncements(supabase, email));
+      case 'create_announcement': return ok(await createAnnouncement(supabase, email, data));
+      case 'delete_announcement': return ok(await deleteAnnouncement(supabase, email, data.announcementId as string));
+      case 'mark_announcements_read': return ok(await markAnnouncementsRead(supabase, email, data.announcementIds as string[]));
+
+      // ── Schedule / Calendar ──────────────────────────────────
+      case 'get_events':          return ok(await getEvents(supabase, email));
+      case 'create_event':        return ok(await createEvent(supabase, email, data));
+      case 'update_event':        return ok(await updateEvent(supabase, email, data));
+      case 'delete_event':        return ok(await deleteEvent(supabase, email, data.eventId as string));
 
       default: return err('Unknown action: ' + action);
     }
@@ -450,7 +462,10 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   const newBosses = bosses.filter(b => !alreadyThisWindow.has(b));
 
   if (!newBosses.length) {
-    return { success: false, message: `Already recorded for ${duplicateBosses.join(', ')} in this window.` };
+    return {
+      success: false,
+      message: `Already recorded for ${duplicateBosses.join(', ')} in this window. If this is a genuine second kill, message an admin on Kakao with a screenshot of your attendance and they'll add it manually.`,
+    };
   }
 
   let totalPoints = 0;
@@ -478,6 +493,9 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   return {
     success: true, count: newBosses.length, pointsEarned: totalPoints, ign: char.ign,
     skipped: duplicateBosses.length ? duplicateBosses : undefined,
+    skippedMessage: duplicateBosses.length
+      ? `${duplicateBosses.join(', ')} already recorded in this window — if that's a genuine second kill, message an admin on Kakao with a screenshot and they'll add it manually.`
+      : undefined,
   };
 }
 
@@ -538,7 +556,7 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
 
   const { data: attRows, error: ae } = await supabase
     .from('attendance')
-    .select('ts, char_id, ign, email, boss')
+    .select('id, ts, char_id, ign, email, boss, manually_added')
     .order('ts', { ascending: true });
   if (ae) throw ae;
 
@@ -568,13 +586,13 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   const globalResetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
 
   // Group attendance into run windows (mirrors GAS logic)
-  const bossGroups: Record<string, Array<{ ts: number; charId: string; ign: string; email: string }>> = {};
+  const bossGroups: Record<string, Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean }>> = {};
   (attRows || []).forEach(r => {
     if (!bossGroups[r.boss]) bossGroups[r.boss] = [];
-    bossGroups[r.boss].push({ ts: new Date(r.ts).getTime(), charId: r.char_id, ign: r.ign, email: r.email });
+    bossGroups[r.boss].push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id, ign: r.ign, email: r.email, manuallyAdded: !!r.manually_added });
   });
 
-  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; participants: Array<{ charId: string; ign: string; email: string }> }> = [];
+  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> }> = [];
   Object.keys(bossGroups).forEach(boss => {
     const entries = bossGroups[boss].sort((a, b) => a.ts - b.ts);
     let windowStart: number | null = null;
@@ -595,11 +613,14 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
 
   runs.sort((a, b) => b.windowStart - a.windowStart);
 
-  // Lookup for ign/email by charId, used to hydrate run_participants
-  // (which only stores charId) back into the {charId, ign, email} shape
-  // the frontend expects. Built from the same attendance rows above.
-  const charInfo: Record<string, { charId: string; ign: string; email: string }> = {};
-  (attRows || []).forEach(r => { charInfo[r.char_id] = { charId: r.char_id, ign: r.ign, email: r.email }; });
+  // Lookup for ign/email/attendanceId by charId, used to hydrate
+  // run_participants (which only stores charId) back into the shape the
+  // frontend expects. Built from the same attendance rows above. When a
+  // char has multiple attendance rows (e.g. re-linked late submission),
+  // the most recent one wins — good enough for display + the "remove"
+  // action, which targets whichever row is currently linked to this run.
+  const charInfo: Record<string, { charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> = {};
+  (attRows || []).forEach(r => { charInfo[r.char_id] = { charId: r.char_id, ign: r.ign, email: r.email, attendanceId: r.id, manuallyAdded: !!r.manually_added }; });
 
   return runs.map(run => {
     const saved = (savedRuns || []).find(r =>
@@ -623,10 +644,10 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   });
 }
 
-function buildRun(boss: string, windowStart: number, entries: Array<{ charId: string; ign: string; email: string }>) {
+function buildRun(boss: string, windowStart: number, entries: Array<{ id: string; charId: string; ign: string; email: string; manuallyAdded: boolean }>) {
   const seen = new Set<string>();
-  const participants: Array<{ charId: string; ign: string; email: string }> = [];
-  entries.forEach(e => { if (!seen.has(e.charId)) { seen.add(e.charId); participants.push({ charId: e.charId, ign: e.ign, email: e.email }); } });
+  const participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> = [];
+  entries.forEach(e => { if (!seen.has(e.charId)) { seen.add(e.charId); participants.push({ charId: e.charId, ign: e.ign, email: e.email, attendanceId: e.id, manuallyAdded: e.manuallyAdded }); } });
   return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, participants };
 }
 
@@ -750,47 +771,68 @@ async function getLateLinkedAttendance(supabase: ReturnType<typeof db>, email: s
   }));
 }
 
-// Admin review list: same char + same boss with 2+ attendance rows
-// landing within the same 2h window — a duplicate submission (double-tap,
-// refresh-and-resubmit, etc.) rather than two real kills. Historical
-// safety net for anything that slipped in before the prevention check
-// in submitAttendance existed, or any edge case that check doesn't catch.
-async function getDuplicateAttendance(supabase: ReturnType<typeof db>, email: string) {
+// Admin manually adds a character to a boss run — the counterpart to the
+// hard duplicate-block in submitAttendance. When a legit second kill or a
+// missed submission gets blocked/forgotten, an admin verifies it (Kakao +
+// screenshot) and adds them here instead. Works on both pending and
+// already-Confirmed runs, and is intentionally NOT gated behind the
+// isEdit/superadmin lock in confirmRun — that lock is about re-opening
+// loot decisions on a confirmed run, this is just correcting who showed up.
+//
+// Always creates a real attendance row (so points + the leaderboard stay
+// correct) marked manually_added for audit. If the run is already
+// Confirmed, also upserts run_participants directly since that run won't
+// be re-derived from attendance the way a pending run is.
+async function addRunParticipant(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
 
-  const { data, error } = await supabase
+  const boss        = data.boss as string;
+  const windowStart = data.windowStart as string;
+  const runId        = (data.runId as string) || '';
+  const charId       = data.charId as string;
+  if (!boss || !windowStart || !charId) return { error: 'boss, windowStart, and charId are required.' };
+
+  const { data: char, error: ce } = await supabase.from('characters').select('ign, email, points').eq('char_id', charId).maybeSingle();
+  if (ce) throw ce;
+  if (!char) return { error: 'Character not found.' };
+
+  // Already a participant (via attendance) for this boss+window? Don't
+  // double-credit points if an admin clicks add twice.
+  const windowStartMs = new Date(windowStart).getTime();
+  const windowEndMs   = windowStartMs + GROUP_WINDOW_MS;
+  const { data: existingRows } = await supabase
     .from('attendance')
-    .select('id, ts, char_id, ign, boss, points, run_id')
-    .order('ts', { ascending: true });
-  if (error) throw error;
-
-  type Row = { id: string; ts: string; char_id: string; ign: string; boss: string; points: number; run_id: string };
-  const byCharBoss: Record<string, Row[]> = {};
-  (data || []).forEach((r: Row) => {
-    const key = r.char_id + '::' + r.boss;
-    (byCharBoss[key] = byCharBoss[key] || []).push(r);
+    .select('id, ts')
+    .eq('char_id', charId)
+    .eq('boss', boss);
+  const alreadyIn = (existingRows || []).some(r => {
+    const t = new Date(r.ts).getTime();
+    return t >= windowStartMs && t <= windowEndMs;
   });
+  if (alreadyIn) return { error: `${char.ign} is already recorded for this run.` };
 
-  const dupes: Row[] = [];
-  Object.values(byCharBoss).forEach(rows => {
-    let clusterStart: number | null = null;
-    let cluster: Row[] = [];
-    rows.forEach(r => {
-      const t = new Date(r.ts).getTime();
-      if (clusterStart === null) { clusterStart = t; cluster = [r]; }
-      else if (t - clusterStart <= GROUP_WINDOW_MS) { cluster.push(r); }
-      else {
-        if (cluster.length > 1) dupes.push(...cluster);
-        clusterStart = t; cluster = [r];
-      }
-    });
-    if (cluster.length > 1) dupes.push(...cluster);
-  });
+  const points = BOSS_POINTS[boss] || 0;
+  // Anchor 1s after windowStart so it lands in the same grouping cluster
+  // as the rest of this run rather than "now" (which could be hours/days
+  // later and spill into a brand-new window).
+  const ts = new Date(windowStartMs + 1000).toISOString();
 
-  return dupes.map(r => ({
-    id: r.id, timestamp: r.ts, charId: r.char_id, ign: r.ign, boss: r.boss,
-    points: r.points, runId: r.run_id,
-  }));
+  const { data: inserted, error: ie } = await supabase.from('attendance').insert({
+    ts, email: char.email, char_id: charId, ign: char.ign, boss, points,
+    run_id: runId, manually_added: true, added_by: email,
+  }).select('id').single();
+  if (ie) throw ie;
+
+  await supabase.from('characters').update({ points: (Number(char.points) || 0) + points }).eq('char_id', charId);
+
+  if (runId) {
+    await supabase.from('run_participants').upsert(
+      { run_id: runId, char_id: charId },
+      { onConflict: 'run_id,char_id', ignoreDuplicates: true }
+    );
+  }
+
+  return { success: true, attendanceId: inserted?.id, ign: char.ign, pointsAdded: points };
 }
 
 async function confirmRun(supabase: ReturnType<typeof db>, email: string, runData: Record<string, unknown>) {
@@ -1127,5 +1169,127 @@ async function markCharPaid(supabase: ReturnType<typeof db>, email: string, data
   } else {
     await supabase.from('paid').insert({ email: charEmail, char_id: charId, month, marked_by: email, action: 'Paid' });
   }
+  return { success: true };
+}
+// ============================================================
+//  ANNOUNCEMENTS
+//  Readable by everyone signed in; writable by super admins only.
+//  Read-state is per-user, drives the unread badge on the home bell.
+// ============================================================
+async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) {
+  if (!email) return { error: 'No email provided' };
+
+  const { data: rows, error } = await supabase
+    .from('announcements')
+    .select('announcement_id, title, body, created_by, created_at')
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+
+  const { data: reads } = await supabase
+    .from('announcement_reads')
+    .select('announcement_id')
+    .eq('email', email);
+  const readSet = new Set((reads || []).map(r => r.announcement_id));
+
+  return (rows || []).map(r => ({
+    id: r.announcement_id, title: r.title, body: r.body,
+    createdBy: r.created_by, createdAt: r.created_at,
+    read: readSet.has(r.announcement_id),
+  }));
+}
+
+async function createAnnouncement(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!isSuperAdmin(email)) return { error: 'Only a super admin can post announcements.' };
+  const title = (data.title as string || '').trim();
+  const body  = (data.body as string  || '').trim();
+  if (!title || !body) return { error: 'Title and body are required.' };
+
+  const id = 'ANN_' + crypto.randomUUID();
+  const { error } = await supabase.from('announcements').insert({
+    announcement_id: id, title, body, created_by: email,
+  });
+  if (error) throw error;
+  return { success: true, id };
+}
+
+async function deleteAnnouncement(supabase: ReturnType<typeof db>, email: string, announcementId: string) {
+  if (!isSuperAdmin(email)) return { error: 'Only a super admin can delete announcements.' };
+  if (!announcementId) return { error: 'announcementId required' };
+  const { error } = await supabase.from('announcements').delete().eq('announcement_id', announcementId);
+  if (error) throw error;
+  return { success: true };
+}
+
+async function markAnnouncementsRead(supabase: ReturnType<typeof db>, email: string, announcementIds: string[]) {
+  if (!email) return { error: 'No email provided' };
+  if (!announcementIds || !announcementIds.length) return { success: true };
+
+  const rows = announcementIds.map(id => ({ email, announcement_id: id }));
+  const { error } = await supabase.from('announcement_reads').upsert(rows, { onConflict: 'email,announcement_id', ignoreDuplicates: true });
+  if (error) throw error;
+  return { success: true };
+}
+
+// ============================================================
+//  SCHEDULE / CALENDAR
+//  Readable by everyone; writable by any admin (not super-admin-gated).
+//  `source` is reserved for the planned Discord-bot automation — bot-
+//  created events will set source:'discord_bot' instead of 'manual',
+//  everything else about them is identical.
+// ============================================================
+async function getEvents(supabase: ReturnType<typeof db>, email: string) {
+  if (!email) return { error: 'No email provided' };
+  const { data: rows, error } = await supabase
+    .from('events')
+    .select('event_id, boss, scheduled_at, duration_minutes, notes, source, created_by, created_at')
+    .order('scheduled_at', { ascending: true });
+  if (error) throw error;
+  return (rows || []).map(r => ({
+    id: r.event_id, boss: r.boss, scheduledAt: r.scheduled_at,
+    durationMinutes: r.duration_minutes, notes: r.notes || '',
+    source: r.source, createdBy: r.created_by, createdAt: r.created_at,
+  }));
+}
+
+async function createEvent(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  const boss = (data.boss as string || '').trim();
+  const scheduledAt = data.scheduledAt as string;
+  const durationMinutes = Number(data.durationMinutes) || Math.round(GROUP_WINDOW_MS / 60000);
+  const notes = (data.notes as string) || '';
+  if (!boss || !scheduledAt) return { error: 'boss and scheduledAt are required.' };
+  if (isNaN(new Date(scheduledAt).getTime())) return { error: 'Invalid scheduledAt.' };
+
+  const id = 'EVT_' + crypto.randomUUID();
+  const { error } = await supabase.from('events').insert({
+    event_id: id, boss, scheduled_at: scheduledAt, duration_minutes: durationMinutes,
+    notes, source: 'manual', created_by: email,
+  });
+  if (error) throw error;
+  return { success: true, id };
+}
+
+async function updateEvent(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  const eventId = data.eventId as string;
+  if (!eventId) return { error: 'eventId required' };
+
+  const fields: Record<string, unknown> = {};
+  if (data.boss !== undefined) fields.boss = (data.boss as string).trim();
+  if (data.scheduledAt !== undefined) fields.scheduled_at = data.scheduledAt;
+  if (data.durationMinutes !== undefined) fields.duration_minutes = Number(data.durationMinutes) || 240;
+  if (data.notes !== undefined) fields.notes = data.notes;
+
+  const { error } = await supabase.from('events').update(fields).eq('event_id', eventId);
+  if (error) throw error;
+  return { success: true };
+}
+
+async function deleteEvent(supabase: ReturnType<typeof db>, email: string, eventId: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!eventId) return { error: 'eventId required' };
+  const { error } = await supabase.from('events').delete().eq('event_id', eventId);
+  if (error) throw error;
   return { success: true };
 }

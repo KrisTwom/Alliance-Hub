@@ -105,11 +105,12 @@ const Cache = {
     get_window_resets:    60 * 1000,
     get_char_attendance:  30 * 1000,
     get_late_linked_attendance: 60 * 1000,
-    get_duplicate_attendance:   60 * 1000,
     get_inventory:        2  * 60 * 1000,
     get_payouts_page:     2  * 60 * 1000,
     get_available_months: 5  * 60 * 1000,
     get_roster:           5  * 60 * 1000,
+    get_announcements:    30 * 1000,
+    get_events:           60 * 1000,
     DEFAULT:              3  * 60 * 1000,
   },
 
@@ -344,6 +345,8 @@ function _buildShell() {
         <button class="nav-btn" data-view="leaderboard">🏆 Leaderboard</button>
         <button class="nav-btn" data-view="rules">📜 Rules</button>
         <button class="nav-btn" data-view="guide">📖 Guide</button>
+        <button class="nav-btn" data-view="announcements">📢 Announcements</button>
+        <button class="nav-btn" data-view="schedule">📅 Schedule</button>
         ${App.user.isAdmin ? `
         <button class="nav-btn" data-view="drops">💎 Drops</button>
         <button class="nav-btn" data-view="inventory">🎒 Inventory</button>
@@ -364,6 +367,8 @@ function _buildShell() {
       <div id="view-leaderboard" class="view"></div>
       <div id="view-rules"       class="view"></div>
       <div id="view-guide"       class="view"></div>
+      <div id="view-announcements" class="view"></div>
+      <div id="view-schedule"    class="view"></div>
       <div id="view-drops"       class="view"></div>
       <div id="view-inventory"   class="view"></div>
       <div id="view-payouts"     class="view"></div>
@@ -402,6 +407,8 @@ function _buildShell() {
         <button class="sidebar-link" data-view="leaderboard">🏆 Leaderboard</button>
         <button class="sidebar-link" data-view="rules">📜 Rules</button>
         <button class="sidebar-link" data-view="guide">📖 App & Alliance Guide</button>
+        <button class="sidebar-link" data-view="announcements">📢 Announcements</button>
+        <button class="sidebar-link" data-view="schedule">📅 Schedule</button>
         ${App.user.isAdmin ? `
         <button class="sidebar-link" data-view="drops">💎 Drops</button>
         <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
@@ -609,6 +616,8 @@ function showView(name) {
     leaderboard:       renderLeaderboard,
     rules:             renderRules,
     guide:             renderGuide,
+    announcements:     renderAnnouncements,
+    schedule:          renderSchedule,
     drops:             renderDrops,
     inventory:         renderInventory,
     payouts:           renderPayouts,
@@ -644,6 +653,7 @@ function renderHome() {
   // Render immediately with skeleton stats
   el.innerHTML = _homeShell(char, null, []);
   _sizeSelectToContent(document.getElementById('home-char-select'));
+  _refreshBellBadge();
 
   Promise.all([
     API.read('get_leaderboard'),
@@ -686,8 +696,9 @@ function _homeShell(char, stats, att) {
             ? `<select id="home-char-select" onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:#fff;font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:#06090f;font-size:16px">${c.ign}</option>`).join('')}</select>`
             : `<span>${char?.ign || 'Adventurer'}</span>`}
         </div>
-        <div style="width:36px;height:36px;border-radius:10px;background:#0d1220;border:1px solid #1a2d50;display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;">
+        <div id="home-bell" style="width:36px;height:36px;border-radius:10px;background:#0d1220;border:1px solid #1a2d50;display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;" onclick="showView('announcements');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">
           <span style="font-size:18px;">🔔</span>
+          <span id="bell-badge" style="display:none;position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;padding:0 3px;border-radius:99px;background:var(--danger,#EF4444);color:#fff;font-size:10px;font-weight:700;align-items:center;justify-content:center;line-height:16px;text-align:center;"></span>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid #0d1525;">
@@ -936,13 +947,13 @@ function submitAttendance() {
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
 
   API.write('submit_attendance', { charId: char.charId, bosses: selected },
-    ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs', 'get_late_linked_attendance', 'get_duplicate_attendance']
+    ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs', 'get_late_linked_attendance']
   ).then(res => {
     closeModal();
     if (res.success) {
       const c = App.user.characters.find(c => c.charId === char.charId);
       if (c) c.points = (c.points||0) + res.pointsEarned;
-      _showConfirmation(selected, res.pointsEarned, res.ign);
+      _showConfirmation(selected, res.pointsEarned, res.ign, res.skippedMessage);
     } else {
       toast(res.message||'Error', 'error');
     }
@@ -952,7 +963,7 @@ function submitAttendance() {
 // ============================================================
 //  CONFIRMATION
 // ============================================================
-function _showConfirmation(bosses, pts, ign) {
+function _showConfirmation(bosses, pts, ign, skippedMessage) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const el = document.getElementById('view-confirm'); el.classList.add('active');
   el.innerHTML = `
@@ -963,6 +974,7 @@ function _showConfirmation(bosses, pts, ign) {
       <div class="confirm-bosses">${bosses.map(b => `<span class="confirm-boss-tag">${b}</span>`).join('')}</div>
       <div class="confirm-points">+${pts}</div>
       <div class="confirm-points-label">Points Earned</div>
+      ${skippedMessage ? `<p style="font-size:.8rem;color:#e6a842;text-align:center;max-width:340px;margin:0 auto 1rem;line-height:1.5">⚠ ${escHtml(skippedMessage)}</p>` : ''}
       <button class="btn btn-primary" style="margin-bottom:.75rem" onclick="_goToAttendance()">⚔ Log More Bosses</button>
       <button class="btn btn-secondary" onclick="showView('home')">🏠 Go to Home</button>
     </div>`;
@@ -1201,6 +1213,338 @@ function renderGuide() {
       </div>
     </div>`;
 }
+
+// ============================================================
+//  BELL BADGE (unread announcement count)
+// ============================================================
+function _refreshBellBadge() {
+  API.read('get_announcements').then(rows => {
+    const badge = document.getElementById('bell-badge');
+    if (!badge) return;
+    const unread = (rows || []).filter(r => !r.read).length;
+    if (unread > 0) { badge.textContent = unread > 9 ? '9+' : String(unread); badge.style.display = 'flex'; }
+    else { badge.style.display = 'none'; }
+  }).catch(() => {});
+}
+
+// ============================================================
+//  ANNOUNCEMENTS — readable by everyone, writable by super admins
+// ============================================================
+function renderAnnouncements() {
+  const el = document.getElementById('view-announcements');
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
+      <div class="section-title" style="margin-bottom:0">📢 Announcements</div>
+      ${App.user.isSuperAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateAnnouncementModal()">+ New Announcement</button>` : ''}
+    </div>
+    ${Skeleton.spinner()}`;
+
+  API.read('get_announcements').then(rows => {
+    rows = rows || [];
+    window._announcements = rows;
+
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;margin-bottom:1rem">
+        <div class="section-title" style="margin-bottom:0">📢 Announcements</div>
+        ${App.user.isSuperAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateAnnouncementModal()">+ New Announcement</button>` : ''}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:.75rem">
+        ${!rows.length
+          ? `<div class="card"><div class="empty-state"><span class="empty-state-icon">📢</span>No announcements yet.</div></div>`
+          : rows.map(r => `
+            <div class="card" style="border:1px solid ${r.read ? 'var(--border)' : 'var(--border-mid)'};position:relative">
+              ${!r.read ? `<span style="position:absolute;top:.9rem;right:.9rem;width:8px;height:8px;border-radius:99px;background:var(--gold)"></span>` : ''}
+              <div style="font-family:var(--font-display);font-size:1.05rem;color:var(--text-primary);margin-bottom:.35rem;padding-right:1.2rem">${escHtml(r.title)}</div>
+              <div style="font-size:.85rem;color:var(--text-secondary);white-space:pre-wrap;line-height:1.5;margin-bottom:.6rem">${escHtml(r.body)}</div>
+              <div style="display:flex;align-items:center;justify-content:space-between;font-size:.75rem;color:var(--text-muted)">
+                <span>${escHtml(r.createdBy)} · ${fmtDate(r.createdAt)} ${fmtTime(r.createdAt)}</span>
+                ${App.user.isSuperAdmin ? `<button class="btn btn-sm btn-danger" onclick="deleteAnnouncement('${r.id}')" title="Delete">🗑</button>` : ''}
+              </div>
+            </div>`).join('')}
+      </div>`;
+
+    // Mark any unread ones as read now that they've actually been shown.
+    const unreadIds = rows.filter(r => !r.read).map(r => r.id);
+    if (unreadIds.length) {
+      API.write('mark_announcements_read', { announcementIds: unreadIds }, ['get_announcements']).then(() => _refreshBellBadge());
+    }
+  });
+}
+
+function openCreateAnnouncementModal() {
+  showModal(`
+    <div class="modal-title">📢 New Announcement</div>
+    <div class="form-group">
+      <label class="form-label">Title</label>
+      <input type="text" class="form-input" id="ann-title" placeholder="e.g. Siege time change this week" maxlength="120">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Body</label>
+      <textarea class="form-textarea" id="ann-body" placeholder="Details for the alliance…" style="min-height:140px"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="ann-submit-btn" onclick="submitAnnouncement()">📢 Post</button>
+    </div>`);
+}
+
+function submitAnnouncement() {
+  const title = document.getElementById('ann-title').value.trim();
+  const body  = document.getElementById('ann-body').value.trim();
+  if (!title || !body) { toast('Title and body are required.', 'error'); return; }
+  const btn = document.getElementById('ann-submit-btn');
+  btn.disabled = true; btn.textContent = 'Posting…';
+
+  API.write('create_announcement', { title, body }, ['get_announcements']).then(res => {
+    if (res.success) { toast('Announcement posted.', 'success'); closeModal(); renderAnnouncements(); _refreshBellBadge(); }
+    else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '📢 Post'; }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '📢 Post'; });
+}
+
+function deleteAnnouncement(id) {
+  if (!confirm('Delete this announcement for everyone?')) return;
+  API.write('delete_announcement', { announcementId: id }, ['get_announcements']).then(res => {
+    if (res.success) { toast('Deleted.', 'success'); renderAnnouncements(); }
+    else toast(res.error || 'Error', 'error');
+  }).catch(() => toast('Network error', 'error'));
+}
+
+// ============================================================
+//  SCHEDULE / CALENDAR — readable by everyone, writable by any admin
+// ============================================================
+let _scheduleMonth = null; // Date, always normalized to the 1st of the month
+
+function renderSchedule() {
+  const el = document.getElementById('view-schedule');
+  if (!_scheduleMonth) { const n = new Date(); _scheduleMonth = new Date(n.getFullYear(), n.getMonth(), 1); }
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;margin-bottom:1rem">
+      <div class="section-title" style="margin-bottom:0">📅 Schedule</div>
+      ${App.user.isAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateEventModal()">+ New Event</button>` : ''}
+    </div>
+    <div id="schedule-calendar">${Skeleton.spinner()}</div>`;
+
+  API.read('get_events').then(events => {
+    window._events = events || [];
+    _renderCalendarGrid();
+  });
+}
+
+function _renderCalendarGrid() {
+  const wrap = document.getElementById('schedule-calendar');
+  if (!wrap) return;
+  const events = window._events || [];
+  const year = _scheduleMonth.getFullYear(), month = _scheduleMonth.getMonth();
+  const monthLabel = _scheduleMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const now = Date.now();
+
+  // Group events by local Y-M-D so each cell only looks up its own day.
+  const byDay = {};
+  events.forEach(ev => {
+    const d = new Date(ev.scheduledAt);
+    const key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+    (byDay[key] = byDay[key] || []).push(ev);
+  });
+  const isLive = ev => {
+    const start = new Date(ev.scheduledAt).getTime();
+    const end = start + (Number(ev.durationMinutes) || 240) * 60000;
+    return now >= start && now <= end;
+  };
+
+  const firstOfMonth = new Date(year, month, 1);
+  const startWeekday = firstOfMonth.getDay(); // 0=Sun
+  const daysInMonth  = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const dowLabels = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const todayKey = (() => { const t = new Date(); return t.getFullYear()+'-'+t.getMonth()+'-'+t.getDate(); })();
+
+  wrap.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+      <button class="btn btn-secondary" style="padding:.35rem .7rem" onclick="_scheduleShiftMonth(-1)">‹</button>
+      <div style="font-family:var(--font-display);color:var(--gold);font-size:1.05rem">${monthLabel}</div>
+      <button class="btn btn-secondary" style="padding:.35rem .7rem" onclick="_scheduleShiftMonth(1)">›</button>
+    </div>
+    <div class="cal-grid cal-grid-head">
+      ${dowLabels.map(l => `<div class="cal-dow">${l}</div>`).join('')}
+    </div>
+    <div class="cal-grid">
+      ${cells.map(d => {
+        if (d === null) return `<div class="cal-cell cal-cell-empty"></div>`;
+        const key = year + '-' + month + '-' + d;
+        const dayEvents = (byDay[key] || []).sort((a,b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+        const isToday = key === todayKey;
+        return `
+          <div class="cal-cell${isToday ? ' cal-cell-today' : ''}" onclick="${App.user.isAdmin ? `openCreateEventModal('${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}')` : ''}">
+            <div class="cal-daynum">${d}</div>
+            <div class="cal-events">
+              ${dayEvents.slice(0,3).map(ev => `
+                <div class="cal-event-chip${isLive(ev) ? ' cal-event-live' : ''}" onclick="event.stopPropagation();openEventModal('${ev.id}')" title="${escHtml(ev.boss)} — ${fmtTime(ev.scheduledAt)}">
+                  ${isLive(ev) ? '🔴 ' : ''}${fmtTime(ev.scheduledAt)} ${escHtml(ev.boss)}
+                </div>`).join('')}
+              ${dayEvents.length > 3 ? `<div class="cal-event-more">+${dayEvents.length-3} more</div>` : ''}
+            </div>
+          </div>`;
+      }).join('')}
+    </div>
+    <div style="margin-top:1.25rem">
+      <div class="form-label" style="margin-bottom:.5rem">Upcoming</div>
+      ${_renderUpcomingList(events, now)}
+    </div>`;
+}
+
+function _renderUpcomingList(events, now) {
+  const upcoming = events
+    .filter(ev => new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes)||240)*60000 >= now)
+    .sort((a,b) => new Date(a.scheduledAt) - new Date(b.scheduledAt))
+    .slice(0, 6);
+  if (!upcoming.length) return `<div class="card"><div class="empty-state"><span class="empty-state-icon">📅</span>Nothing scheduled.</div></div>`;
+  return `<div style="display:flex;flex-direction:column;gap:.5rem">
+    ${upcoming.map(ev => {
+      const live = now >= new Date(ev.scheduledAt).getTime() && now <= new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes)||240)*60000;
+      return `
+      <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;cursor:pointer" onclick="openEventModal('${ev.id}')">
+        <div>
+          <div style="font-size:.92rem;color:var(--text-primary)">${live ? '🔴 LIVE — ' : ''}${escHtml(ev.boss)}</div>
+          <div style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)}</div>
+        </div>
+        ${live ? `<button class="btn btn-primary" style="font-size:.78rem;padding:.35rem .7rem" onclick="event.stopPropagation();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function _scheduleShiftMonth(delta) {
+  _scheduleMonth = new Date(_scheduleMonth.getFullYear(), _scheduleMonth.getMonth() + delta, 1);
+  _renderCalendarGrid();
+}
+
+// timezone select: converts a date+time input into a UTC ISO string.
+// "eastern_fixed" is always UTC-5 regardless of date — some games (like
+// this alliance's Siege) run on a fixed server clock that ignores DST,
+// so a plain "US Eastern" zone would silently drift an hour off half the year.
+function _composeScheduledAtIso(dateStr, timeStr, tz) {
+  if (!dateStr || !timeStr) return null;
+  if (tz === 'utc')            return new Date(`${dateStr}T${timeStr}:00Z`).toISOString();
+  if (tz === 'eastern_fixed')  return new Date(`${dateStr}T${timeStr}:00-05:00`).toISOString();
+  return new Date(`${dateStr}T${timeStr}:00`).toISOString(); // local browser time
+}
+
+function _allBossNames() {
+  const names = [];
+  (App.config.bossCategories || []).forEach(c => c.bosses.forEach(b => names.push(b.name)));
+  return names;
+}
+
+function openCreateEventModal(prefillDate) {
+  const bosses = _allBossNames();
+  const d = prefillDate ? new Date(prefillDate + 'T00:00:00') : new Date();
+  const dateVal = prefillDate || `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+  showModal(`
+    <div class="modal-title">📅 New Event</div>
+    <div class="form-group">
+      <label class="form-label">Boss / Mini</label>
+      <select class="form-input" id="evt-boss" onchange="_evtBossChanged()">
+        ${bosses.map(b => `<option value="${escHtml(b)}">${escHtml(b)}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:flex;gap:.75rem">
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Date</label>
+        <input type="date" class="form-input" id="evt-date" value="${dateVal}">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Time</label>
+        <input type="time" class="form-input" id="evt-time" value="20:00">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Timezone</label>
+      <select class="form-input" id="evt-tz">
+        <option value="local">My local time (browser)</option>
+        <option value="eastern_fixed">US Eastern — fixed, no DST (e.g. Siege)</option>
+        <option value="utc">UTC</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Attendance window (minutes)</label>
+      <input type="number" class="form-input" id="evt-duration" min="5" max="1440" value="240">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes (optional)</label>
+      <textarea class="form-textarea" id="evt-notes" placeholder="Anything admins/members should know…"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="evt-submit-btn" onclick="submitCreateEvent()">📅 Create</button>
+    </div>`);
+  _evtBossChanged();
+}
+
+// Siege's real window is 30 min (12:30–1:00 AM ET) vs the default 4h
+// attendance window everything else uses — nudge the duration field so
+// admins don't have to remember to change it every time.
+function _evtBossChanged() {
+  const boss = document.getElementById('evt-boss')?.value;
+  const durEl = document.getElementById('evt-duration');
+  if (!durEl) return;
+  durEl.value = boss === 'Siege' ? 30 : 240;
+}
+
+function submitCreateEvent() {
+  const boss = document.getElementById('evt-boss').value;
+  const dateStr = document.getElementById('evt-date').value;
+  const timeStr = document.getElementById('evt-time').value;
+  const tz = document.getElementById('evt-tz').value;
+  const durationMinutes = Number(document.getElementById('evt-duration').value) || 240;
+  const notes = document.getElementById('evt-notes').value.trim();
+  const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, tz);
+  if (!scheduledAt) { toast('Date and time are required.', 'error'); return; }
+
+  const btn = document.getElementById('evt-submit-btn');
+  btn.disabled = true; btn.textContent = 'Creating…';
+
+  API.write('create_event', { boss, scheduledAt, durationMinutes, notes }, ['get_events']).then(res => {
+    if (res.success) { toast('Event created.', 'success'); closeModal(); renderSchedule(); }
+    else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; });
+}
+
+function openEventModal(eventId) {
+  const ev = (window._events || []).find(e => e.id === eventId);
+  if (!ev) return;
+  const now = Date.now();
+  const start = new Date(ev.scheduledAt).getTime();
+  const end = start + (Number(ev.durationMinutes) || 240) * 60000;
+  const live = now >= start && now <= end;
+
+  showModal(`
+    <div class="modal-title">${live ? '🔴 ' : '📅 '}${escHtml(ev.boss)}</div>
+    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">
+      ${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)} — window closes ${fmtTime(new Date(end).toISOString())}
+    </div>
+    ${ev.notes ? `<p style="font-size:.88rem;color:var(--text-primary);white-space:pre-wrap;margin-bottom:1rem;line-height:1.5">${escHtml(ev.notes)}</p>` : ''}
+    <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:1rem">Created by ${escHtml(ev.createdBy)}${ev.source === 'discord_bot' ? ' · via Discord bot' : ''}</div>
+    <div class="modal-actions">
+      ${App.user.isAdmin ? `<button class="btn btn-danger" onclick="deleteEvent('${ev.id}')">🗑 Delete</button>` : ''}
+      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+      ${live ? `<button class="btn btn-primary" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+    </div>`);
+}
+
+function deleteEvent(eventId) {
+  if (!confirm('Delete this event?')) return;
+  API.write('delete_event', { eventId }, ['get_events']).then(res => {
+    if (res.success) { toast('Event deleted.', 'success'); closeModal(); renderSchedule(); }
+    else toast(res.error || 'Error', 'error');
+  }).catch(() => toast('Network error', 'error'));
+}
+
 // Formats the raw `drops` payload — usually a JSON string like
 // '[{"itemName":"Actaemon Horn","qty":1}]' — into a readable "Item ×2, Item"
 // string for the Drops table cell, instead of dumping raw JSON on screen.
@@ -1234,7 +1578,6 @@ function renderDrops() {
       </div>
       <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
       <div id="late-linked-banner"></div>
-      <div id="duplicate-banner"></div>
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Timestamp</th><th>Boss</th><th>Drops</th><th>Participants</th><th>Status</th></tr></thead>
@@ -1253,7 +1596,7 @@ function renderDrops() {
         </table>
       </div>`;
     window._runs = runs || [];
-    if (App.user.isAdmin) { renderLateLinkedBanner(); renderDuplicateBanner(); }
+    if (App.user.isAdmin) { renderLateLinkedBanner(); }
   });
 }
 
@@ -1286,44 +1629,6 @@ function renderLateLinkedBanner() {
                 <td>${App.user.isSuperAdmin
                   ? `<button class="btn btn-sm btn-danger" onclick="deleteLateLinkedEntry('${r.id}','${String(r.ign).replace(/'/g,"\\'")}')" title="Remove — not a real straggler">🗑</button>`
                   : `<span title="Only a super admin can remove this" style="opacity:.4;font-size:.85rem">🔒</span>`}</td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>`;
-  });
-}
-
-// ============================================================
-//  DUPLICATE SUBMISSIONS (admin — same char, same boss, same
-//  2h window submitted twice; historical safety net for anything
-//  that predates the prevention check in submitAttendance)
-// ============================================================
-function renderDuplicateBanner() {
-  const el = document.getElementById('duplicate-banner');
-  if (!el) return;
-  API.read('get_duplicate_attendance').then(rows => {
-    if (!el.isConnected) return; // navigated away before this landed
-    rows = rows || [];
-    if (!rows.length) { el.innerHTML = ''; return; }
-    el.innerHTML = `
-      <div class="collapsible-header" onclick="toggleCollapsible(this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;background:rgba(230,90,90,.08);border:1px solid rgba(230,90,90,.3);border-radius:var(--radius);padding:.7rem 1rem;margin-bottom:1rem">
-        <span style="font-size:.85rem;color:#e65a5a">⚠ ${rows.length} duplicate submission${rows.length===1?'':'s'} — same character, same boss, same window.</span>
-        <span class="collapsible-arrow" style="font-size:.75rem;color:#e65a5a">▼</span>
-      </div>
-      <div class="collapsible-body collapsed" style="max-height:0;margin-bottom:1rem">
-        <div class="table-scroll">
-          <table class="data-table">
-            <thead><tr><th>Char</th><th>Boss</th><th>Submitted</th><th>Points</th><th></th></tr></thead>
-            <tbody>${rows.map(r => `
-              <tr>
-                <td>${escHtml(r.ign)}</td>
-                <td>${escHtml(r.boss)}</td>
-                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.timestamp)} ${fmtTime(r.timestamp)}</td>
-                <td style="color:var(--gold)">+${r.points}</td>
-                <td>${(!r.runId || App.user.isSuperAdmin)
-                  ? `<button class="btn btn-sm btn-danger" onclick="deleteDuplicateEntry('${r.id}','${String(r.ign).replace(/'/g,"\\'")}')" title="Delete this duplicate">🗑</button>`
-                  : `<span title="Linked to a confirmed run — only a super admin can remove it" style="opacity:.4;font-size:.85rem">🔒</span>`}</td>
               </tr>`).join('')}
             </tbody>
           </table>
@@ -1385,14 +1690,22 @@ function openRunModal(idx) {
       <span class="status ${run.status==='Confirmed'?'status-confirmed':'status-pending'}">${run.status}</span>
     </div>
     <div style="margin-bottom:1rem">
-      <div class="form-label" style="margin-bottom:.5rem">Participants (uncheck to exclude)</div>
+      <div class="form-label" style="margin-bottom:.5rem">Participants (uncheck to exclude from loot split)</div>
       <div id="modal-participants" style="display:flex;flex-direction:column;gap:.35rem;max-height:160px;overflow-y:auto;padding:.5rem;background:var(--bg-raised);border-radius:var(--radius);border:1px solid var(--border)">
         ${run.participants.map(p => `
-          <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.9rem">
-            <input type="checkbox" class="part-check" value="${p.charId}" data-ign="${p.ign}" data-email="${p.email}" checked style="accent-color:var(--gold)">
-            ${p.ign}
-          </label>`).join('')}
+          <div style="display:flex;align-items:center;gap:.5rem;font-size:.9rem">
+            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;flex:1">
+              <input type="checkbox" class="part-check" value="${p.charId}" data-ign="${p.ign}" data-email="${p.email}" checked style="accent-color:var(--gold)">
+              ${escHtml(p.ign)}${p.manuallyAdded ? ' <span style="font-size:.7rem;color:var(--text-muted)">(added by admin)</span>' : ''}
+            </label>
+            <button type="button" class="btn btn-sm btn-danger" style="padding:.15rem .5rem" title="Remove attendee entirely (also removes points earned)" onclick="removeRunParticipant(${idx}, '${p.attendanceId}', '${String(p.ign).replace(/'/g, "\\'")}')">🗑</button>
+          </div>`).join('')}
       </div>
+      ${App.user.isAdmin ? `
+      <div style="margin-top:.5rem;position:relative">
+        <input type="text" class="form-input" id="add-participant-search" placeholder="+ Add attendee (search character name)…" autocomplete="off" oninput="_filterAddParticipant(${idx})">
+        <div id="add-participant-results" style="display:none;position:absolute;left:0;right:0;top:100%;margin-top:2px;background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:var(--radius);max-height:180px;overflow-y:auto;z-index:20"></div>
+      </div>` : ''}
     </div>
     <div class="form-group">
       <div class="form-label">Items Dropped</div>
@@ -1417,6 +1730,81 @@ function openRunModal(idx) {
         ? `<button class="btn btn-secondary" disabled title="Only super admins can edit a confirmed run" style="opacity:.45;cursor:not-allowed;">🔒 Locked</button>`
         : `<button class="btn btn-primary" id="confirm-run-btn" onclick="submitRunConfirm(${idx})">${run.runId ? '💾 Save Changes' : '✓ Confirm Run'}</button>`}
     </div>`);
+}
+
+// Flattens get_roster (members -> characters) into a single searchable
+// list, cached on window so repeated keystrokes don't refetch.
+function _allCharactersFlat() {
+  if (window._allCharsFlat) return Promise.resolve(window._allCharsFlat);
+  return API.read('get_roster').then(roster => {
+    const flat = [];
+    (roster || []).forEach(m => (m.characters || []).forEach(c => flat.push({ charId: c.charId, ign: c.ign, email: m.email })));
+    window._allCharsFlat = flat;
+    return flat;
+  });
+}
+
+function _filterAddParticipant(idx) {
+  const input = document.getElementById('add-participant-search');
+  const box   = document.getElementById('add-participant-results');
+  const q     = input.value.trim().toLowerCase();
+  if (!q) { box.style.display = 'none'; box.innerHTML = ''; return; }
+
+  const run = window._runs[idx];
+  const existingIds = new Set(run.participants.map(p => p.charId));
+
+  _allCharactersFlat().then(flat => {
+    const matches = flat.filter(c => !existingIds.has(c.charId) && c.ign.toLowerCase().includes(q)).slice(0, 8);
+    if (!matches.length) { box.innerHTML = `<div style="padding:.6rem .75rem;font-size:.85rem;color:var(--text-muted)">No match</div>`; box.style.display = 'block'; return; }
+    box.innerHTML = matches.map(c => `
+      <div class="add-participant-row" style="padding:.5rem .75rem;font-size:.88rem;cursor:pointer;border-bottom:1px solid var(--border)" onclick="addRunParticipant(${idx}, '${c.charId}', '${String(c.ign).replace(/'/g,"\\'")}')">${escHtml(c.ign)}</div>`).join('');
+    box.style.display = 'block';
+  });
+}
+
+function addRunParticipant(idx, charId, ign) {
+  const run = window._runs[idx];
+  const box = document.getElementById('add-participant-results');
+  if (box) { box.style.display = 'none'; }
+
+  API.write('add_run_participant', { boss: run.boss, windowStart: run.windowStart, runId: run.runId, charId },
+    ['get_grouped_runs', 'get_leaderboard', 'get_roster', 'get_my_attendance']
+  ).then(res => {
+    if (res.success) {
+      toast(`Added ${ign} (+${res.pointsAdded} pts)`, 'success');
+      _reopenRunModal(run.boss, run.windowStart);
+    } else {
+      toast(res.error || 'Error', 'error');
+    }
+  }).catch(() => toast('Network error', 'error'));
+}
+
+function removeRunParticipant(idx, attendanceId, ign) {
+  if (!attendanceId) { toast('Nothing to remove — no attendance record found for this entry.', 'error'); return; }
+  if (!confirm(`Remove ${ign} from this run? This also removes the points they earned for it.`)) return;
+  const run = window._runs[idx];
+
+  API.write('delete_attendance', { id: attendanceId },
+    ['get_grouped_runs', 'get_leaderboard', 'get_roster', 'get_my_attendance', 'get_char_attendance', 'get_inventory']
+  ).then(res => {
+    if (res.success) {
+      toast(`Removed ${ign}.`, 'success');
+      _reopenRunModal(run.boss, run.windowStart);
+    } else {
+      toast(res.error || 'Error', 'error');
+    }
+  }).catch(() => toast('Network error', 'error'));
+}
+
+// Re-fetches grouped runs after an add/remove and reopens the modal for
+// the same run so the participant list reflects the change immediately.
+function _reopenRunModal(boss, windowStart) {
+  API.read('get_grouped_runs').then(runs => {
+    window._runs = runs || [];
+    const newIdx = window._runs.findIndex(r => r.boss === boss && r.windowStart === windowStart);
+    if (newIdx >= 0) openRunModal(newIdx); else closeModal();
+    renderDrops();
+  });
 }
 
 function submitRunConfirm(idx) {
@@ -1872,15 +2260,8 @@ function deleteLateLinkedEntry(id, ign) {
   });
 }
 
-function deleteDuplicateEntry(id, ign) {
-  if (!confirm(`Remove ${ign}'s duplicate submission? This also removes the points it earned.`)) return;
-  _deleteAttendanceCore(id).then(res => {
-    if (res.success) renderDuplicateBanner();
-  });
-}
-
 function _deleteAttendanceCore(id) {
-  return API.write('delete_attendance', { id }, ['get_roster', 'get_grouped_runs', 'get_leaderboard', 'get_my_attendance', 'get_char_attendance', 'get_late_linked_attendance', 'get_duplicate_attendance', 'get_inventory'])
+  return API.write('delete_attendance', { id }, ['get_roster', 'get_grouped_runs', 'get_leaderboard', 'get_my_attendance', 'get_char_attendance', 'get_late_linked_attendance', 'get_inventory'])
     .then(res => {
       if (res.success) {
         toast(
