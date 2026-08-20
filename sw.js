@@ -77,7 +77,7 @@ self.addEventListener('fetch', event => {
       }
       // For non-document assets (scripts, styles, images) return a minimal offline response
       // rather than letting the fetch reject with an unhandled error.
-      return new Response('', { status: 503, statusText: 'Service Unavailable — offline' });
+      return new Response('', { status: 503, statusText: 'Service Unavailable - offline' });
     })
   );
 });
