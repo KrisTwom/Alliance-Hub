@@ -1,7 +1,7 @@
 // ============================================================
 //  CONFIG
 // ============================================================
-const SUPABASE_FUNCTION_URL = 'https://jiqnyeuumffjpghptmym.supabase.co/functions/v1/alliance';
+const SUPABASE_FUNCTION_URL = 'https://yhwzlqgwamzvktzdkpbs.supabase.co/functions/v1/alliance';
 
 // ============================================================
 //  STATE
