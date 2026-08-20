@@ -89,6 +89,15 @@ const App = {
   email:        null,
 };
 
+// ── Character setup option lists (used by roster add/register modals) ──
+const CHAR_CLASSES  = ['Warrior', 'Ranger', 'Magician', 'Breaker'];
+const CHAR_FACTIONS = ['Lanos', 'Siras'];
+const CHAR_GUILDS   = ['Exalt', 'Fatale', 'Rasta', 'Lumiere', 'Cosmic', 'Luminarias'];
+
+function _optionList(values, selected='') {
+  return values.map(v => `<option value="${v}" ${v===selected?'selected':''}>${v}</option>`).join('');
+}
+
 // ============================================================
 //  CACHE  — in-memory, TTL-based, per action key
 //  Mutation actions (submit, confirm, sell…) call cache.bust()
@@ -341,17 +350,7 @@ function _buildShell() {
         <button class="nav-btn active" data-view="home">🏠 Home</button>
         <button class="nav-btn" data-view="attendance">🗡 Attendance</button>
         <button class="nav-btn" data-view="my-splits">💰 My Splits</button>
-        <button class="nav-btn" data-view="my-attendance">📋 Attendance History</button>
-        <button class="nav-btn" data-view="leaderboard">🏆 Leaderboard</button>
-        <button class="nav-btn" data-view="rules">📜 Rules</button>
-        <button class="nav-btn" data-view="guide">📖 Guide</button>
-        <button class="nav-btn" data-view="announcements">📢 Announcements</button>
-        <button class="nav-btn" data-view="schedule">📅 Schedule</button>
-        ${App.user.isAdmin ? `
-        <button class="nav-btn" data-view="drops">💎 Drops</button>
-        <button class="nav-btn" data-view="inventory">🎒 Inventory</button>
-        <button class="nav-btn" data-view="payouts">📊 Payouts</button>
-        <button class="nav-btn" data-view="roster">👥 Roster</button>` : ''}
+        <button id="header-hamburger" class="nav-btn hamburger-btn" aria-label="Open menu">☰ More</button>
       </div>
       <div class="header-right">
         <span id="header-username" class="header-user"></span>
@@ -436,9 +435,9 @@ function _moveNavIndicator(view) {
 }
 
 function _initNav() {
-  document.querySelectorAll('#desktop-nav .nav-btn').forEach(btn => {
+  document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('#desktop-nav .nav-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       showView(btn.dataset.view);
     });
@@ -452,6 +451,7 @@ function _initNav() {
     });
   });
   document.getElementById('more-btn')?.addEventListener('click', _openSidebar);
+  document.getElementById('header-hamburger')?.addEventListener('click', _openSidebar);
   document.getElementById('sidebar-close')?.addEventListener('click', _closeSidebar);
   document.getElementById('sidebar-overlay')?.addEventListener('click', _closeSidebar);
   document.querySelectorAll('.sidebar-link[data-view]').forEach(btn => {
@@ -462,7 +462,7 @@ function _initNav() {
     });
   });
   document.getElementById('modal-overlay')?.addEventListener('click', e => {
-    if (e.target.id === 'modal-overlay') closeModal();
+    if (e.target.id === 'modal-overlay' && e.target.dataset.forceAck !== '1') closeModal();
   });
 
   // ── PULL-TO-REFRESH ───────────────────────────────────────
@@ -953,9 +953,18 @@ function submitAttendance() {
     if (res.success) {
       const c = App.user.characters.find(c => c.charId === char.charId);
       if (c) c.points = (c.points||0) + res.pointsEarned;
-      _showConfirmation(selected, res.pointsEarned, res.ign, res.skippedMessage);
+      const recordedBosses = selected.filter(b => !(res.skipped||[]).includes(b));
+      if (res.skippedMessage) {
+        // Force the duplicate-boss warning to be acknowledged before
+        // showing the confirmation screen, rather than a passing toast.
+        showAckModal('⚠ Some Bosses Skipped', res.skippedMessage, () => {
+          _showConfirmation(recordedBosses, res.pointsEarned, res.ign);
+        });
+      } else {
+        _showConfirmation(recordedBosses, res.pointsEarned, res.ign);
+      }
     } else {
-      toast(res.message||'Error', 'error');
+      showAckModal('⚠ Attendance Not Recorded', res.message || 'Something went wrong — please try again.');
     }
   }).catch(() => { closeModal(); toast('Network error', 'error'); });
 }
@@ -963,7 +972,7 @@ function submitAttendance() {
 // ============================================================
 //  CONFIRMATION
 // ============================================================
-function _showConfirmation(bosses, pts, ign, skippedMessage) {
+function _showConfirmation(bosses, pts, ign) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const el = document.getElementById('view-confirm'); el.classList.add('active');
   el.innerHTML = `
@@ -974,7 +983,6 @@ function _showConfirmation(bosses, pts, ign, skippedMessage) {
       <div class="confirm-bosses">${bosses.map(b => `<span class="confirm-boss-tag">${b}</span>`).join('')}</div>
       <div class="confirm-points">+${pts}</div>
       <div class="confirm-points-label">Points Earned</div>
-      ${skippedMessage ? `<p style="font-size:.8rem;color:#e6a842;text-align:center;max-width:340px;margin:0 auto 1rem;line-height:1.5">⚠ ${escHtml(skippedMessage)}</p>` : ''}
       <button class="btn btn-primary" style="margin-bottom:.75rem" onclick="_goToAttendance()">⚔ Log More Bosses</button>
       <button class="btn btn-secondary" onclick="showView('home')">🏠 Go to Home</button>
     </div>`;
@@ -2099,9 +2107,14 @@ function renderRoster() {
 function rosterCard(r) {
   const chars = r.characters || [];
   const pts   = chars.reduce((s,c) => s+(c.points||0), 0);
+  // Emails are sensitive contact info — only super admins get to see them
+  // in the clear. Regular admins see a blurred placeholder instead.
+  const emailHtml = App.user.isSuperAdmin
+    ? r.email
+    : `<span class="email-blurred" title="Visible to super admins only">${r.email}</span>`;
   return `<div class="card">
     <div class="card-header">
-      <div><div class="card-title">${chars.length ? chars.map(c=>c.ign).join(', ') : r.email}</div><div class="card-meta">${r.email}</div></div>
+      <div><div class="card-title">${chars.length ? chars.map(c=>c.ign).join(', ') : emailHtml}</div><div class="card-meta">${emailHtml}</div></div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         <span class="status ${r.status==='active'?'status-confirmed':'status-pending'}">${r.status}</span>
         ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
@@ -2110,7 +2123,7 @@ function rosterCard(r) {
     ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span onclick="openAttendanceHistoryModal('${c.charId}','${(c.ign||'').replace(/'/g,"\\'")}')" style="cursor:pointer;font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)" title="View attendance history">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
-      <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
+      ${r.status==='active' ? `<button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>` : ''}
       ${chars.length ? `<button class="btn btn-sm btn-danger" onclick="openRemoveCharModal('${r.email}')">− Remove Character</button>` : ''}
     </div>
   </div>`;
@@ -2153,9 +2166,9 @@ function openRegisterMemberModal(pre='') {
     <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="reg-email" value="${pre}" ${pre?'readonly style="opacity:.6"':''} placeholder="player@gmail.com"></div>
     <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="reg-ign" placeholder="Character name"></div>
     <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="reg-level" type="number" placeholder="e.g. 50"></div>
-    <div class="form-group"><label class="form-label">Class</label><input class="form-input" id="reg-class" placeholder="e.g. Warrior"></div>
-    <div class="form-group"><label class="form-label">Guild</label><input class="form-input" id="reg-guild" placeholder="Guild name"></div>
-    <div class="form-group"><label class="form-label">Faction</label><input class="form-input" id="reg-faction" placeholder="e.g. Lanos"></div>
+    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="reg-class"><option value="">Select class…</option>${_optionList(CHAR_CLASSES)}</select></div>
+    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="reg-guild"><option value="">Select guild…</option>${_optionList(CHAR_GUILDS)}</select></div>
+    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="reg-faction"><option value="">Select faction…</option>${_optionList(CHAR_FACTIONS)}</select></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitRegisterMember()">Register</button>
@@ -2184,9 +2197,9 @@ function openAddCharModal(memberEmail) {
     <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">${memberEmail}</p>
     <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="ac-ign" placeholder="Character name"></div>
     <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="ac-level" type="number" placeholder="e.g. 50"></div>
-    <div class="form-group"><label class="form-label">Class</label><input class="form-input" id="ac-class" placeholder="e.g. Warrior"></div>
-    <div class="form-group"><label class="form-label">Guild</label><input class="form-input" id="ac-guild" placeholder="Guild name"></div>
-    <div class="form-group"><label class="form-label">Faction</label><input class="form-input" id="ac-faction" placeholder="e.g. Crimson"></div>
+    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="ac-class"><option value="">Select class…</option>${_optionList(CHAR_CLASSES)}</select></div>
+    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="ac-guild"><option value="">Select guild…</option>${_optionList(CHAR_GUILDS)}</select></div>
+    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="ac-faction"><option value="">Select faction…</option>${_optionList(CHAR_FACTIONS)}</select></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitAddChar('${memberEmail}')">Add</button>
@@ -2280,8 +2293,18 @@ function _deleteAttendanceCore(id) {
 // ============================================================
 //  SIDEBAR / MODAL / TOAST / UTILS
 // ============================================================
-function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
-function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
+function _openSidebar() {
+  document.getElementById('sidebar').classList.remove('hidden');
+  document.getElementById('sidebar-overlay').classList.remove('hidden');
+  document.getElementById('more-btn')?.classList.add('active');
+  document.getElementById('header-hamburger')?.classList.add('active');
+}
+function _closeSidebar() {
+  document.getElementById('sidebar').classList.add('hidden');
+  document.getElementById('sidebar-overlay').classList.add('hidden');
+  document.getElementById('more-btn')?.classList.remove('active');
+  document.getElementById('header-hamburger')?.classList.remove('active');
+}
 
 // ─── SWIPE TO CLOSE (mobile sidebar) ─────────────────────
 // Sidebar slides in from the right, so a rightward swipe closes it.
@@ -2352,8 +2375,38 @@ function _closeSidebar() { document.getElementById('sidebar').classList.add('hid
   document.addEventListener('touchend',   onTouchEnd,   { passive: true });
   document.addEventListener('touchcancel', onTouchEnd,  { passive: true });
 })();
-function showModal(html) { document.getElementById('modal-box').innerHTML = html; document.getElementById('modal-overlay').classList.remove('hidden'); }
-function closeModal()    { document.getElementById('modal-overlay').classList.add('hidden'); }
+function showModal(html, opts={}) {
+  document.getElementById('modal-box').innerHTML = html;
+  const overlay = document.getElementById('modal-overlay');
+  overlay.classList.remove('hidden');
+  // forceAck modals can only be dismissed via their own button — clicking
+  // the overlay backdrop won't close them.
+  overlay.dataset.forceAck = opts.forceAck ? '1' : '';
+}
+function closeModal() {
+  const overlay = document.getElementById('modal-overlay');
+  overlay.classList.add('hidden');
+  overlay.dataset.forceAck = '';
+}
+
+// Centered popup with a single forced "Okay" acknowledgement button —
+// used for things the user must actively confirm they've read (e.g. the
+// duplicate-attendance block) rather than a passing toast that's easy to miss.
+function showAckModal(title, message, onOkay) {
+  window._ackModalCallback = onOkay || null;
+  showModal(`
+    <div class="modal-title">${title}</div>
+    <p style="font-size:.88rem;color:var(--text-secondary);line-height:1.6;margin-bottom:1.25rem">${escHtml(message)}</p>
+    <div class="modal-actions" style="justify-content:center">
+      <button class="btn btn-primary" style="min-width:120px" onclick="_dismissAckModal()">Okay</button>
+    </div>`, { forceAck: true });
+}
+function _dismissAckModal() {
+  closeModal();
+  const cb = window._ackModalCallback;
+  window._ackModalCallback = null;
+  if (cb) cb();
+}
 
 function toast(msg, type='') {
   const t = document.getElementById('toast');

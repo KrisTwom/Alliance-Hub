@@ -361,6 +361,10 @@ async function adminRegisterMember(supabase: ReturnType<typeof db>, email: strin
 async function adminAddCharacter(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
   const memberEmail = (data.memberEmail as string || '').toLowerCase().trim();
+  const { data: memberRow } = await supabase.from('roster').select('status').eq('email', memberEmail).maybeSingle();
+  if (!memberRow || memberRow.status !== 'active') {
+    return { error: 'Member must be an approved (active) roster member before adding a character.' };
+  }
   const charId = 'CHAR_' + crypto.randomUUID();
   const { error } = await supabase.from('characters').insert({
     char_id:    charId,
