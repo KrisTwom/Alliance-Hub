@@ -16,8 +16,8 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 // ── Config (mirrors GAS CONFIG) ───────────────────────────────
-const ADMIN_EMAILS = (Deno.env.get('ADMIN_EMAILS') || '').split(',').map(e => e.trim()).filter(Boolean);
-const SUPER_ADMIN_EMAILS = (Deno.env.get('SUPER_ADMIN_EMAILS') || '').split(',').map(e => e.trim()).filter(Boolean);
+const ADMIN_EMAILS = (Deno.env.get('ADMIN_EMAILS') || 'retisoverminetwom@gmail.com,hopesanddreams2294@gmail.com,huggableimo@gmail.com').split(',').map(e => e.trim()).filter(Boolean);
+const SUPER_ADMIN_EMAILS = (Deno.env.get('SUPER_ADMIN_EMAILS') || 'retisoverminetwom@gmail.com').split(',').map(e => e.trim()).filter(Boolean);
 
 const GROUP_WINDOW_MS = 4 * 60 * 60 * 1000;
 
