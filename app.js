@@ -1605,7 +1605,7 @@ function _renderUpcomingList(events, now) {
     ${upcoming.map(ev => {
       const live = now >= new Date(ev.scheduledAt).getTime() && now <= new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes)||240)*60000;
       return `
-      <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;cursor:pointer" onclick="openEventModal('${ev.id}')">
+      <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;cursor:pointer" onclick="openEventDetails('${ev.id}')">
         <div>
           <div style="font-size:.92rem;color:var(--text-primary)">${live ? '🔴 LIVE — ' : ''}${escHtml(ev.boss)}</div>
           <div style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)}</div>
@@ -1638,12 +1638,11 @@ function _allBossNames() {
   return names;
 }
 
-// ── DAY VIEW — Google Calendar-style single-day timeline ──────
+// ── DAY VIEW — fullscreen single-day agenda list ──────────────
 // Tapping a calendar cell opens this instead of jumping straight into
-// event creation. Admins get a "+ New" button inside; tapping a block
-// takes admins straight into an edit form for that event.
-const DAY_VIEW_ROW_H  = 52; // px per hour
-const DAY_VIEW_LABEL_W = 52; // px, hour-label column width
+// event creation. Rows are plain list entries (no proportional time-block
+// height) since this alliance runs many short back-to-back events.
+// Tapping a row opens the Event Details screen (see below).
 
 function _dayEventsFor(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
@@ -1655,90 +1654,125 @@ function _dayEventsFor(dateStr) {
     .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
 }
 
-// Simple interval-graph column assignment so same-day overlapping events
-// sit side-by-side instead of stacking on top of each other.
-function _layoutDayEvents(events) {
-  const columns = []; // array of arrays of events, each inner array non-overlapping
-  events.forEach(ev => {
-    const start = new Date(ev.scheduledAt).getTime();
-    const end = start + (Number(ev.durationMinutes) || 240) * 60000;
-    let placed = false;
-    for (const col of columns) {
-      const last = col[col.length - 1];
-      const lastEnd = new Date(last.scheduledAt).getTime() + (Number(last.durationMinutes) || 240) * 60000;
-      if (lastEnd <= start) { col.push(ev); ev._col = columns.indexOf(col); placed = true; break; }
-    }
-    if (!placed) { columns.push([ev]); ev._col = columns.length - 1; }
-  });
-  events.forEach(ev => { ev._totalCols = columns.length; });
-  return events;
+function _isEventLive(ev, now) {
+  now = now || Date.now();
+  const start = new Date(ev.scheduledAt).getTime();
+  const end = start + (Number(ev.durationMinutes) || 240) * 60000;
+  return now >= start && now <= end;
 }
 
 function openDayView(dateStr) {
   _dayViewDate = dateStr;
-  showModal(_dayViewHtml(dateStr));
-  requestAnimationFrame(() => {
-    const timeline = document.getElementById('day-view-timeline');
-    if (!timeline) return;
-    const events = _dayEventsFor(dateStr);
-    const scrollHour = events.length ? Math.max(0, new Date(events[0].scheduledAt).getHours() - 1) : 8;
-    timeline.scrollTop = scrollHour * DAY_VIEW_ROW_H;
-  });
+  showModal(_dayViewHtml(dateStr), { fullscreen: true });
 }
 
 function _dayViewHtml(dateStr) {
-  const events = _layoutDayEvents(_dayEventsFor(dateStr));
+  const events = _dayEventsFor(dateStr);
   const now = Date.now();
-  const isLive = ev => {
-    const start = new Date(ev.scheduledAt).getTime();
-    const end = start + (Number(ev.durationMinutes) || 240) * 60000;
-    return now >= start && now <= end;
-  };
   const dateObj = new Date(dateStr + 'T00:00:00');
-  const dateLabel = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const weekdayLabel = dateObj.toLocaleDateString(undefined, { weekday: 'short' });
+  const fullLabel = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 
-  const hourRows = Array.from({ length: 24 }, (_, h) => {
-    const label = h === 0 ? '12 AM' : h < 12 ? `${h} AM` : h === 12 ? '12 PM' : `${h - 12} PM`;
-    return `<div class="day-view-hour-row" style="height:${DAY_VIEW_ROW_H}px">
-      <div class="day-view-hour-label" style="width:${DAY_VIEW_LABEL_W}px">${label}</div>
-    </div>`;
-  }).join('');
-
-  const eventBlocks = events.map(ev => {
-    const start = new Date(ev.scheduledAt);
-    const startMins = start.getHours() * 60 + start.getMinutes();
-    const durMins = Number(ev.durationMinutes) || 240;
-    const top = (startMins / 60) * DAY_VIEW_ROW_H;
-    const height = Math.max((durMins / 60) * DAY_VIEW_ROW_H, 26);
-    const widthPct = 100 / ev._totalCols;
-    const leftPct = ev._col * widthPct;
+  const rows = events.map(ev => {
+    const live = _isEventLive(ev, now);
+    const end = new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes) || 240) * 60000;
     return `
-      <div class="day-view-event${isLive(ev) ? ' day-view-event-live' : ''}"
-           style="top:${top}px;height:${height}px;left:calc(${leftPct}% + 4px);width:calc(${widthPct}% - 8px)"
-           onclick="event.stopPropagation();openEventModal('${ev.id}','${dateStr}')"
-           title="${escHtml(ev.boss)} — ${fmtTime(ev.scheduledAt)}">
-        <div class="day-view-event-title">${isLive(ev) ? '🔴 ' : ''}${escHtml(ev.boss)}</div>
-        <div class="day-view-event-time">${fmtTime(ev.scheduledAt)}</div>
+      <div class="day-agenda-row${live ? ' day-agenda-row-live' : ''}" onclick="openEventDetails('${ev.id}','${dateStr}')">
+        <div class="day-agenda-rail">
+          <div class="day-agenda-dot"></div>
+          <div class="day-agenda-line"></div>
+        </div>
+        <div class="day-agenda-main">
+          <div class="day-agenda-title">${live ? '🔴 ' : ''}${escHtml(ev.boss)}</div>
+          <div class="day-agenda-time">${fmtTime(ev.scheduledAt)} – ${fmtTime(new Date(end).toISOString())}</div>
+        </div>
       </div>`;
   }).join('');
 
   return `
-    <div class="modal-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
-      <span style="font-size:.95rem">${dateLabel}</span>
-      ${App.user.isAdmin ? `<button class="btn btn-primary" style="font-size:.75rem;padding:.3rem .65rem;flex-shrink:0" onclick="openCreateEventModal('${dateStr}','${dateStr}')">+ New</button>` : ''}
-    </div>
-    <div id="day-view-timeline" style="position:relative;height:60vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px;background:var(--bg-card)">
-      <div style="position:relative;height:${24 * DAY_VIEW_ROW_H}px">
-        ${hourRows}
-        <div style="position:absolute;top:0;left:${DAY_VIEW_LABEL_W}px;right:0;height:100%">
-          ${eventBlocks || `<div style="position:absolute;top:${8 * DAY_VIEW_ROW_H}px;left:8px;right:8px;color:var(--text-muted);font-size:.82rem">No events scheduled this day.</div>`}
-        </div>
+    <div class="day-view-header">
+      <div>
+        <div class="day-view-header-title">${weekdayLabel} ${dateObj.getDate()}</div>
+        <div class="day-view-header-sub">${fullLabel}</div>
       </div>
+      <button class="day-view-close" onclick="closeModal()">✕</button>
     </div>
-    <div class="modal-actions" style="margin-top:1rem">
-      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+    <div class="day-view-body">
+      ${App.user.isAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.5rem 1rem;margin-bottom:.75rem" onclick="openCreateEventModal('${dateStr}','${dateStr}')">+ New Event</button>` : ''}
+      ${rows || `<div class="empty-state"><span class="empty-state-icon">📅</span>No events scheduled this day.</div>`}
     </div>`;
 }
+
+// ── EVENT DETAILS — fullscreen screen shown after tapping an agenda row ──
+// Shows who created the event and when, a countdown reminder, and the
+// date/length of the event. Admins get a top-right "⋯" menu to edit or
+// delete the event; everyone else just gets Back.
+function _timeUntilLabel(scheduledAt, durationMinutes) {
+  const now = Date.now();
+  const start = new Date(scheduledAt).getTime();
+  const end = start + (Number(durationMinutes) || 240) * 60000;
+  if (now >= start && now <= end) return { text: 'Happening now', live: true };
+  if (now > end) return { text: 'Already happened', live: false };
+  const diffMs = start - now;
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 60) return { text: `${mins} minute${mins === 1 ? '' : 's'}`, live: false };
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return { text: `${hours} hour${hours === 1 ? '' : 's'}`, live: false };
+  const days = Math.round(hours / 24);
+  return { text: `${days} day${days === 1 ? '' : 's'}`, live: false };
+}
+
+function openEventDetails(eventId, dayViewDate) {
+  const ev = (window._events || []).find(e => e.id === eventId);
+  if (!ev) return;
+  const back = dayViewDate ? `openDayView('${dayViewDate}')` : 'closeModal()';
+  const end = new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes) || 240) * 60000;
+  const until = _timeUntilLabel(ev.scheduledAt, ev.durationMinutes);
+  const initial = (ev.createdBy || '?').trim().charAt(0).toUpperCase();
+
+  showModal(`
+    <div class="evt-details-header">
+      <button class="evt-details-back" onclick="${back}">‹</button>
+      <div class="evt-details-header-title">Details</div>
+      ${App.user.isAdmin ? `
+        <div class="evt-details-menu-wrap">
+          <button class="evt-details-menu-btn" onclick="_toggleEvtDetailsMenu(event)">⋯</button>
+          <div class="evt-details-menu" id="evt-details-menu">
+            <button class="evt-details-menu-item" onclick="openEventModal('${ev.id}','${dayViewDate||''}')">✏️ Edit</button>
+            <button class="evt-details-menu-item danger" onclick="deleteEvent('${ev.id}','${dayViewDate||''}')">🗑 Delete</button>
+          </div>
+        </div>` : `<div style="width:40px"></div>`}
+    </div>
+    <div class="evt-details-body">
+      <div class="evt-details-creator">
+        <div class="evt-details-avatar">${escHtml(initial)}</div>
+        <div>
+          <div class="evt-details-creator-name">${escHtml(ev.createdBy || 'Unknown')}${ev.source === 'discord_bot' ? ' · Discord bot' : ''}</div>
+          <div class="evt-details-creator-meta">${fmtDate(ev.createdAt)} ${fmtTime(ev.createdAt)}</div>
+        </div>
+      </div>
+      <div class="evt-details-reminder${until.live ? ' live' : ''}">
+        🕐 ${until.live ? `<b>${until.text}</b>` : `Reminder: <b>${until.text}</b> until event`}
+      </div>
+      <div class="evt-details-card">
+        <div class="evt-details-card-title">${escHtml(ev.boss)}</div>
+        <div class="evt-details-card-when">${fmtDate(ev.scheduledAt)} (${new Date(ev.scheduledAt).toLocaleDateString(undefined,{weekday:'short'})}) ${fmtTime(ev.scheduledAt)} ~ ${fmtTime(new Date(end).toISOString())}</div>
+      </div>
+      ${ev.notes ? `<div class="evt-details-notes">${escHtml(ev.notes)}</div>` : ''}
+      ${until.live && !App.user.isAdmin ? `<button class="btn btn-primary" style="margin-top:1rem;width:100%" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+    </div>`, { fullscreen: true });
+}
+
+function _toggleEvtDetailsMenu(evt) {
+  evt.stopPropagation();
+  document.getElementById('evt-details-menu')?.classList.toggle('open');
+}
+document.addEventListener('click', e => {
+  const menu = document.getElementById('evt-details-menu');
+  if (menu && menu.classList.contains('open') && !e.target.closest('.evt-details-menu-wrap')) {
+    menu.classList.remove('open');
+  }
+});
 
 // prefillDate: 'YYYY-MM-DD' to default the date field to.
 // returnDate: if set, Cancel/Save return to that day's day-view instead
@@ -1827,31 +1861,17 @@ function submitCreateEvent(returnDate) {
 
 // dayViewDate: 'YYYY-MM-DD' of the day-view this was opened from, if any —
 // used to return there after Save/Delete/Back instead of just closing.
+// Reached only via the Event Details screen's "⋯ → Edit" menu item, so
+// this is admin-only now (Details covers the read-only view for everyone,
+// including the live "Submit Attendance" shortcut). Back returns to
+// Details rather than the day view, since that's where Edit was opened from.
 function openEventModal(eventId, dayViewDate) {
   const ev = (window._events || []).find(e => e.id === eventId);
   if (!ev) return;
-  const back = dayViewDate ? `openDayView('${dayViewDate}')` : 'closeModal()';
+  const back = `openEventDetails('${eventId}','${dayViewDate||''}')`;
 
-  if (!App.user.isAdmin) {
-    const now = Date.now();
-    const start = new Date(ev.scheduledAt).getTime();
-    const end = start + (Number(ev.durationMinutes) || 240) * 60000;
-    const live = now >= start && now <= end;
-    showModal(`
-      <div class="modal-title">${live ? '🔴 ' : '📅 '}${escHtml(ev.boss)}</div>
-      <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">
-        ${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)} — window closes ${fmtTime(new Date(end).toISOString())}
-      </div>
-      ${ev.notes ? `<p style="font-size:.88rem;color:var(--text-primary);white-space:pre-wrap;margin-bottom:1rem;line-height:1.5">${escHtml(ev.notes)}</p>` : ''}
-      <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:1rem">Created by ${escHtml(ev.createdBy)}${ev.source === 'discord_bot' ? ' · via Discord bot' : ''}</div>
-      <div class="modal-actions">
-        <button class="btn btn-secondary" onclick="${back}">Back</button>
-        ${live ? `<button class="btn btn-primary" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
-      </div>`);
-    return;
-  }
+  if (!App.user.isAdmin) { openEventDetails(eventId, dayViewDate); return; }
 
-  // Admins go straight into an edit form for the event.
   const bosses = _allBossNames();
   const start = new Date(ev.scheduledAt);
   const dateVal = `${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,'0')}-${String(start.getDate()).padStart(2,'0')}`;
@@ -2901,8 +2921,21 @@ function _goToTab(name) {
   document.addEventListener('touchcancel', onTouchEnd,  { passive: true });
 })();
 
-function showModal(html) { document.getElementById('modal-box').innerHTML = html; document.getElementById('modal-overlay').classList.remove('hidden'); }
-function closeModal()    { document.getElementById('modal-overlay').classList.add('hidden'); }
+// opts.fullscreen: renders the modal edge-to-edge (no card, no backdrop
+// blur) for screens meant to feel like their own page — the day-agenda
+// list and event-details screen use this.
+function showModal(html, opts) {
+  const full = !!(opts && opts.fullscreen);
+  document.getElementById('modal-box').innerHTML = html;
+  document.getElementById('modal-box').classList.toggle('modal-box-full', full);
+  document.getElementById('modal-overlay').classList.toggle('modal-overlay-full', full);
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+function closeModal() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+  document.getElementById('modal-overlay').classList.remove('modal-overlay-full');
+  document.getElementById('modal-box').classList.remove('modal-box-full');
+}
 
 function toast(msg, type='') {
   const t = document.getElementById('toast');

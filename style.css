@@ -57,6 +57,15 @@
   --skel-b: #0d1428;
   --shadow-color: rgba(0,0,0,.25);
   --shadow-color-strong: rgba(0,0,0,.45);
+
+  /* MOBILE BOTTOM NAV (redefined per-theme below) */
+  --mobnav-bg: rgba(4,6,14,0.97);
+  --mobnav-border: #0d2040;
+  --mobnav-shadow-1: rgba(0,0,0,.95);
+  --mobnav-shadow-2: rgba(58,123,213,0.15);
+  --mobnav-shadow-3: rgba(0,0,0,.8);
+  --mobnav-icon-inactive: #71717A;
+  --mobnav-icon-active: #fff;
 }
 
 /* ============================================================
@@ -89,6 +98,15 @@ html[data-theme="light"] {
   --skel-b: #DCE3EF;
   --shadow-color: rgba(30,40,70,.08);
   --shadow-color-strong: rgba(30,40,70,.14);
+
+  /* MOBILE BOTTOM NAV — light surfaces, dark text/icons */
+  --mobnav-bg: rgba(255,255,255,0.92);
+  --mobnav-border: rgba(20,30,50,.12);
+  --mobnav-shadow-1: rgba(30,40,70,.12);
+  --mobnav-shadow-2: rgba(77,141,255,0.14);
+  --mobnav-shadow-3: rgba(30,40,70,.08);
+  --mobnav-icon-inactive: #848DA1;
+  --mobnav-icon-active: #14171F;
 }
 
 *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
@@ -202,17 +220,18 @@ html,body {
 #mobile-nav {
   position:fixed; bottom:0; left:0; right:0;
   height:var(--mob-nav-h);
-  background:rgba(4,6,14,0.97);
-  border-top:1px solid #0d2040;
+  background:var(--mobnav-bg);
+  border-top:1px solid var(--mobnav-border);
   z-index:200; display:none;
   flex-direction:row;
   align-items:center;
   box-shadow:
-    0 -4px 24px rgba(0,0,0,.95),
-    0 -1px 0 rgba(58,123,213,0.15),
-    0 -8px 40px rgba(0,0,0,.8);
+    0 -4px 24px var(--mobnav-shadow-1),
+    0 -1px 0 var(--mobnav-shadow-2),
+    0 -8px 40px var(--mobnav-shadow-3);
   -webkit-backdrop-filter:blur(24px);
   backdrop-filter:blur(24px);
+  transition:background var(--transition),border-color var(--transition);
 }
 .nav-indicator {
   position:absolute; top:0; left:0; height:2px; width:25%;
@@ -226,12 +245,12 @@ html,body {
 .mob-nav-btn {
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   gap:3px; background:transparent; border:none; cursor:pointer;
-  color:#71717A; font-family:var(--font-body);
+  color:var(--mobnav-icon-inactive); font-family:var(--font-body);
   padding:.5rem 0; transition:color var(--transition);
   height:100%; width:100%;
   -webkit-tap-highlight-color:transparent;
 }
-.mob-nav-btn.active { color:white; }
+.mob-nav-btn.active { color:var(--mobnav-icon-active); }
 .mob-nav-btn.active .mob-nav-icon { color:#4D8DFF; }
 .mob-nav-btn:active { opacity:.7; }
 .mob-nav-icon  { font-size:1.3rem; line-height:1; }
@@ -240,17 +259,22 @@ html,body {
 /* ── SIDEBAR ─────────────────────────────── */
 .sidebar-overlay { position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:300; backdrop-filter:blur(4px); transition:opacity .2s ease; }
 .sidebar-overlay.hidden { display:none; }
-.sidebar { position:fixed; top:0; right:0; bottom:0; width:260px; background:var(--bg-card); border-left:1px solid var(--border); z-index:400; display:flex; flex-direction:column; transform:translateX(0); transition:transform .3s ease; box-shadow:-20px 0 60px rgba(0,0,0,.5); padding-top:var(--safe-top); padding-bottom:var(--safe-bottom); }
+/* display:grid with an explicit row template (rather than flex:1 +
+   min-height:0) is used here because iOS Safari has historically been
+   unreliable at shrinking a flex child to scroll inside a fixed-position,
+   safe-area-padded ancestor. Grid's 1fr row sizes deterministically and
+   the min-height:0 on that row is what actually enables the scrollbar. */
+.sidebar { position:fixed; top:0; right:0; bottom:0; width:260px; height:100dvh; background:var(--bg-card); border-left:1px solid var(--border); z-index:400; display:grid; grid-template-rows:auto auto 1fr; transform:translateX(0); transition:transform .3s ease; box-shadow:-20px 0 60px rgba(0,0,0,.5); padding-top:var(--safe-top); padding-bottom:var(--safe-bottom); overflow:hidden; }
 .sidebar.hidden { transform:translateX(100%); }
-.sidebar-header { display:flex; align-items:center; justify-content:space-between; padding:1rem 1.2rem; border-bottom:1px solid var(--border); flex-shrink:0; }
+.sidebar-header { display:flex; align-items:center; justify-content:space-between; padding:1rem 1.2rem; border-bottom:1px solid var(--border); }
 .sidebar-title  { font-family:var(--font-display); color:var(--gold); font-size:.95rem; letter-spacing:.15em; font-weight:700; }
 .sidebar-close  { background:transparent; border:none; color:var(--text-secondary); font-size:1.1rem; cursor:pointer; padding:4px; }
-.sidebar-user   { padding:1rem 1.2rem; border-bottom:1px solid var(--border); flex-shrink:0; }
+.sidebar-user   { padding:1rem 1.2rem; border-bottom:1px solid var(--border); }
 .sidebar-uname  { font-size:.9rem; color:var(--text-primary); margin-top:.5rem; font-weight:600; }
-/* flex:1 + min-height:0 lets this area shrink inside the fixed-height
-   sidebar so it scrolls instead of pushing content off-screen once the
-   link list (e.g. the Admin Pages group) grows past the viewport. */
-.sidebar-links  { display:flex; flex-direction:column; gap:4px; padding:.75rem; flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+/* min-height:0 lets this grid row shrink below its content size so it
+   scrolls instead of pushing content off-screen once the link list
+   (e.g. the Admin Pages group) grows past the viewport. */
+.sidebar-links  { display:flex; flex-direction:column; gap:4px; padding:.75rem; min-height:0; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
 .sidebar-link   { background:transparent; border:1px solid transparent; color:var(--text-secondary); font-family:var(--font-body); font-size:1rem; font-weight:600; text-align:left; padding:.7rem 1rem; border-radius:var(--radius); cursor:pointer; transition:all var(--transition); }
 .sidebar-link:hover  { background:var(--bg-raised); color:var(--text-primary); border-color:var(--border); }
 .sidebar-link.active { background:var(--gold-glow); color:var(--gold); border-color:var(--border-mid); }
@@ -514,6 +538,16 @@ html,body {
 .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.85); display:flex; align-items:center; justify-content:center; z-index:999; backdrop-filter:blur(6px); padding:1rem; }
 .modal-overlay.hidden { display:none; }
 .modal-box { background:var(--bg-card); border:1px solid var(--border-mid); border-radius:var(--radius-lg); padding:1.5rem; width:100%; max-width:620px; max-height:88vh; overflow-y:auto; box-shadow:0 24px 80px rgba(0,0,0,.9); animation:modal-in .2s ease; -webkit-overflow-scrolling:touch; }
+/* Fullscreen variant — used for the day-agenda and event-details screens
+   so they take over the whole viewport like a native calendar app page,
+   instead of sitting in a centered card. */
+.modal-overlay.modal-overlay-full { padding:0; align-items:stretch; justify-content:stretch; background:var(--bg-deep); backdrop-filter:none; }
+.modal-box.modal-box-full {
+  max-width:none; width:100%; height:100dvh; max-height:100dvh;
+  border-radius:0; border:none; padding:0;
+  display:flex; flex-direction:column;
+  padding-top:var(--safe-top); padding-bottom:var(--safe-bottom);
+}
 @keyframes modal-in { from{opacity:0;transform:scale(.95) translateY(10px)} to{opacity:1;transform:none} }
 .modal-title   { font-family:var(--font-display); font-size:1rem; color:var(--gold); letter-spacing:.1em; margin-bottom:1.2rem; font-weight:700; }
 .modal-actions { display:flex; gap:.6rem; justify-content:flex-end; margin-top:1.2rem; flex-wrap:wrap; }
@@ -648,38 +682,94 @@ html,body {
 }
 
 /* ============================================================
-   DAY VIEW — Google Calendar-style single-day timeline (in a modal)
+   DAY VIEW — fullscreen single-day agenda list (in a modal-box-full)
+   Rows are plain list entries (no proportional time-block height) since
+   this alliance runs many short back-to-back events.
    ============================================================ */
-.day-view-hour-row {
-  display: flex;
-  align-items: flex-start;
-  border-top: 1px solid var(--border);
+.day-view-header {
+  display:flex; align-items:center; justify-content:space-between; gap:.5rem;
+  padding:calc(var(--safe-top) + .9rem) 1.2rem .9rem;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+  background:var(--bg-card);
 }
-.day-view-hour-label {
-  font-size: .65rem;
-  color: var(--text-muted);
-  text-align: right;
-  padding-right: 8px;
-  margin-top: -6px;
-  flex-shrink: 0;
-  background: var(--bg-card);
+.day-view-header-title { font-family:var(--font-display); font-size:1.05rem; font-weight:700; color:var(--text-primary); }
+.day-view-header-sub   { font-size:.78rem; color:var(--text-secondary); margin-top:2px; }
+.day-view-close { background:transparent; border:none; color:var(--text-secondary); font-size:1.3rem; cursor:pointer; padding:4px 6px; line-height:1; }
+.day-view-body { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:.5rem 1.2rem 2rem; }
+
+.day-agenda-row {
+  display:flex; align-items:flex-start; gap:.9rem;
+  padding:.85rem 0; cursor:pointer;
+  border-bottom:1px solid var(--border);
 }
-.day-view-event {
-  position: absolute;
-  background: var(--gold-glow);
-  border-left: 3px solid var(--gold);
-  border-radius: 6px;
-  padding: 3px 7px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: background var(--transition);
+.day-agenda-row:last-child { border-bottom:none; }
+.day-agenda-row:active { opacity:.7; }
+/* left rail: dot + connecting line, echoes a native calendar agenda view */
+.day-agenda-rail { display:flex; flex-direction:column; align-items:center; width:10px; flex-shrink:0; padding-top:5px; align-self:stretch; }
+.day-agenda-dot  { width:8px; height:8px; border-radius:50%; background:var(--gold); box-shadow:0 0 6px var(--gold-glow); flex-shrink:0; }
+.day-agenda-line { width:2px; flex:1; background:var(--border-mid); margin-top:4px; min-height:14px; }
+.day-agenda-row:last-child .day-agenda-line { display:none; }
+.day-agenda-main  { flex:1; min-width:0; }
+.day-agenda-title { font-size:1rem; font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.day-agenda-time  { font-size:.85rem; color:var(--text-secondary); margin-top:2px; }
+.day-agenda-row-live .day-agenda-dot { background:#ff6b6b; box-shadow:0 0 8px rgba(239,68,68,.6); animation:cal-pulse 1.6s ease-in-out infinite; }
+.day-agenda-row-live .day-agenda-time { color:#ff6b6b; }
+
+/* ============================================================
+   EVENT DETAILS — fullscreen screen shown after tapping an agenda row
+   ============================================================ */
+.evt-details-header {
+  display:flex; align-items:center; justify-content:space-between; gap:.5rem;
+  padding:calc(var(--safe-top) + .7rem) .6rem .7rem;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+  background:var(--bg-card);
+  position:relative;
 }
-.day-view-event:hover { background: var(--bg-hover); }
-.day-view-event-title { font-size: .74rem; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.day-view-event-time  { font-size: .64rem; color: var(--text-secondary); }
-.day-view-event-live {
-  background: rgba(239,68,68,.15);
-  border-left-color: #ff6b6b;
-  animation: cal-pulse 1.6s ease-in-out infinite;
+.evt-details-back { background:transparent; border:none; color:var(--text-primary); font-size:1.3rem; cursor:pointer; padding:8px 10px; line-height:1; border-radius:99px; }
+.evt-details-back:hover { background:var(--bg-raised); }
+.evt-details-header-title { font-family:var(--font-display); font-size:1rem; font-weight:700; color:var(--text-primary); }
+.evt-details-menu-wrap { position:relative; }
+.evt-details-menu-btn { background:transparent; border:none; color:var(--text-primary); font-size:1.2rem; cursor:pointer; padding:8px 12px; line-height:1; border-radius:99px; letter-spacing:2px; }
+.evt-details-menu-btn:hover { background:var(--bg-raised); }
+.evt-details-menu {
+  position:absolute; top:calc(100% + 4px); right:0; min-width:150px;
+  background:var(--bg-card); border:1px solid var(--border-mid); border-radius:var(--radius);
+  box-shadow:0 12px 40px var(--shadow-color-strong); padding:.4rem; z-index:50;
+  display:none; flex-direction:column; gap:2px;
 }
-.day-view-event-live .day-view-event-time { color: #ff9b9b; }
+.evt-details-menu.open { display:flex; }
+.evt-details-menu-item {
+  background:transparent; border:none; color:var(--text-primary);
+  font-family:var(--font-body); font-size:.88rem; font-weight:600; text-align:left;
+  padding:.6rem .8rem; border-radius:calc(var(--radius) - 4px); cursor:pointer; white-space:nowrap;
+}
+.evt-details-menu-item:hover { background:var(--bg-raised); }
+.evt-details-menu-item.danger { color:var(--danger); }
+
+.evt-details-body { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:1.2rem 1.2rem 2rem; }
+.evt-details-creator { display:flex; align-items:center; gap:.7rem; margin-bottom:1.1rem; }
+.evt-details-avatar {
+  width:44px; height:44px; border-radius:50%; flex-shrink:0;
+  background:var(--gold-glow); border:1px solid var(--gold-dim);
+  display:flex; align-items:center; justify-content:center;
+  color:var(--gold); font-weight:700; font-size:1.1rem;
+}
+.evt-details-creator-name { font-size:.98rem; font-weight:700; color:var(--text-primary); }
+.evt-details-creator-meta { font-size:.78rem; color:var(--text-secondary); margin-top:1px; }
+
+.evt-details-reminder {
+  display:flex; align-items:center; gap:.5rem;
+  background:var(--bg-raised); border:1px solid var(--border);
+  border-radius:var(--radius); padding:.7rem .9rem;
+  font-size:.85rem; color:var(--text-secondary);
+  margin-bottom:1.1rem;
+}
+.evt-details-reminder b { color:var(--gold); font-weight:700; }
+.evt-details-reminder.live b { color:#ff6b6b; }
+
+.evt-details-card { background:var(--bg-raised); border:1px solid var(--border); border-radius:var(--radius); padding:1rem 1.1rem; margin-bottom:1.1rem; }
+.evt-details-card-title { font-size:1.15rem; font-weight:700; color:var(--text-primary); margin-bottom:.3rem; }
+.evt-details-card-when  { font-size:.85rem; color:var(--text-secondary); }
+.evt-details-notes { font-size:.9rem; color:var(--text-primary); white-space:pre-wrap; line-height:1.5; }
