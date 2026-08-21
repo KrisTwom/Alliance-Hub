@@ -3,6 +3,20 @@
 // ============================================================
 const SUPABASE_FUNCTION_URL = 'https://yhwzlqgwamzvktzdkpbs.supabase.co/functions/v1/alliance';
 
+// ── Block iOS Safari's native pinch-zoom gesture ─────────────
+// Backs up the viewport meta tag + touch-action CSS so the app
+// can't be pinch-zoomed on any mobile browser.
+document.addEventListener('gesturestart', e => e.preventDefault());
+
+// ── Roster dropdown options (Register Member / Add Character) ─
+const CLASS_OPTIONS   = ['Warrior', 'Ranger', 'Magician', 'Breaker'];
+const GUILD_OPTIONS   = ['Exalt', 'Fatale', 'Rasta', 'Lumiere', 'Cosmic', 'Luminarias'];
+const FACTION_OPTIONS = ['Lanos', 'Siras'];
+function _selectOptions(list, selected='') {
+  return `<option value="">— Select —</option>` +
+    list.map(v => `<option value="${v}" ${v===selected?'selected':''}>${v}</option>`).join('');
+}
+
 // ============================================================
 //  STATE
 // ============================================================
@@ -88,15 +102,6 @@ const App = {
   activeCharId: null,
   email:        null,
 };
-
-// ── Character setup option lists (used by roster add/register modals) ──
-const CHAR_CLASSES  = ['Warrior', 'Ranger', 'Magician', 'Breaker'];
-const CHAR_FACTIONS = ['Lanos', 'Siras'];
-const CHAR_GUILDS   = ['Exalt', 'Fatale', 'Rasta', 'Lumiere', 'Cosmic', 'Luminarias'];
-
-function _optionList(values, selected='') {
-  return values.map(v => `<option value="${v}" ${v===selected?'selected':''}>${v}</option>`).join('');
-}
 
 // ============================================================
 //  CACHE  — in-memory, TTL-based, per action key
@@ -350,7 +355,17 @@ function _buildShell() {
         <button class="nav-btn active" data-view="home">🏠 Home</button>
         <button class="nav-btn" data-view="attendance">🗡 Attendance</button>
         <button class="nav-btn" data-view="my-splits">💰 My Splits</button>
-        <button id="header-hamburger" class="nav-btn hamburger-btn" aria-label="Open menu">☰ More</button>
+        <button class="nav-btn" data-view="my-attendance">📋 Attendance History</button>
+        <button class="nav-btn" data-view="leaderboard">🏆 Leaderboard</button>
+        <button class="nav-btn" data-view="rules">📜 Rules</button>
+        <button class="nav-btn" data-view="guide">📖 Guide</button>
+        <button class="nav-btn" data-view="announcements">📢 Announcements</button>
+        <button class="nav-btn" data-view="schedule">📅 Schedule</button>
+        ${App.user.isAdmin ? `
+        <button class="nav-btn" data-view="drops">💎 Drops</button>
+        <button class="nav-btn" data-view="inventory">🎒 Inventory</button>
+        <button class="nav-btn" data-view="payouts">📊 Payouts</button>
+        <button class="nav-btn" data-view="roster">👥 Roster</button>` : ''}
       </div>
       <div class="header-right">
         <span id="header-username" class="header-user"></span>
@@ -435,9 +450,9 @@ function _moveNavIndicator(view) {
 }
 
 function _initNav() {
-  document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(btn => {
+  document.querySelectorAll('#desktop-nav .nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#desktop-nav .nav-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       showView(btn.dataset.view);
     });
@@ -451,7 +466,6 @@ function _initNav() {
     });
   });
   document.getElementById('more-btn')?.addEventListener('click', _openSidebar);
-  document.getElementById('header-hamburger')?.addEventListener('click', _openSidebar);
   document.getElementById('sidebar-close')?.addEventListener('click', _closeSidebar);
   document.getElementById('sidebar-overlay')?.addEventListener('click', _closeSidebar);
   document.querySelectorAll('.sidebar-link[data-view]').forEach(btn => {
@@ -462,23 +476,27 @@ function _initNav() {
     });
   });
   document.getElementById('modal-overlay')?.addEventListener('click', e => {
-    if (e.target.id === 'modal-overlay' && e.target.dataset.forceAck !== '1') closeModal();
+    if (e.target.id === 'modal-overlay') closeModal();
   });
 
   // ── PULL-TO-REFRESH ───────────────────────────────────────
+  // The whole page (#app) slides down with the finger, revealing a
+  // fixed banner sitting behind it — rather than just a thin bar
+  // growing on top of the content.
   let _ptrStartY = 0, _ptrDelta = 0, _ptrActive = false, _ptrIndicator = null;
-  const PTR_THRESHOLD = 72;
+  const PTR_THRESHOLD = 76;   // px of (resisted) pull before release triggers a refresh
+  const PTR_REVEAL_MAX = 100; // px the page is allowed to slide down
 
   function _getPtrIndicator() {
     if (!_ptrIndicator) {
       _ptrIndicator = document.createElement('div');
       _ptrIndicator.id = 'ptr-indicator';
       _ptrIndicator.style.cssText = `
-        position:fixed;top:0;left:0;right:0;z-index:9000;
+        position:fixed;top:0;left:0;right:0;z-index:1;
         display:flex;align-items:center;justify-content:center;
         height:0;overflow:hidden;
-        background:linear-gradient(180deg,rgba(0,0,0,0.95),transparent);
-        transition:height .15s ease;pointer-events:none;
+        background:var(--bg-deep, #050505);
+        pointer-events:none;
       `;
       _ptrIndicator.innerHTML = `<div style="display:flex;align-items:center;gap:8px;color:#5b9cf6;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;letter-spacing:.1em;opacity:0;transition:opacity .2s" id="ptr-inner">
         <div id="ptr-spinner" style="width:18px;height:18px;border:2px solid #1a3a6a;border-top-color:#5b9cf6;border-radius:50%;transition:transform .1s linear"></div>
@@ -489,7 +507,16 @@ function _initNav() {
     return _ptrIndicator;
   }
 
+  function _setPageSlide(px, animate) {
+    const app = document.getElementById('app');
+    if (!app) return;
+    app.style.transition = animate ? 'transform .25s ease' : 'none';
+    app.style.transform = px > 0 ? `translateY(${px}px)` : '';
+  }
+
   document.addEventListener('touchstart', e => {
+    const modalOpen = !document.getElementById('modal-overlay')?.classList.contains('hidden');
+    if (modalOpen) return;
     const content = document.getElementById('main-content');
     if (!content) return;
     const atTop = content.scrollTop === 0 || window.scrollY === 0;
@@ -497,6 +524,7 @@ function _initNav() {
     _ptrStartY = e.touches[0].clientY;
     _ptrActive = true;
     _ptrDelta = 0;
+    _setPageSlide(0, false);
   }, { passive: true });
 
   document.addEventListener('touchmove', e => {
@@ -504,14 +532,15 @@ function _initNav() {
     _ptrDelta = Math.max(0, e.touches[0].clientY - _ptrStartY);
     if (_ptrDelta < 8) return;
     const ind = _getPtrIndicator();
-    const h = Math.min(_ptrDelta * 0.5, PTR_THRESHOLD);
+    const h = Math.min(_ptrDelta * 0.55, PTR_REVEAL_MAX);
     ind.style.height = h + 'px';
+    _setPageSlide(h, false);
     const inner = document.getElementById('ptr-inner');
     const spinner = document.getElementById('ptr-spinner');
     const label = document.getElementById('ptr-label');
     if (inner) inner.style.opacity = Math.min(1, (_ptrDelta - 8) / 40);
     if (spinner) spinner.style.transform = `rotate(${_ptrDelta * 3}deg)`;
-    const ready = _ptrDelta >= PTR_THRESHOLD;
+    const ready = h >= PTR_THRESHOLD;
     if (label) label.textContent = ready ? 'Release to refresh' : 'Pull to refresh';
     if (spinner) spinner.style.borderTopColor = ready ? '#7ab4ff' : '#5b9cf6';
   }, { passive: true });
@@ -520,9 +549,12 @@ function _initNav() {
     if (!_ptrActive) return;
     _ptrActive = false;
     const ind = _getPtrIndicator();
-    if (_ptrDelta >= PTR_THRESHOLD) {
-      // Trigger refresh of current view
-      ind.style.height = '48px';
+    const shown = Math.min(_ptrDelta * 0.55, PTR_REVEAL_MAX);
+    if (shown >= PTR_THRESHOLD) {
+      // Settle at a fixed "refreshing" position while the spinner spins.
+      const settleH = 60;
+      ind.style.height = settleH + 'px';
+      _setPageSlide(settleH, true);
       const label = document.getElementById('ptr-label');
       const spinner = document.getElementById('ptr-spinner');
       if (label) label.textContent = 'Refreshing…';
@@ -539,13 +571,18 @@ function _initNav() {
         setTimeout(() => {
           showView(viewName);
           ind.style.height = '0';
+          _setPageSlide(0, true);
           const inner = document.getElementById('ptr-inner');
           if (inner) inner.style.opacity = '0';
           if (spinner) spinner.style.animation = '';
         }, 600);
+      } else {
+        ind.style.height = '0';
+        _setPageSlide(0, true);
       }
     } else {
       ind.style.height = '0';
+      _setPageSlide(0, true);
       const inner = document.getElementById('ptr-inner');
       if (inner) inner.style.opacity = '0';
     }
@@ -953,18 +990,9 @@ function submitAttendance() {
     if (res.success) {
       const c = App.user.characters.find(c => c.charId === char.charId);
       if (c) c.points = (c.points||0) + res.pointsEarned;
-      const recordedBosses = selected.filter(b => !(res.skipped||[]).includes(b));
-      if (res.skippedMessage) {
-        // Force the duplicate-boss warning to be acknowledged before
-        // showing the confirmation screen, rather than a passing toast.
-        showAckModal('⚠ Some Bosses Skipped', res.skippedMessage, () => {
-          _showConfirmation(recordedBosses, res.pointsEarned, res.ign);
-        });
-      } else {
-        _showConfirmation(recordedBosses, res.pointsEarned, res.ign);
-      }
+      _showConfirmation(selected, res.pointsEarned, res.ign, res.skippedMessage);
     } else {
-      showAckModal('⚠ Attendance Not Recorded', res.message || 'Something went wrong — please try again.');
+      toast(res.message||'Error', 'error');
     }
   }).catch(() => { closeModal(); toast('Network error', 'error'); });
 }
@@ -972,7 +1000,7 @@ function submitAttendance() {
 // ============================================================
 //  CONFIRMATION
 // ============================================================
-function _showConfirmation(bosses, pts, ign) {
+function _showConfirmation(bosses, pts, ign, skippedMessage) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const el = document.getElementById('view-confirm'); el.classList.add('active');
   el.innerHTML = `
@@ -983,6 +1011,7 @@ function _showConfirmation(bosses, pts, ign) {
       <div class="confirm-bosses">${bosses.map(b => `<span class="confirm-boss-tag">${b}</span>`).join('')}</div>
       <div class="confirm-points">+${pts}</div>
       <div class="confirm-points-label">Points Earned</div>
+      ${skippedMessage ? `<p style="font-size:.8rem;color:#e6a842;text-align:center;max-width:340px;margin:0 auto 1rem;line-height:1.5">⚠ ${escHtml(skippedMessage)}</p>` : ''}
       <button class="btn btn-primary" style="margin-bottom:.75rem" onclick="_goToAttendance()">⚔ Log More Bosses</button>
       <button class="btn btn-secondary" onclick="showView('home')">🏠 Go to Home</button>
     </div>`;
@@ -1265,7 +1294,7 @@ function renderAnnouncements() {
               <div style="font-family:var(--font-display);font-size:1.05rem;color:var(--text-primary);margin-bottom:.35rem;padding-right:1.2rem">${escHtml(r.title)}</div>
               <div style="font-size:.85rem;color:var(--text-secondary);white-space:pre-wrap;line-height:1.5;margin-bottom:.6rem">${escHtml(r.body)}</div>
               <div style="display:flex;align-items:center;justify-content:space-between;font-size:.75rem;color:var(--text-muted)">
-                <span>${escHtml(r.createdBy)} · ${fmtDate(r.createdAt)} ${fmtTime(r.createdAt)}</span>
+                <span>${escHtml(r.createdByIgn)} · ${fmtDate(r.createdAt)} ${fmtTime(r.createdAt)}</span>
                 ${App.user.isSuperAdmin ? `<button class="btn btn-sm btn-danger" onclick="deleteAnnouncement('${r.id}')" title="Delete">🗑</button>` : ''}
               </div>
             </div>`).join('')}
@@ -1321,6 +1350,7 @@ function deleteAnnouncement(id) {
 //  SCHEDULE / CALENDAR — readable by everyone, writable by any admin
 // ============================================================
 let _scheduleMonth = null; // Date, always normalized to the 1st of the month
+let _dayViewDate   = null; // 'YYYY-MM-DD' of the day-view currently open in the modal, or null
 
 function renderSchedule() {
   const el = document.getElementById('view-schedule');
@@ -1354,12 +1384,6 @@ function _renderCalendarGrid() {
     const key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
     (byDay[key] = byDay[key] || []).push(ev);
   });
-  const isLive = ev => {
-    const start = new Date(ev.scheduledAt).getTime();
-    const end = start + (Number(ev.durationMinutes) || 240) * 60000;
-    return now >= start && now <= end;
-  };
-
   const firstOfMonth = new Date(year, month, 1);
   const startWeekday = firstOfMonth.getDay(); // 0=Sun
   const daysInMonth  = new Date(year, month + 1, 0).getDate();
@@ -1384,18 +1408,13 @@ function _renderCalendarGrid() {
       ${cells.map(d => {
         if (d === null) return `<div class="cal-cell cal-cell-empty"></div>`;
         const key = year + '-' + month + '-' + d;
-        const dayEvents = (byDay[key] || []).sort((a,b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+        const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const hasEvents = !!(byDay[key] || []).length;
         const isToday = key === todayKey;
         return `
-          <div class="cal-cell${isToday ? ' cal-cell-today' : ''}" onclick="${App.user.isAdmin ? `openCreateEventModal('${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}')` : ''}">
+          <div class="cal-cell${isToday ? ' cal-cell-today' : ''}" onclick="openDayView('${dateStr}')">
             <div class="cal-daynum">${d}</div>
-            <div class="cal-events">
-              ${dayEvents.slice(0,3).map(ev => `
-                <div class="cal-event-chip${isLive(ev) ? ' cal-event-live' : ''}" onclick="event.stopPropagation();openEventModal('${ev.id}')" title="${escHtml(ev.boss)} — ${fmtTime(ev.scheduledAt)}">
-                  ${isLive(ev) ? '🔴 ' : ''}${fmtTime(ev.scheduledAt)} ${escHtml(ev.boss)}
-                </div>`).join('')}
-              ${dayEvents.length > 3 ? `<div class="cal-event-more">+${dayEvents.length-3} more</div>` : ''}
-            </div>
+            ${hasEvents ? `<div class="cal-event-dot"></div>` : ''}
           </div>`;
       }).join('')}
     </div>
@@ -1448,10 +1467,116 @@ function _allBossNames() {
   return names;
 }
 
-function openCreateEventModal(prefillDate) {
+// ── DAY VIEW — Google Calendar-style single-day timeline ──────
+// Tapping a calendar cell opens this instead of jumping straight into
+// event creation. Admins get a "+ New" button inside; tapping a block
+// takes admins straight into an edit form for that event.
+const DAY_VIEW_ROW_H  = 52; // px per hour
+const DAY_VIEW_LABEL_W = 52; // px, hour-label column width
+
+function _dayEventsFor(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return (window._events || [])
+    .filter(ev => {
+      const dt = new Date(ev.scheduledAt);
+      return dt.getFullYear() === y && (dt.getMonth() + 1) === m && dt.getDate() === d;
+    })
+    .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+}
+
+// Simple interval-graph column assignment so same-day overlapping events
+// sit side-by-side instead of stacking on top of each other.
+function _layoutDayEvents(events) {
+  const columns = []; // array of arrays of events, each inner array non-overlapping
+  events.forEach(ev => {
+    const start = new Date(ev.scheduledAt).getTime();
+    const end = start + (Number(ev.durationMinutes) || 240) * 60000;
+    let placed = false;
+    for (const col of columns) {
+      const last = col[col.length - 1];
+      const lastEnd = new Date(last.scheduledAt).getTime() + (Number(last.durationMinutes) || 240) * 60000;
+      if (lastEnd <= start) { col.push(ev); ev._col = columns.indexOf(col); placed = true; break; }
+    }
+    if (!placed) { columns.push([ev]); ev._col = columns.length - 1; }
+  });
+  events.forEach(ev => { ev._totalCols = columns.length; });
+  return events;
+}
+
+function openDayView(dateStr) {
+  _dayViewDate = dateStr;
+  showModal(_dayViewHtml(dateStr));
+  requestAnimationFrame(() => {
+    const timeline = document.getElementById('day-view-timeline');
+    if (!timeline) return;
+    const events = _dayEventsFor(dateStr);
+    const scrollHour = events.length ? Math.max(0, new Date(events[0].scheduledAt).getHours() - 1) : 8;
+    timeline.scrollTop = scrollHour * DAY_VIEW_ROW_H;
+  });
+}
+
+function _dayViewHtml(dateStr) {
+  const events = _layoutDayEvents(_dayEventsFor(dateStr));
+  const now = Date.now();
+  const isLive = ev => {
+    const start = new Date(ev.scheduledAt).getTime();
+    const end = start + (Number(ev.durationMinutes) || 240) * 60000;
+    return now >= start && now <= end;
+  };
+  const dateObj = new Date(dateStr + 'T00:00:00');
+  const dateLabel = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+  const hourRows = Array.from({ length: 24 }, (_, h) => {
+    const label = h === 0 ? '12 AM' : h < 12 ? `${h} AM` : h === 12 ? '12 PM' : `${h - 12} PM`;
+    return `<div class="day-view-hour-row" style="height:${DAY_VIEW_ROW_H}px">
+      <div class="day-view-hour-label" style="width:${DAY_VIEW_LABEL_W}px">${label}</div>
+    </div>`;
+  }).join('');
+
+  const eventBlocks = events.map(ev => {
+    const start = new Date(ev.scheduledAt);
+    const startMins = start.getHours() * 60 + start.getMinutes();
+    const durMins = Number(ev.durationMinutes) || 240;
+    const top = (startMins / 60) * DAY_VIEW_ROW_H;
+    const height = Math.max((durMins / 60) * DAY_VIEW_ROW_H, 26);
+    const widthPct = 100 / ev._totalCols;
+    const leftPct = ev._col * widthPct;
+    return `
+      <div class="day-view-event${isLive(ev) ? ' day-view-event-live' : ''}"
+           style="top:${top}px;height:${height}px;left:calc(${leftPct}% + 4px);width:calc(${widthPct}% - 8px)"
+           onclick="event.stopPropagation();openEventModal('${ev.id}','${dateStr}')"
+           title="${escHtml(ev.boss)} — ${fmtTime(ev.scheduledAt)}">
+        <div class="day-view-event-title">${isLive(ev) ? '🔴 ' : ''}${escHtml(ev.boss)}</div>
+        <div class="day-view-event-time">${fmtTime(ev.scheduledAt)}</div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="modal-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+      <span style="font-size:.95rem">${dateLabel}</span>
+      ${App.user.isAdmin ? `<button class="btn btn-primary" style="font-size:.75rem;padding:.3rem .65rem;flex-shrink:0" onclick="openCreateEventModal('${dateStr}','${dateStr}')">+ New</button>` : ''}
+    </div>
+    <div id="day-view-timeline" style="position:relative;height:60vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px;background:var(--bg-card)">
+      <div style="position:relative;height:${24 * DAY_VIEW_ROW_H}px">
+        ${hourRows}
+        <div style="position:absolute;top:0;left:${DAY_VIEW_LABEL_W}px;right:0;height:100%">
+          ${eventBlocks || `<div style="position:absolute;top:${8 * DAY_VIEW_ROW_H}px;left:8px;right:8px;color:var(--text-muted);font-size:.82rem">No events scheduled this day.</div>`}
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions" style="margin-top:1rem">
+      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+    </div>`;
+}
+
+// prefillDate: 'YYYY-MM-DD' to default the date field to.
+// returnDate: if set, Cancel/Save return to that day's day-view instead
+// of closing the modal outright (i.e. we were opened from inside it).
+function openCreateEventModal(prefillDate, returnDate) {
   const bosses = _allBossNames();
   const d = prefillDate ? new Date(prefillDate + 'T00:00:00') : new Date();
   const dateVal = prefillDate || `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const back = returnDate ? `openDayView('${returnDate}')` : 'closeModal()';
 
   showModal(`
     <div class="modal-title">📅 New Event</div>
@@ -1488,8 +1613,8 @@ function openCreateEventModal(prefillDate) {
       <textarea class="form-textarea" id="evt-notes" placeholder="Anything admins/members should know…"></textarea>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="evt-submit-btn" onclick="submitCreateEvent()">📅 Create</button>
+      <button class="btn btn-secondary" onclick="${back}">Cancel</button>
+      <button class="btn btn-primary" id="evt-submit-btn" onclick="submitCreateEvent(${returnDate ? `'${returnDate}'` : 'null'})">📅 Create</button>
     </div>`);
   _evtBossChanged();
 }
@@ -1504,7 +1629,7 @@ function _evtBossChanged() {
   durEl.value = boss === 'Siege' ? 30 : 240;
 }
 
-function submitCreateEvent() {
+function submitCreateEvent(returnDate) {
   const boss = document.getElementById('evt-boss').value;
   const dateStr = document.getElementById('evt-date').value;
   const timeStr = document.getElementById('evt-time').value;
@@ -1518,38 +1643,127 @@ function submitCreateEvent() {
   btn.disabled = true; btn.textContent = 'Creating…';
 
   API.write('create_event', { boss, scheduledAt, durationMinutes, notes }, ['get_events']).then(res => {
-    if (res.success) { toast('Event created.', 'success'); closeModal(); renderSchedule(); }
-    else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; }
+    if (res.success) {
+      toast('Event created.', 'success');
+      API.read('get_events').then(events => {
+        window._events = events || [];
+        _renderCalendarGrid();
+        if (returnDate) openDayView(returnDate); else closeModal();
+      });
+    } else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; }
   }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; });
 }
 
-function openEventModal(eventId) {
+// dayViewDate: 'YYYY-MM-DD' of the day-view this was opened from, if any —
+// used to return there after Save/Delete/Back instead of just closing.
+function openEventModal(eventId, dayViewDate) {
   const ev = (window._events || []).find(e => e.id === eventId);
   if (!ev) return;
-  const now = Date.now();
-  const start = new Date(ev.scheduledAt).getTime();
-  const end = start + (Number(ev.durationMinutes) || 240) * 60000;
-  const live = now >= start && now <= end;
+  const back = dayViewDate ? `openDayView('${dayViewDate}')` : 'closeModal()';
+
+  if (!App.user.isAdmin) {
+    const now = Date.now();
+    const start = new Date(ev.scheduledAt).getTime();
+    const end = start + (Number(ev.durationMinutes) || 240) * 60000;
+    const live = now >= start && now <= end;
+    showModal(`
+      <div class="modal-title">${live ? '🔴 ' : '📅 '}${escHtml(ev.boss)}</div>
+      <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">
+        ${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)} — window closes ${fmtTime(new Date(end).toISOString())}
+      </div>
+      ${ev.notes ? `<p style="font-size:.88rem;color:var(--text-primary);white-space:pre-wrap;margin-bottom:1rem;line-height:1.5">${escHtml(ev.notes)}</p>` : ''}
+      <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:1rem">Created by ${escHtml(ev.createdBy)}${ev.source === 'discord_bot' ? ' · via Discord bot' : ''}</div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="${back}">Back</button>
+        ${live ? `<button class="btn btn-primary" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+      </div>`);
+    return;
+  }
+
+  // Admins go straight into an edit form for the event.
+  const bosses = _allBossNames();
+  const start = new Date(ev.scheduledAt);
+  const dateVal = `${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,'0')}-${String(start.getDate()).padStart(2,'0')}`;
+  const timeVal = `${String(start.getHours()).padStart(2,'0')}:${String(start.getMinutes()).padStart(2,'0')}`;
 
   showModal(`
-    <div class="modal-title">${live ? '🔴 ' : '📅 '}${escHtml(ev.boss)}</div>
-    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">
-      ${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)} — window closes ${fmtTime(new Date(end).toISOString())}
+    <div class="modal-title">✏️ Edit Event</div>
+    <div class="form-group">
+      <label class="form-label">Boss / Mini</label>
+      <select class="form-input" id="evt-edit-boss">
+        ${bosses.map(b => `<option value="${escHtml(b)}" ${b===ev.boss?'selected':''}>${escHtml(b)}</option>`).join('')}
+      </select>
     </div>
-    ${ev.notes ? `<p style="font-size:.88rem;color:var(--text-primary);white-space:pre-wrap;margin-bottom:1rem;line-height:1.5">${escHtml(ev.notes)}</p>` : ''}
-    <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:1rem">Created by ${escHtml(ev.createdBy)}${ev.source === 'discord_bot' ? ' · via Discord bot' : ''}</div>
+    <div style="display:flex;gap:.75rem">
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Date</label>
+        <input type="date" class="form-input" id="evt-edit-date" value="${dateVal}">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Time</label>
+        <input type="time" class="form-input" id="evt-edit-time" value="${timeVal}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Timezone</label>
+      <select class="form-input" id="evt-edit-tz">
+        <option value="local">My local time (browser)</option>
+        <option value="eastern_fixed">US Eastern — fixed, no DST (e.g. Siege)</option>
+        <option value="utc">UTC</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Attendance window (minutes)</label>
+      <input type="number" class="form-input" id="evt-edit-duration" min="5" max="1440" value="${Number(ev.durationMinutes) || 240}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes (optional)</label>
+      <textarea class="form-textarea" id="evt-edit-notes" placeholder="Anything admins/members should know…">${escHtml(ev.notes || '')}</textarea>
+    </div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:.5rem">Created by ${escHtml(ev.createdBy)}${ev.source === 'discord_bot' ? ' · via Discord bot' : ''}</div>
     <div class="modal-actions">
-      ${App.user.isAdmin ? `<button class="btn btn-danger" onclick="deleteEvent('${ev.id}')">🗑 Delete</button>` : ''}
-      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
-      ${live ? `<button class="btn btn-primary" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+      <button class="btn btn-danger" onclick="deleteEvent('${ev.id}','${dayViewDate||''}')">🗑 Delete</button>
+      <button class="btn btn-secondary" onclick="${back}">Back</button>
+      <button class="btn btn-primary" id="evt-edit-submit-btn" onclick="submitEditEvent('${ev.id}','${dayViewDate||''}')">💾 Save</button>
     </div>`);
 }
 
-function deleteEvent(eventId) {
+function submitEditEvent(eventId, dayViewDate) {
+  const boss = document.getElementById('evt-edit-boss').value;
+  const dateStr = document.getElementById('evt-edit-date').value;
+  const timeStr = document.getElementById('evt-edit-time').value;
+  const tz = document.getElementById('evt-edit-tz').value;
+  const durationMinutes = Number(document.getElementById('evt-edit-duration').value) || 240;
+  const notes = document.getElementById('evt-edit-notes').value.trim();
+  const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, tz);
+  if (!scheduledAt) { toast('Date and time are required.', 'error'); return; }
+
+  const btn = document.getElementById('evt-edit-submit-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+
+  API.write('update_event', { eventId, boss, scheduledAt, durationMinutes, notes }, ['get_events']).then(res => {
+    if (res.success) {
+      toast('Event updated.', 'success');
+      API.read('get_events').then(events => {
+        window._events = events || [];
+        _renderCalendarGrid();
+        if (dayViewDate) openDayView(dayViewDate); else closeModal();
+      });
+    } else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '💾 Save'; }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '💾 Save'; });
+}
+
+function deleteEvent(eventId, dayViewDate) {
   if (!confirm('Delete this event?')) return;
   API.write('delete_event', { eventId }, ['get_events']).then(res => {
-    if (res.success) { toast('Event deleted.', 'success'); closeModal(); renderSchedule(); }
-    else toast(res.error || 'Error', 'error');
+    if (res.success) {
+      toast('Event deleted.', 'success');
+      API.read('get_events').then(events => {
+        window._events = events || [];
+        _renderCalendarGrid();
+        if (dayViewDate) openDayView(dayViewDate); else closeModal();
+      });
+    } else toast(res.error || 'Error', 'error');
   }).catch(() => toast('Network error', 'error'));
 }
 
@@ -2107,14 +2321,9 @@ function renderRoster() {
 function rosterCard(r) {
   const chars = r.characters || [];
   const pts   = chars.reduce((s,c) => s+(c.points||0), 0);
-  // Emails are sensitive contact info — only super admins get to see them
-  // in the clear. Regular admins see a blurred placeholder instead.
-  const emailHtml = App.user.isSuperAdmin
-    ? r.email
-    : `<span class="email-blurred" title="Visible to super admins only">${r.email}</span>`;
   return `<div class="card">
     <div class="card-header">
-      <div><div class="card-title">${chars.length ? chars.map(c=>c.ign).join(', ') : emailHtml}</div><div class="card-meta">${emailHtml}</div></div>
+      <div><div class="card-title">${chars.length ? chars.map(c=>c.ign).join(', ') : r.email}</div><div class="card-meta">${r.email}</div></div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         <span class="status ${r.status==='active'?'status-confirmed':'status-pending'}">${r.status}</span>
         ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
@@ -2123,7 +2332,7 @@ function rosterCard(r) {
     ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span onclick="openAttendanceHistoryModal('${c.charId}','${(c.ign||'').replace(/'/g,"\\'")}')" style="cursor:pointer;font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)" title="View attendance history">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
-      ${r.status==='active' ? `<button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>` : ''}
+      <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
       ${chars.length ? `<button class="btn btn-sm btn-danger" onclick="openRemoveCharModal('${r.email}')">− Remove Character</button>` : ''}
     </div>
   </div>`;
@@ -2166,9 +2375,9 @@ function openRegisterMemberModal(pre='') {
     <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="reg-email" value="${pre}" ${pre?'readonly style="opacity:.6"':''} placeholder="player@gmail.com"></div>
     <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="reg-ign" placeholder="Character name"></div>
     <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="reg-level" type="number" placeholder="e.g. 50"></div>
-    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="reg-class"><option value="">Select class…</option>${_optionList(CHAR_CLASSES)}</select></div>
-    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="reg-guild"><option value="">Select guild…</option>${_optionList(CHAR_GUILDS)}</select></div>
-    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="reg-faction"><option value="">Select faction…</option>${_optionList(CHAR_FACTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="reg-class">${_selectOptions(CLASS_OPTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="reg-guild">${_selectOptions(GUILD_OPTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="reg-faction">${_selectOptions(FACTION_OPTIONS)}</select></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitRegisterMember()">Register</button>
@@ -2197,9 +2406,9 @@ function openAddCharModal(memberEmail) {
     <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">${memberEmail}</p>
     <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="ac-ign" placeholder="Character name"></div>
     <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="ac-level" type="number" placeholder="e.g. 50"></div>
-    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="ac-class"><option value="">Select class…</option>${_optionList(CHAR_CLASSES)}</select></div>
-    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="ac-guild"><option value="">Select guild…</option>${_optionList(CHAR_GUILDS)}</select></div>
-    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="ac-faction"><option value="">Select faction…</option>${_optionList(CHAR_FACTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="ac-class">${_selectOptions(CLASS_OPTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="ac-guild">${_selectOptions(GUILD_OPTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="ac-faction">${_selectOptions(FACTION_OPTIONS)}</select></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitAddChar('${memberEmail}')">Add</button>
@@ -2293,18 +2502,8 @@ function _deleteAttendanceCore(id) {
 // ============================================================
 //  SIDEBAR / MODAL / TOAST / UTILS
 // ============================================================
-function _openSidebar() {
-  document.getElementById('sidebar').classList.remove('hidden');
-  document.getElementById('sidebar-overlay').classList.remove('hidden');
-  document.getElementById('more-btn')?.classList.add('active');
-  document.getElementById('header-hamburger')?.classList.add('active');
-}
-function _closeSidebar() {
-  document.getElementById('sidebar').classList.add('hidden');
-  document.getElementById('sidebar-overlay').classList.add('hidden');
-  document.getElementById('more-btn')?.classList.remove('active');
-  document.getElementById('header-hamburger')?.classList.remove('active');
-}
+function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
+function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
 
 // ─── SWIPE TO CLOSE (mobile sidebar) ─────────────────────
 // Sidebar slides in from the right, so a rightward swipe closes it.
@@ -2375,38 +2574,144 @@ function _closeSidebar() {
   document.addEventListener('touchend',   onTouchEnd,   { passive: true });
   document.addEventListener('touchcancel', onTouchEnd,  { passive: true });
 })();
-function showModal(html, opts={}) {
-  document.getElementById('modal-box').innerHTML = html;
-  const overlay = document.getElementById('modal-overlay');
-  overlay.classList.remove('hidden');
-  // forceAck modals can only be dismissed via their own button — clicking
-  // the overlay backdrop won't close them.
-  overlay.dataset.forceAck = opts.forceAck ? '1' : '';
-}
-function closeModal() {
-  const overlay = document.getElementById('modal-overlay');
-  overlay.classList.add('hidden');
-  overlay.dataset.forceAck = '';
+
+// ─── SWIPE TO CHANGE TAB (mobile bottom-nav pages) ───────────
+// Starting a horizontal drag from the very edge of the screen slides
+// to the adjacent tab, the way the bottom nav is ordered: Home ↔
+// Attendance ↔ My Splits. Swiping in from the right edge moves
+// forward (e.g. Home → Attendance); from the left edge moves back.
+function _goToTab(name) {
+  document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  document.querySelectorAll('#desktop-nav .nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  showView(name); // also repositions the nav indicator
 }
 
-// Centered popup with a single forced "Okay" acknowledgement button —
-// used for things the user must actively confirm they've read (e.g. the
-// duplicate-attendance block) rather than a passing toast that's easy to miss.
-function showAckModal(title, message, onOkay) {
-  window._ackModalCallback = onOkay || null;
-  showModal(`
-    <div class="modal-title">${title}</div>
-    <p style="font-size:.88rem;color:var(--text-secondary);line-height:1.6;margin-bottom:1.25rem">${escHtml(message)}</p>
-    <div class="modal-actions" style="justify-content:center">
-      <button class="btn btn-primary" style="min-width:120px" onclick="_dismissAckModal()">Okay</button>
-    </div>`, { forceAck: true });
-}
-function _dismissAckModal() {
-  closeModal();
-  const cb = window._ackModalCallback;
-  window._ackModalCallback = null;
-  if (cb) cb();
-}
+(function initTabSwipe() {
+  const TAB_ORDER = ['home', 'attendance', 'my-splits'];
+  const EDGE_ZONE = 24;      // px from screen edge that can start the gesture
+  const MOBILE_BP = 700;     // matches the CSS breakpoint that shows #mobile-nav
+  const SLIDE_MS = 280;
+
+  let startX = 0, startY = 0, currentX = 0, dragging = false, isHorizontal = null, edge = null, curEl = null;
+
+  function currentTabName() {
+    const active = document.querySelector('.view.active');
+    return active ? active.id.replace('view-', '') : null;
+  }
+
+  function onTouchStart(e) {
+    if (window.innerWidth > MOBILE_BP) return;
+    const modalOpen = !document.getElementById('modal-overlay')?.classList.contains('hidden');
+    const sidebarOpen = !document.getElementById('sidebar')?.classList.contains('hidden');
+    if (modalOpen || sidebarOpen) return;
+
+    const tab = currentTabName();
+    if (!TAB_ORDER.includes(tab)) return; // only swipe between the 3 main tabs
+
+    const t = e.touches[0];
+    if (t.clientX <= EDGE_ZONE) edge = 'left';
+    else if (t.clientX >= window.innerWidth - EDGE_ZONE) edge = 'right';
+    else { edge = null; return; }
+
+    startX = currentX = t.clientX;
+    startY = t.clientY;
+    dragging = true;
+    isHorizontal = null;
+    curEl = document.getElementById('view-' + tab);
+    if (curEl) curEl.style.transition = 'none';
+  }
+
+  function onTouchMove(e) {
+    if (!dragging || !curEl) return;
+    const t = e.touches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+
+    if (isHorizontal === null) {
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      isHorizontal = Math.abs(dx) > Math.abs(dy);
+      if (!isHorizontal) { dragging = false; return; }
+    }
+    if (!isHorizontal) return;
+
+    const tab = currentTabName();
+    const idx = TAB_ORDER.indexOf(tab);
+    // Only allow the drag in the direction that has an adjacent tab to go to.
+    if (edge === 'right' && idx >= TAB_ORDER.length - 1) return;
+    if (edge === 'left' && idx <= 0) return;
+
+    currentX = t.clientX;
+    let delta = edge === 'right' ? Math.min(0, dx) : Math.max(0, dx);
+    if (delta !== 0) {
+      e.preventDefault();
+      curEl.style.transform = `translateX(${delta}px)`;
+    }
+  }
+
+  function onTouchEnd() {
+    if (!dragging) return;
+    dragging = false;
+    if (!curEl) return;
+    curEl.style.transition = '';
+
+    const tab = currentTabName();
+    const idx = TAB_ORDER.indexOf(tab);
+    const draggedDistance = currentX - startX;
+    const threshold = Math.min(120, window.innerWidth * 0.22);
+    const goingNext = edge === 'right' && draggedDistance <= -threshold && idx < TAB_ORDER.length - 1;
+    const goingPrev = edge === 'left'  && draggedDistance >= threshold  && idx > 0;
+
+    if (goingNext || goingPrev) {
+      const nextTab = TAB_ORDER[idx + (goingNext ? 1 : -1)];
+      const outDir = goingNext ? -1 : 1; // outgoing view exits this direction
+      const outgoing = curEl;
+
+      outgoing.style.transition = `transform ${SLIDE_MS}ms ease`;
+      outgoing.style.transform = `translateX(${outDir * 100}%)`;
+
+      setTimeout(() => {
+        outgoing.classList.remove('active');
+        outgoing.style.transition = '';
+        outgoing.style.transform = '';
+
+        const incoming = document.getElementById('view-' + nextTab);
+        if (incoming) {
+          incoming.style.transition = 'none';
+          incoming.style.animation = 'none';
+          incoming.style.transform = `translateX(${-outDir * 100}%)`;
+        }
+        _goToTab(nextTab);
+        requestAnimationFrame(() => {
+          if (!incoming) return;
+          incoming.style.transition = `transform ${SLIDE_MS}ms ease`;
+          requestAnimationFrame(() => { incoming.style.transform = 'translateX(0)'; });
+        });
+        setTimeout(() => {
+          if (!incoming) return;
+          incoming.style.transition = '';
+          incoming.style.transform = '';
+          incoming.style.animation = '';
+        }, SLIDE_MS + 40);
+      }, SLIDE_MS);
+    } else {
+      // Not past threshold — spring back to place.
+      curEl.style.transition = `transform .22s ease`;
+      curEl.style.transform = '';
+      setTimeout(() => { if (curEl) curEl.style.transition = ''; }, 240);
+    }
+    isHorizontal = null;
+    edge = null;
+    curEl = null;
+  }
+
+  document.addEventListener('touchstart', onTouchStart, { passive: true });
+  document.addEventListener('touchmove',  onTouchMove,  { passive: false });
+  document.addEventListener('touchend',   onTouchEnd,   { passive: true });
+  document.addEventListener('touchcancel', onTouchEnd,  { passive: true });
+})();
+
+function showModal(html) { document.getElementById('modal-box').innerHTML = html; document.getElementById('modal-overlay').classList.remove('hidden'); }
+function closeModal()    { document.getElementById('modal-overlay').classList.add('hidden'); }
 
 function toast(msg, type='') {
   const t = document.getElementById('toast');

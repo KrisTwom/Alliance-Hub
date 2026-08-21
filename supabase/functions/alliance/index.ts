@@ -361,10 +361,6 @@ async function adminRegisterMember(supabase: ReturnType<typeof db>, email: strin
 async function adminAddCharacter(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
   const memberEmail = (data.memberEmail as string || '').toLowerCase().trim();
-  const { data: memberRow } = await supabase.from('roster').select('status').eq('email', memberEmail).maybeSingle();
-  if (!memberRow || memberRow.status !== 'active') {
-    return { error: 'Member must be an approved (active) roster member before adding a character.' };
-  }
   const charId = 'CHAR_' + crypto.randomUUID();
   const { error } = await supabase.from('characters').insert({
     char_id:    charId,
@@ -1196,9 +1192,24 @@ async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) 
     .eq('email', email);
   const readSet = new Set((reads || []).map(r => r.announcement_id));
 
+  // Resolve each poster's email to a character name — the frontend
+  // shows only the IGN, never the raw email, for privacy.
+  const posterEmails = [...new Set((rows || []).map(r => r.created_by))];
+  const charByEmail: Record<string, string> = {};
+  if (posterEmails.length) {
+    const { data: chars } = await supabase
+      .from('characters')
+      .select('email, ign')
+      .in('email', posterEmails);
+    for (const c of (chars || [])) {
+      if (!charByEmail[c.email]) charByEmail[c.email] = c.ign; // first character found per poster
+    }
+  }
+
   return (rows || []).map(r => ({
     id: r.announcement_id, title: r.title, body: r.body,
-    createdBy: r.created_by, createdAt: r.created_at,
+    createdByIgn: charByEmail[r.created_by] || 'Alliance Admin',
+    createdAt: r.created_at,
     read: readSet.has(r.announcement_id),
   }));
 }
