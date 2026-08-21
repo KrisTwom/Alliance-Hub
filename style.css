@@ -265,7 +265,7 @@ html,body {
    safe-area-padded ancestor. Grid's 1fr row sizes deterministically and
    the min-height:0 on that row is what actually enables the scrollbar. */
 .sidebar { position:fixed; top:0; right:0; bottom:0; width:260px; height:100dvh; background:var(--bg-card); border-left:1px solid var(--border); z-index:400; display:grid; grid-template-rows:auto auto 1fr; transform:translateX(0); transition:transform .3s ease; box-shadow:-20px 0 60px rgba(0,0,0,.5); padding-top:var(--safe-top); padding-bottom:var(--safe-bottom); overflow:hidden; }
-.sidebar.hidden { transform:translateX(100%); }
+.sidebar.hidden { transform:translateX(100%); box-shadow:none; }
 .sidebar-header { display:flex; align-items:center; justify-content:space-between; padding:1rem 1.2rem; border-bottom:1px solid var(--border); }
 .sidebar-title  { font-family:var(--font-display); color:var(--gold); font-size:.95rem; letter-spacing:.15em; font-weight:700; }
 .sidebar-close  { background:transparent; border:none; color:var(--text-secondary); font-size:1.1rem; cursor:pointer; padding:4px; }

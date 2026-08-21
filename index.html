@@ -4,10 +4,21 @@
   <script>
     // Set the theme attribute before any CSS paints, so returning users
     // never see a flash of the wrong (default dark) theme on load.
+    // Also force the actual background-color (not just the CSS var) and
+    // the theme-color meta tag up front, since some mobile browsers paint
+    // the rubber-band overscroll strip / PWA status-bar tint from those
+    // directly rather than recomputing them from CSS variables.
     (function() {
       try {
-        var t = localStorage.getItem('alliance_theme');
-        document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+        var t = localStorage.getItem('alliance_theme') === 'light' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+        var bg = t === 'light' ? '#EEF1F7' : '#050505';
+        document.documentElement.style.backgroundColor = bg;
+        document.addEventListener('DOMContentLoaded', function() {
+          document.body.style.backgroundColor = bg;
+        });
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', bg);
       } catch(e) {}
     })();
   </script>

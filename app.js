@@ -19,8 +19,21 @@ function getTheme() {
   return localStorage.getItem('alliance_theme') || 'dark';
 }
 function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
-  localStorage.setItem('alliance_theme', theme === 'light' ? 'light' : 'dark');
+  const t = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  localStorage.setItem('alliance_theme', t);
+
+  // The data-theme attribute alone updates all var(--bg-deep) etc. CSS
+  // instantly — except on some mobile browsers (iOS Safari in particular)
+  // the top-of-screen rubber-band overscroll strip and the PWA status-bar
+  // tint are painted from the page's actual background-color / the
+  // theme-color meta tag, and those don't reliably repaint on a CSS
+  // variable change alone until the next full reload. Set them directly
+  // so the switch is instant instead of requiring a refresh.
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg-deep').trim();
+  document.documentElement.style.backgroundColor = bg;
+  document.body.style.backgroundColor = bg;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
 }
 function setTheme(theme) {
   applyTheme(theme);
