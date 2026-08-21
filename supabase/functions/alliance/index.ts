@@ -131,6 +131,7 @@ Deno.serve(async (req) => {
       case 'request_access_with_info': return ok(await requestAccessWithInfo(supabase, email, data));
       case 'submit_attendance':   return ok(await submitAttendance(supabase, email, data.charId as string, data.bosses as string[]));
       case 'get_my_attendance':   return ok(await getMyAttendance(supabase, email, data.charId as string));
+      case 'get_all_attendance':  return ok(await getAllAttendance(supabase, email));
       case 'get_my_payouts':      return ok(await getMyPayouts(supabase, email, data.charId as string));
       case 'get_all_data':        return ok(await getAllData(supabase, email));
 
@@ -546,6 +547,23 @@ async function getMyAttendance(supabase: ReturnType<typeof db>, email: string, c
     .order('ts', { ascending: false });
   if (error) throw error;
   return (data || []).map(r => ({ timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id }));
+}
+
+// Admin-only: every attendance submission across the whole alliance, most
+// recent first. Powers the "Show history for: All" option on the
+// Attendance History page so admins can audit the full log in one place.
+async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('id, ts, boss, points, run_id, char_id, ign, email')
+    .order('ts', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(r => ({
+    id: r.id, timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id,
+    charId: r.char_id, ign: r.ign, email: r.email,
+  }));
 }
 
 // ============================================================

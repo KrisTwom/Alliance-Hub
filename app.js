@@ -8,6 +8,26 @@ const SUPABASE_FUNCTION_URL = 'https://yhwzlqgwamzvktzdkpbs.supabase.co/function
 // can't be pinch-zoomed on any mobile browser.
 document.addEventListener('gesturestart', e => e.preventDefault());
 
+// ============================================================
+//  THEME (light / dark) — persisted in localStorage
+//  The <html data-theme="..."> attribute is also set as early as
+//  possible in index.html (before app.js loads) to avoid a flash
+//  of the wrong theme on page load. This copy is what the Settings
+//  page toggle calls at runtime.
+// ============================================================
+function getTheme() {
+  return localStorage.getItem('alliance_theme') || 'dark';
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+  localStorage.setItem('alliance_theme', theme === 'light' ? 'light' : 'dark');
+}
+function setTheme(theme) {
+  applyTheme(theme);
+  // Re-render the settings page (if open) so the active toggle state updates
+  if (document.getElementById('view-settings')?.classList.contains('active')) renderSettings();
+}
+
 // ── Roster dropdown options (Register Member / Add Character) ─
 const CLASS_OPTIONS   = ['Warrior', 'Ranger', 'Magician', 'Breaker'];
 const GUILD_OPTIONS   = ['Exalt', 'Fatale', 'Rasta', 'Lumiere', 'Cosmic', 'Luminarias'];
@@ -114,6 +134,7 @@ const Cache = {
     // How long (ms) cached data is considered fresh per action
     get_leaderboard:      60 * 1000,        // 1 min
     get_my_attendance:    2  * 60 * 1000,   // 2 min
+    get_all_attendance:   60 * 1000,        // 1 min — admin full-alliance log
     get_my_payouts:       2  * 60 * 1000,
     get_grouped_runs:     90 * 1000,        // 90 sec (changes when attendance submitted)
     get_window_resets:    60 * 1000,
@@ -297,7 +318,7 @@ window.initAllianceTracker = async function(email) {
     if (loadingScreen) loadingScreen.style.display = 'none';
     appEl.style.display = 'flex';
     appEl.innerHTML = `
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:2rem;text-align:center;gap:1rem;background:#000;">
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:2rem;text-align:center;gap:1rem;background:var(--bg-deep);">
         <div style="font-size:3rem">⚠️</div>
         <div style="font-family:'Inter',sans-serif;color:var(--gold);font-size:1.1rem;letter-spacing:.1em">Connection Failed</div>
         <div style="color:var(--text-secondary);font-size:.9rem;max-width:320px">${msg}</div>
@@ -362,10 +383,16 @@ function _buildShell() {
         <button class="nav-btn" data-view="announcements">📢 Announcements</button>
         <button class="nav-btn" data-view="schedule">📅 Schedule</button>
         ${App.user.isAdmin ? `
-        <button class="nav-btn" data-view="drops">💎 Drops</button>
-        <button class="nav-btn" data-view="inventory">🎒 Inventory</button>
-        <button class="nav-btn" data-view="payouts">📊 Payouts</button>
-        <button class="nav-btn" data-view="roster">👥 Roster</button>` : ''}
+        <div class="nav-dropdown" id="admin-pages-dropdown">
+          <button class="nav-btn nav-dropdown-toggle" id="admin-pages-toggle" type="button">⚙ Admin Pages <span class="nav-dropdown-caret">▼</span></button>
+          <div class="nav-dropdown-menu">
+            <button class="nav-dropdown-item" data-view="drops">💎 Drops</button>
+            <button class="nav-dropdown-item" data-view="inventory">🎒 Inventory</button>
+            <button class="nav-dropdown-item" data-view="payouts">📊 Payouts</button>
+            <button class="nav-dropdown-item" data-view="roster">👥 Roster</button>
+          </div>
+        </div>` : ''}
+        <button class="nav-btn" data-view="settings">⚙️ Settings</button>
       </div>
       <div class="header-right">
         <span id="header-username" class="header-user"></span>
@@ -387,6 +414,7 @@ function _buildShell() {
       <div id="view-inventory"   class="view"></div>
       <div id="view-payouts"     class="view"></div>
       <div id="view-roster"      class="view"></div>
+      <div id="view-settings"    class="view"></div>
       <div id="view-confirm"     class="view"></div>
     </main>
 
@@ -424,10 +452,16 @@ function _buildShell() {
         <button class="sidebar-link" data-view="announcements">📢 Announcements</button>
         <button class="sidebar-link" data-view="schedule">📅 Schedule</button>
         ${App.user.isAdmin ? `
-        <button class="sidebar-link" data-view="drops">💎 Drops</button>
-        <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
-        <button class="sidebar-link" data-view="payouts">📊 Payouts</button>
-        <button class="sidebar-link" data-view="roster">👥 Roster</button>` : ''}
+        <div class="sidebar-group-header" id="sidebar-admin-group-header">
+          <span>⚙ Admin Pages</span><span class="sidebar-group-arrow">▼</span>
+        </div>
+        <div class="sidebar-group-body" id="sidebar-admin-group-body">
+          <button class="sidebar-link" data-view="drops">💎 Drops</button>
+          <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
+          <button class="sidebar-link" data-view="payouts">📊 Payouts</button>
+          <button class="sidebar-link" data-view="roster">👥 Roster</button>
+        </div>` : ''}
+        <button class="sidebar-link" data-view="settings">⚙️ Settings</button>
       </div>
     </aside>`;
 
@@ -450,10 +484,14 @@ function _moveNavIndicator(view) {
 }
 
 function _initNav() {
-  document.querySelectorAll('#desktop-nav .nav-btn').forEach(btn => {
+  // Top-level desktop nav buttons (excludes the Admin Pages dropdown
+  // toggle itself, which has no data-view and is wired separately below).
+  document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('#desktop-nav .nav-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.nav-dropdown-item').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      _closeAdminDropdown();
       showView(btn.dataset.view);
     });
   });
@@ -475,6 +513,38 @@ function _initNav() {
       showView(btn.dataset.view);
     });
   });
+
+  // ── ADMIN PAGES — desktop dropdown ────────────────────────
+  const adminDropdown = document.getElementById('admin-pages-dropdown');
+  const adminToggle   = document.getElementById('admin-pages-toggle');
+  if (adminDropdown && adminToggle) {
+    adminToggle.addEventListener('click', e => {
+      e.stopPropagation();
+      adminDropdown.classList.toggle('open');
+    });
+    adminDropdown.querySelectorAll('.nav-dropdown-item[data-view]').forEach(item => {
+      item.addEventListener('click', e => {
+        e.stopPropagation();
+        document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.nav-dropdown-item').forEach(b => b.classList.remove('active'));
+        item.classList.add('active');
+        _closeAdminDropdown();
+        showView(item.dataset.view);
+      });
+    });
+    document.addEventListener('click', () => _closeAdminDropdown());
+  }
+
+  // ── ADMIN PAGES — sidebar collapsible group ───────────────
+  const sidebarGroupHeader = document.getElementById('sidebar-admin-group-header');
+  const sidebarGroupBody   = document.getElementById('sidebar-admin-group-body');
+  if (sidebarGroupHeader && sidebarGroupBody) {
+    sidebarGroupHeader.addEventListener('click', () => {
+      sidebarGroupHeader.classList.toggle('open');
+      sidebarGroupBody.classList.toggle('open');
+    });
+  }
+
   document.getElementById('modal-overlay')?.addEventListener('click', e => {
     if (e.target.id === 'modal-overlay') closeModal();
   });
@@ -659,6 +729,7 @@ function showView(name) {
     inventory:         renderInventory,
     payouts:           renderPayouts,
     roster:            renderRoster,
+    settings:          renderSettings,
   };
   map[name]?.();
 }
@@ -722,67 +793,67 @@ function _homeShell(char, stats, att) {
   const safeTop = `env(safe-area-inset-top, 0px)`;
 
   return `
-  <div style="background:#000;min-height:100%;font-family:'Inter',sans-serif;padding-bottom:1rem;">
+  <div style="background:var(--bg-deep);min-height:100%;font-family:'Inter',sans-serif;padding-bottom:1rem;">
 
     <!-- HERO -->
     <div style="padding:calc(${safeTop} + 14px) 12px 0;">
-      <div style="font-size:11px;font-weight:600;color:#4a7ad4;letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;">WELCOME BACK</div>
+      <div style="font-size:11px;font-weight:600;color:var(--gold-dim);letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;">WELCOME BACK</div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-        <div style="font-size:32px;font-weight:800;color:#ffffff;letter-spacing:-.5px;display:flex;align-items:center;gap:8px;flex:1">
+        <div style="font-size:32px;font-weight:800;color:var(--text-primary);letter-spacing:-.5px;display:flex;align-items:center;gap:8px;flex:1">
           ${App.user.characters && App.user.characters.length > 1
-            ? `<select id="home-char-select" onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:#fff;font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:#06090f;font-size:16px">${c.ign}</option>`).join('')}</select>`
+            ? `<select id="home-char-select" onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:var(--text-primary);font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:var(--bg-deep);font-size:16px">${c.ign}</option>`).join('')}</select>`
             : `<span>${char?.ign || 'Adventurer'}</span>`}
         </div>
-        <div id="home-bell" style="width:36px;height:36px;border-radius:10px;background:#0d1220;border:1px solid #1a2d50;display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;" onclick="showView('announcements');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">
+        <div id="home-bell" style="width:36px;height:36px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-mid);display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;" onclick="showView('announcements');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">
           <span style="font-size:18px;">🔔</span>
           <span id="bell-badge" style="display:none;position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;padding:0 3px;border-radius:99px;background:var(--danger,#EF4444);color:#fff;font-size:10px;font-weight:700;align-items:center;justify-content:center;line-height:16px;text-align:center;"></span>
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid #0d1525;">
-        <span style="color:#4a7ad4;font-weight:700;">Lv.${char?.level||'—'}</span>
-        <span style="color:#2a3a55;">|</span>
-        <span style="color:#8899aa;">${char?.charClass||'—'}</span>
-        <span style="color:#2a3a55;">|</span>
-        <span style="display:flex;align-items:center;gap:4px;color:#8899aa;">🛡 ${char?.guild||char?.faction||'—'}</span>
+      <div style="display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--border);">
+        <span style="color:var(--gold-dim);font-weight:700;">Lv.${char?.level||'—'}</span>
+        <span style="color:var(--text-muted);">|</span>
+        <span style="color:var(--text-secondary);">${char?.charClass||'—'}</span>
+        <span style="color:var(--text-muted);">|</span>
+        <span style="display:flex;align-items:center;gap:4px;color:var(--text-secondary);">🛡 ${char?.guild||char?.faction||'—'}</span>
       </div>
     </div>
 
     <!-- SUBMIT ATTENDANCE CTA -->
-    <div style="margin:10px 12px 0;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:12px;display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="showView('attendance');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='attendance')});_moveNavIndicator('attendance');">
-      <div style="width:44px;height:44px;border-radius:10px;background:#111c30;border:1px solid #1e3560;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:22px;">📋</div>
+    <div style="margin:10px 12px 0;background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:12px;display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="showView('attendance');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='attendance')});_moveNavIndicator('attendance');">
+      <div style="width:44px;height:44px;border-radius:10px;background:var(--bg-hover);border:1px solid var(--border-mid);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:22px;">📋</div>
       <div style="flex:1;">
-        <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:2px;">Submit Attendance</div>
-        <div style="font-size:12px;color:#4a6080;">Earn points for your alliance!</div>
+        <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:2px;">Submit Attendance</div>
+        <div style="font-size:12px;color:var(--text-muted);">Earn points for your alliance!</div>
       </div>
-      <div style="width:28px;height:28px;border-radius:50%;background:#1a3a7a;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-        <span style="color:#5b9cf6;font-size:15px;font-weight:700;">›</span>
+      <div style="width:28px;height:28px;border-radius:50%;background:var(--gold-glow);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <span style="color:var(--gold);font-size:15px;font-weight:700;">›</span>
       </div>
     </div>
 
     <!-- YOUR OVERVIEW -->
     <div style="padding:12px 12px 0;">
-      <div style="font-size:15px;font-weight:700;color:#ffffff;margin-bottom:8px;">Your Overview</div>
+      <div style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:8px;">Your Overview</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
           <div style="font-size:16px;margin-bottom:5px;">⭐</div>
-          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Total Points</div>
-          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;word-break:break-all;">${charPoints === '—' ? '—' : fmtGold(charPoints)}</div>
+          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Total Points</div>
+          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;word-break:break-all;">${charPoints === '—' ? '—' : fmtGold(charPoints)}</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
           <div style="font-size:16px;margin-bottom:5px;">💰</div>
-          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Lifetime Gold</div>
-          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;">${totalGold}</div>
+          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Lifetime Gold</div>
+          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;">${totalGold}</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
           <div style="font-size:16px;margin-bottom:5px;">🏆</div>
-          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Your Rank</div>
-          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;">${rankNum ? '#'+rankNum : '—'}</div>
-          ${topPct ? `<div style="font-size:9px;color:#4a7ad4;margin-top:2px;">Top ${topPct}%</div>` : ''}
+          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Your Rank</div>
+          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;">${rankNum ? '#'+rankNum : '—'}</div>
+          ${topPct ? `<div style="font-size:9px;color:var(--gold-dim);margin-top:2px;">Top ${topPct}%</div>` : ''}
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
           <div style="font-size:16px;margin-bottom:5px;">📅</div>
-          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Split Events</div>
-          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;">${splitEvents}</div>
+          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Split Events</div>
+          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;">${splitEvents}</div>
         </div>
       </div>
     </div>
@@ -790,24 +861,24 @@ function _homeShell(char, stats, att) {
     <!-- RECENT ACTIVITY -->
     <div style="padding:12px 12px 0;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <div style="font-size:16px;font-weight:700;color:#ffffff;">Recent Activity</div>
-        <button onclick="showView('my-attendance')" style="background:none;border:none;color:#4a7ad4;font-size:13px;font-weight:600;cursor:pointer;padding:0;">View All</button>
+        <div style="font-size:16px;font-weight:700;color:var(--text-primary);">Recent Activity</div>
+        <button onclick="showView('my-attendance')" style="background:none;border:none;color:var(--gold-dim);font-size:13px;font-weight:600;cursor:pointer;padding:0;">View All</button>
       </div>
-      <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;overflow:hidden;">
+      <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;overflow:hidden;">
         ${!recent.length
-          ? `<div style="padding:24px;text-align:center;color:#2a3a55;font-size:13px;">No activity yet.</div>`
+          ? `<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:13px;">No activity yet.</div>`
           : recent.map((a, i) => {
               const sprite = BOSS_SPRITES[a.boss];
               const thumb = sprite
                 ? `<img src="${sprite}" alt="${a.boss}" style="width:100%;height:100%;object-fit:contain;border-radius:8px;" onerror="this.style.display='none'">`
                 : `<span style="font-size:16px;">⚔️</span>`;
               const ago = _timeAgo(a.timestamp);
-              return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;${i < recent.length-1 ? 'border-bottom:1px solid #0a1020;' : ''}">
-                <div style="width:38px;height:38px;padding:5px;box-sizing:border-box;border-radius:10px;background:#111c30;border:1px solid #1a2d50;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">${thumb}</div>
+              return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;${i < recent.length-1 ? 'border-bottom:1px solid var(--border);' : ''}">
+                <div style="width:38px;height:38px;padding:5px;box-sizing:border-box;border-radius:10px;background:var(--bg-hover);border:1px solid var(--border-mid);flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">${thumb}</div>
                 <div style="flex:1;min-width:0;">
-                  <div style="font-size:14px;font-weight:600;color:#e0eaff;">${a.boss}</div>
+                  <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${a.boss}</div>
                 </div>
-                <div style="font-size:12px;color:#3a5070;flex-shrink:0;">${ago}</div>
+                <div style="font-size:12px;color:var(--text-secondary);flex-shrink:0;">${ago}</div>
               </div>`;
             }).join('')}
       </div>
@@ -815,23 +886,23 @@ function _homeShell(char, stats, att) {
 
     <!-- QUICK ACTIONS -->
     <div style="padding:12px 12px 0;">
-      <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:14px;">Quick Actions</div>
+      <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:14px;">Quick Actions</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('my-splits');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='my-splits')});_moveNavIndicator('my-splits');">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('my-splits');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='my-splits')});_moveNavIndicator('my-splits');">
           <div style="font-size:24px;margin-bottom:8px;">💰</div>
-          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">My Splits</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">My Splits</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('leaderboard')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('leaderboard')">
           <div style="font-size:24px;margin-bottom:8px;">🏆</div>
-          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">Leaderboard</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Leaderboard</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('rules')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('rules')">
           <div style="font-size:24px;margin-bottom:8px;">📜</div>
-          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">Rules</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Rules</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('guide')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('guide')">
           <div style="font-size:24px;margin-bottom:8px;">📖</div>
-          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">Guide</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Guide</div>
         </div>
       </div>
     </div>
@@ -1148,57 +1219,94 @@ function _loadMySplitsMonth(allPays, paidByMonth, month) {
 
 // ============================================================
 //  MY ATTENDANCE HISTORY  (separate page)
+//  Admins additionally get an "All Members" option in the
+//  "Showing history for" dropdown, which pulls the full alliance
+//  attendance log via get_all_attendance instead of just their
+//  own character(s).
 // ============================================================
-function renderMyAttendanceHistory() {
-  const el   = document.getElementById('view-my-attendance');
-  const char = getActiveChar();
-  const chars = App.user.characters || [];
-  if (!char) { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">📋</span>No character found.</div>`; return; }
+// Page-local selection state — kept separate from App.activeCharId so
+// picking "All" here never affects which character is active elsewhere
+// in the app (e.g. the Attendance submission page).
+window._attHistorySelection = null; // null = default to active char; 'all' = alliance-wide
 
-  el.innerHTML = `
-    <div class="section-title">📋 My Attendance History</div>
+function _attHistorySelectOptions() {
+  const chars = App.user.characters || [];
+  const current = window._attHistorySelection || getActiveChar()?.charId || '';
+  const charOptions = chars.map(c =>
+    `<option value="${c.charId}" ${c.charId === current ? 'selected' : ''}>${escHtml(c.ign)}</option>`).join('');
+  const allOption = App.user.isAdmin
+    ? `<option value="all" ${current === 'all' ? 'selected' : ''}>— All Members (Alliance) —</option>`
+    : '';
+  return `<select class="char-select" id="att-history-select" onchange="_onAttHistorySelectChange(this.value)">${charOptions}${allOption}</select>`;
+}
+
+function _onAttHistorySelectChange(value) {
+  window._attHistorySelection = value;
+  if (value === 'all') {
+    // "All Members" is page-local — doesn't touch the app-wide active character
+    renderMyAttendanceHistory();
+  } else {
+    // A real character was picked — keep this in sync with the rest of the
+    // app's shared "active character" concept (header, other pages, etc.)
+    switchChar(value);
+  }
+}
+
+function renderMyAttendanceHistory() {
+  const el    = document.getElementById('view-my-attendance');
+  const char  = getActiveChar();
+  const chars = App.user.characters || [];
+  if (!char && !App.user.isAdmin) { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">📋</span>No character found.</div>`; return; }
+
+  const selection = window._attHistorySelection || char?.charId || (App.user.isAdmin ? 'all' : '');
+  const showingAll = selection === 'all';
+
+  const headerBlock = `
+    <div class="section-title">📋 ${showingAll ? 'Alliance Attendance History' : 'My Attendance History'}</div>
     <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
       <span style="color:var(--text-secondary);font-size:.85rem">Showing history for</span>
-      <div id="att-history-char-switcher"></div>
-    </div>
-    ${Skeleton.table('', [40, 15, 30], 6)}`;
+      <div id="att-history-char-switcher">${(chars.length > 1 || App.user.isAdmin) ? _attHistorySelectOptions() : ''}</div>
+      ${(chars.length <= 1 && !App.user.isAdmin) ? `<strong style="color:var(--gold)">${escHtml(char.ign)}</strong>` : ''}
+    </div>`;
 
-  _renderCharSwitcher('att-history-char-switcher');
-  if (chars.length <= 1) {
-    document.getElementById('att-history-char-switcher').innerHTML =
-      `<strong style="color:var(--gold)">${char.ign}</strong>`;
-  }
+  el.innerHTML = `${headerBlock}${Skeleton.table('', showingAll ? [22, 28, 15, 35] : [40, 15, 30], 6)}`;
 
-  API.read('get_my_attendance', { charId: char.charId }).then(att => {
+  const fetchPromise = showingAll
+    ? API.read('get_all_attendance')
+    : API.read('get_my_attendance', { charId: selection });
+
+  fetchPromise.then(att => {
     att = att || [];
+    const totalPoints = att.reduce((s, a) => s + (Number(a.points) || 0), 0).toLocaleString();
+
     el.innerHTML = `
-      <div class="section-title">📋 My Attendance History</div>
-      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
-        <span style="color:var(--text-secondary);font-size:.85rem">Showing history for</span>
-        <div id="att-history-char-switcher"></div>
-      </div>
+      ${headerBlock}
       <div class="stats-row" style="margin-bottom:1rem">
-        <div class="stat-chip"><div class="stat-chip-label">Total Bosses</div><div class="stat-chip-value">${att.length}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Total Points</div><div class="stat-chip-value">${att.reduce((s,a)=>s+(Number(a.points)||0),0).toLocaleString()}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">${showingAll ? 'Total Submissions' : 'Total Bosses'}</div><div class="stat-chip-value">${att.length}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Total Points</div><div class="stat-chip-value">${totalPoints}</div></div>
       </div>
       <div class="table-scroll">
         ${!att.length
           ? `<div class="empty-state"><span class="empty-state-icon">🗡</span>No attendance recorded yet.</div>`
-          : `<table class="data-table">
-              <thead><tr><th>Boss</th><th>Points</th><th>Date</th></tr></thead>
+          : showingAll
+          ? `<table class="data-table">
+              <thead><tr><th>Member</th><th>Boss</th><th>Points</th><th>Timestamp</th></tr></thead>
               <tbody>${att.map(a=>`<tr>
-                <td>${a.boss}</td>
+                <td>${escHtml(a.ign || '—')}</td>
+                <td>${escHtml(a.boss)}</td>
                 <td style="color:var(--gold)">+${a.points}</td>
-                <td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(a.timestamp)}</td>
+                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
+              </tr>`).join('')}</tbody>
+            </table>`
+          : `<table class="data-table">
+              <thead><tr><th>Boss</th><th>Points</th><th>Timestamp</th></tr></thead>
+              <tbody>${att.map(a=>`<tr>
+                <td>${escHtml(a.boss)}</td>
+                <td style="color:var(--gold)">+${a.points}</td>
+                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
               </tr>`).join('')}</tbody>
             </table>`}
       </div>`;
-
-    _renderCharSwitcher('att-history-char-switcher');
-    if (chars.length <= 1) {
-      document.getElementById('att-history-char-switcher').innerHTML =
-        `<strong style="color:var(--gold)">${char.ign}</strong>`;
-    }
   });
 }
 
@@ -1247,6 +1355,69 @@ function renderGuide() {
       <div class="empty-state">
         <span class="empty-state-icon">📖</span>
         Guide coming soon.
+      </div>
+    </div>`;
+}
+
+// ============================================================
+//  SETTINGS
+// ============================================================
+function renderSettings() {
+  const el    = document.getElementById('view-settings');
+  const char  = getActiveChar();
+  const theme = getTheme();
+
+  el.innerHTML = `
+    <div class="section-title">⚙️ Settings</div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Appearance</div>
+          <div class="card-meta">Choose how Alliance Tracker looks on this device.</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Theme</div>
+          <div class="settings-row-desc">Switch between dark and light mode. The blue accent stays the same either way.</div>
+        </div>
+        <div class="settings-theme-options">
+          <button type="button" class="theme-option-btn ${theme === 'dark' ? 'active' : ''}" onclick="setTheme('dark')">🌙 Dark</button>
+          <button type="button" class="theme-option-btn ${theme === 'light' ? 'active' : ''}" onclick="setTheme('light')">☀️ Light</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Quick toggle</div>
+          <div class="settings-row-desc">Flip between dark and light with a single switch.</div>
+        </div>
+        <label class="theme-switch">
+          <input type="checkbox" id="theme-toggle-checkbox" ${theme === 'light' ? 'checked' : ''} onchange="setTheme(this.checked ? 'light' : 'dark')">
+          <span class="theme-switch-track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Account</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Signed in as</div>
+          <div class="settings-row-desc">${escHtml(App.user.email)}${char ? ` · Playing as ${escHtml(char.ign)}` : ''}</div>
+        </div>
+        <span class="role-badge ${App.user.isAdmin ? 'admin' : ''}">${App.user.isSuperAdmin ? 'Super Admin' : (App.user.isAdmin ? 'Admin' : 'Member')}</span>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Sign out</div>
+          <div class="settings-row-desc">You'll need to sign in with Google again to come back.</div>
+        </div>
+        <button class="btn btn-secondary" onclick="window.signOut()">Sign Out</button>
       </div>
     </div>`;
 }
@@ -1767,6 +1938,25 @@ function deleteEvent(eventId, dayViewDate) {
   }).catch(() => toast('Network error', 'error'));
 }
 
+// Renders a small boss thumbnail — the boss's sprite image if we have one
+// in BOSS_SPRITES, falling back to its config-defined emoji so nothing
+// ever renders blank for a boss we haven't added art for yet.
+function _bossThumbHtml(bossName) {
+  const sprite = BOSS_SPRITES[bossName];
+  if (sprite) {
+    return `<span class="boss-row-thumb"><img src="${sprite}" alt="${escHtml(bossName)}" onerror="this.parentElement.innerHTML='${_bossEmoji(bossName).replace(/'/g, "\\'")}'"></span>`;
+  }
+  return `<span class="boss-row-thumb"><span class="boss-row-emoji">${_bossEmoji(bossName)}</span></span>`;
+}
+
+function _bossEmoji(bossName) {
+  for (const cat of (App.config?.bossCategories || [])) {
+    const b = cat.bosses.find(x => x.name === bossName);
+    if (b) return b.emoji;
+  }
+  return '⚔️';
+}
+
 // Formats the raw `drops` payload — usually a JSON string like
 // '[{"itemName":"Actaemon Horn","qty":1}]' — into a readable "Item ×2, Item"
 // string for the Drops table cell, instead of dumping raw JSON on screen.
@@ -1809,7 +1999,7 @@ function renderDrops() {
               : runs.map((r,i) => `
                 <tr onclick="openRunModal(${i})">
                   <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
-                  <td><strong>${r.boss}</strong></td>
+                  <td><span class="boss-row-name">${_bossThumbHtml(r.boss)}<strong>${r.boss}</strong></span></td>
                   <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_fmtDropsCell(r.drops)}</td>
                   <td><span style="color:var(--gold)">${r.participantCount}</span> players</td>
                   <td><span class="status ${r.status==='Confirmed'?'status-confirmed':'status-pending'}">${r.status}</span></td>
@@ -1845,7 +2035,7 @@ function renderLateLinkedBanner() {
             <tbody>${rows.map(r => `
               <tr>
                 <td>${escHtml(r.ign)}</td>
-                <td>${escHtml(r.boss)}</td>
+                <td><span class="boss-row-name">${_bossThumbHtml(r.boss)}${escHtml(r.boss)}</span></td>
                 <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.timestamp)} ${fmtTime(r.timestamp)}</td>
                 <td style="font-size:.78rem;color:var(--text-secondary)">${escHtml(r.confirmedBy||'—')}</td>
                 <td>${App.user.isSuperAdmin
@@ -1906,7 +2096,7 @@ function openRunModal(idx) {
   try { savedDrops = run.drops ? JSON.parse(run.drops) : []; } catch(e) {}
 
   showModal(`
-    <div class="modal-title">💎 ${run.boss} — ${fmtDate(run.windowStart)} ${fmtTime(run.windowStart)}</div>
+    <div class="modal-title" style="display:flex;align-items:center">${_bossThumbHtml(run.boss)} ${run.boss} — ${fmtDate(run.windowStart)} ${fmtTime(run.windowStart)}</div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
       <span style="font-size:.82rem;color:var(--text-secondary)">Window: ${fmtTime(run.windowStart)} – ${fmtTime(run.windowEnd)}</span>
       <span class="status ${run.status==='Confirmed'?'status-confirmed':'status-pending'}">${run.status}</span>
@@ -2504,6 +2694,7 @@ function _deleteAttendanceCore(id) {
 // ============================================================
 function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
 function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
+function _closeAdminDropdown() { document.getElementById('admin-pages-dropdown')?.classList.remove('open'); }
 
 // ─── SWIPE TO CLOSE (mobile sidebar) ─────────────────────
 // Sidebar slides in from the right, so a rightward swipe closes it.
