@@ -136,15 +136,6 @@ const App = {
   email:        null,
 };
 
-// ── Character setup option lists (used by roster add/register modals) ──
-const CHAR_CLASSES  = ['Warrior', 'Ranger', 'Magician', 'Breaker'];
-const CHAR_FACTIONS = ['Lanos', 'Siras'];
-const CHAR_GUILDS   = ['Exalt', 'Fatale', 'Rasta', 'Lumiere', 'Cosmic', 'Luminarias'];
-
-function _optionList(values, selected='') {
-  return values.map(v => `<option value="${v}" ${v===selected?'selected':''}>${v}</option>`).join('');
-}
-
 // ============================================================
 //  CACHE  — in-memory, TTL-based, per action key
 //  Mutation actions (submit, confirm, sell…) call cache.bust()
@@ -526,7 +517,6 @@ function _initNav() {
     });
   });
   document.getElementById('more-btn')?.addEventListener('click', _openSidebar);
-  document.getElementById('header-hamburger')?.addEventListener('click', _openSidebar);
   document.getElementById('sidebar-close')?.addEventListener('click', _closeSidebar);
   document.getElementById('sidebar-overlay')?.addEventListener('click', _closeSidebar);
   document.querySelectorAll('.sidebar-link[data-view]').forEach(btn => {
@@ -569,7 +559,7 @@ function _initNav() {
   }
 
   document.getElementById('modal-overlay')?.addEventListener('click', e => {
-    if (e.target.id === 'modal-overlay' && e.target.dataset.forceAck !== '1') closeModal();
+    if (e.target.id === 'modal-overlay') closeModal();
   });
 
   // ── PULL-TO-REFRESH ───────────────────────────────────────
@@ -1084,18 +1074,9 @@ function submitAttendance() {
     if (res.success) {
       const c = App.user.characters.find(c => c.charId === char.charId);
       if (c) c.points = (c.points||0) + res.pointsEarned;
-      const recordedBosses = selected.filter(b => !(res.skipped||[]).includes(b));
-      if (res.skippedMessage) {
-        // Force the duplicate-boss warning to be acknowledged before
-        // showing the confirmation screen, rather than a passing toast.
-        showAckModal('⚠ Some Bosses Skipped', res.skippedMessage, () => {
-          _showConfirmation(recordedBosses, res.pointsEarned, res.ign);
-        });
-      } else {
-        _showConfirmation(recordedBosses, res.pointsEarned, res.ign);
-      }
+      _showConfirmation(selected, res.pointsEarned, res.ign, res.skippedMessage);
     } else {
-      showAckModal('⚠ Attendance Not Recorded', res.message || 'Something went wrong — please try again.');
+      toast(res.message||'Error', 'error');
     }
   }).catch(() => { closeModal(); toast('Network error', 'error'); });
 }
@@ -1103,7 +1084,7 @@ function submitAttendance() {
 // ============================================================
 //  CONFIRMATION
 // ============================================================
-function _showConfirmation(bosses, pts, ign) {
+function _showConfirmation(bosses, pts, ign, skippedMessage) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const el = document.getElementById('view-confirm'); el.classList.add('active');
   el.innerHTML = `
@@ -1114,6 +1095,7 @@ function _showConfirmation(bosses, pts, ign) {
       <div class="confirm-bosses">${bosses.map(b => `<span class="confirm-boss-tag">${b}</span>`).join('')}</div>
       <div class="confirm-points">+${pts}</div>
       <div class="confirm-points-label">Points Earned</div>
+      ${skippedMessage ? `<p style="font-size:.8rem;color:#e6a842;text-align:center;max-width:340px;margin:0 auto 1rem;line-height:1.5">⚠ ${escHtml(skippedMessage)}</p>` : ''}
       <button class="btn btn-primary" style="margin-bottom:.75rem" onclick="_goToAttendance()">⚔ Log More Bosses</button>
       <button class="btn btn-secondary" onclick="showView('home')">🏠 Go to Home</button>
     </div>`;
@@ -2562,14 +2544,9 @@ function renderRoster() {
 function rosterCard(r) {
   const chars = r.characters || [];
   const pts   = chars.reduce((s,c) => s+(c.points||0), 0);
-  // Emails are sensitive contact info — only super admins get to see them
-  // in the clear. Regular admins see a blurred placeholder instead.
-  const emailHtml = App.user.isSuperAdmin
-    ? r.email
-    : `<span class="email-blurred" title="Visible to super admins only">${r.email}</span>`;
   return `<div class="card">
     <div class="card-header">
-      <div><div class="card-title">${chars.length ? chars.map(c=>c.ign).join(', ') : emailHtml}</div><div class="card-meta">${emailHtml}</div></div>
+      <div><div class="card-title">${chars.length ? chars.map(c=>c.ign).join(', ') : r.email}</div><div class="card-meta">${r.email}</div></div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         <span class="status ${r.status==='active'?'status-confirmed':'status-pending'}">${r.status}</span>
         ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
@@ -2578,7 +2555,7 @@ function rosterCard(r) {
     ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span onclick="openAttendanceHistoryModal('${c.charId}','${(c.ign||'').replace(/'/g,"\\'")}')" style="cursor:pointer;font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)" title="View attendance history">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
-      ${r.status==='active' ? `<button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>` : ''}
+      <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
       ${chars.length ? `<button class="btn btn-sm btn-danger" onclick="openRemoveCharModal('${r.email}')">− Remove Character</button>` : ''}
     </div>
   </div>`;

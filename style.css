@@ -332,7 +332,6 @@ html,body {
 .card-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:.75rem; }
 .card-title  { font-family:var(--font-display); font-size:.95rem; color:var(--text-primary); letter-spacing:.05em; font-weight:600; }
 .card-meta   { font-size:.8rem; color:var(--text-secondary); margin-top:.2rem; }
-.email-blurred { filter:blur(5px); user-select:none; cursor:default; -webkit-user-select:none; }
 
 /* ── SCROLLABLE TABLE ────────────────────── */
 .table-scroll { width:100%; overflow-x:auto; border-radius:var(--radius-lg); border:1px solid var(--border); -webkit-overflow-scrolling:touch; }
@@ -595,18 +594,10 @@ html,body {
 }
 @media (min-width:701px) {
   #mobile-nav { display:none !important; }
+  #sidebar, #sidebar-overlay { display:none !important; }
   #main-content { padding-bottom:1.5rem; }
   #toast { bottom:1.5rem; }
 }
-
-/* ── RESPONSIVE HEADER NAV (tablet + pc) ─────
-   The header keeps just the 3 most-used views inline (Home, Attendance,
-   My Splits — matching the mobile bottom nav) and tucks everything else
-   — including admin-only pages — behind a "More" hamburger that slides
-   out the same drawer mobile uses, at every width above the phone
-   breakpoint. This keeps the header from ever overflowing regardless of
-   how many admin nav items exist. */
-.hamburger-btn { letter-spacing:.05em; }
 
 /* PWA standalone — same safe area rules, status bar background fill */
 @media (display-mode: standalone) {
