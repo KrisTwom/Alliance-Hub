@@ -34,6 +34,14 @@ function applyTheme(theme) {
   document.documentElement.style.backgroundColor = bg;
   document.body.style.backgroundColor = bg;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
+  // The pull-to-refresh banner (#ptr-indicator) is a fixed, zero-height
+  // element created lazily on first touch; its background is inline
+  // var(--bg-deep), but this particular element doesn't get repainted by
+  // mobile Safari on a variable change alone — only once its own layout
+  // is touched (e.g. by actually pulling it down). Push the literal color
+  // in directly so it's correct immediately, not just after a pull.
+  const ptrIndicator = document.getElementById('ptr-indicator');
+  if (ptrIndicator) ptrIndicator.style.backgroundColor = bg;
 }
 function setTheme(theme) {
   applyTheme(theme);
