@@ -131,6 +131,7 @@ Deno.serve(async (req) => {
       case 'request_access_with_info': return ok(await requestAccessWithInfo(supabase, email, data));
       case 'submit_attendance':   return ok(await submitAttendance(supabase, email, data.charId as string, data.bosses as string[]));
       case 'get_my_attendance':   return ok(await getMyAttendance(supabase, email, data.charId as string));
+      case 'get_all_attendance':  return ok(await getAllAttendance(supabase, email));
       case 'get_my_payouts':      return ok(await getMyPayouts(supabase, email, data.charId as string));
       case 'get_all_data':        return ok(await getAllData(supabase, email));
 
@@ -550,6 +551,23 @@ async function getMyAttendance(supabase: ReturnType<typeof db>, email: string, c
     .order('ts', { ascending: false });
   if (error) throw error;
   return (data || []).map(r => ({ timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id }));
+}
+
+// Admin-only: every attendance submission across the whole alliance, most
+// recent first. Powers the "Show history for: All" option on the
+// Attendance History page so admins can audit the full log in one place.
+async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('id, ts, boss, points, run_id, char_id, ign, email')
+    .order('ts', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(r => ({
+    id: r.id, timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id,
+    charId: r.char_id, ign: r.ign, email: r.email,
+  }));
 }
 
 // ============================================================
@@ -1196,9 +1214,24 @@ async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) 
     .eq('email', email);
   const readSet = new Set((reads || []).map(r => r.announcement_id));
 
+  // Resolve each poster's email to a character name — the frontend
+  // shows only the IGN, never the raw email, for privacy.
+  const posterEmails = [...new Set((rows || []).map(r => r.created_by))];
+  const charByEmail: Record<string, string> = {};
+  if (posterEmails.length) {
+    const { data: chars } = await supabase
+      .from('characters')
+      .select('email, ign')
+      .in('email', posterEmails);
+    for (const c of (chars || [])) {
+      if (!charByEmail[c.email]) charByEmail[c.email] = c.ign; // first character found per poster
+    }
+  }
+
   return (rows || []).map(r => ({
     id: r.announcement_id, title: r.title, body: r.body,
-    createdBy: r.created_by, createdAt: r.created_at,
+    createdByIgn: charByEmail[r.created_by] || 'Alliance Admin',
+    createdAt: r.created_at,
     read: readSet.has(r.announcement_id),
   }));
 }

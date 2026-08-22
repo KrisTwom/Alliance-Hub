@@ -3,6 +3,53 @@
 // ============================================================
 const SUPABASE_FUNCTION_URL = 'https://yhwzlqgwamzvktzdkpbs.supabase.co/functions/v1/alliance';
 
+// ── Block iOS Safari's native pinch-zoom gesture ─────────────
+// Backs up the viewport meta tag + touch-action CSS so the app
+// can't be pinch-zoomed on any mobile browser.
+document.addEventListener('gesturestart', e => e.preventDefault());
+
+// ============================================================
+//  THEME (light / dark) — persisted in localStorage
+//  The <html data-theme="..."> attribute is also set as early as
+//  possible in index.html (before app.js loads) to avoid a flash
+//  of the wrong theme on page load. This copy is what the Settings
+//  page toggle calls at runtime.
+// ============================================================
+function getTheme() {
+  return localStorage.getItem('alliance_theme') || 'dark';
+}
+function applyTheme(theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  localStorage.setItem('alliance_theme', t);
+
+  // The data-theme attribute alone updates all var(--bg-deep) etc. CSS
+  // instantly — except on some mobile browsers (iOS Safari in particular)
+  // the top-of-screen rubber-band overscroll strip and the PWA status-bar
+  // tint are painted from the page's actual background-color / the
+  // theme-color meta tag, and those don't reliably repaint on a CSS
+  // variable change alone until the next full reload. Set them directly
+  // so the switch is instant instead of requiring a refresh.
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg-deep').trim();
+  document.documentElement.style.backgroundColor = bg;
+  document.body.style.backgroundColor = bg;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
+}
+function setTheme(theme) {
+  applyTheme(theme);
+  // Re-render the settings page (if open) so the active toggle state updates
+  if (document.getElementById('view-settings')?.classList.contains('active')) renderSettings();
+}
+
+// ── Roster dropdown options (Register Member / Add Character) ─
+const CLASS_OPTIONS   = ['Warrior', 'Ranger', 'Magician', 'Breaker'];
+const GUILD_OPTIONS   = ['Exalt', 'Fatale', 'Rasta', 'Lumiere', 'Cosmic', 'Luminarias'];
+const FACTION_OPTIONS = ['Lanos', 'Siras'];
+function _selectOptions(list, selected='') {
+  return `<option value="">— Select —</option>` +
+    list.map(v => `<option value="${v}" ${v===selected?'selected':''}>${v}</option>`).join('');
+}
+
 // ============================================================
 //  STATE
 // ============================================================
@@ -109,6 +156,7 @@ const Cache = {
     // How long (ms) cached data is considered fresh per action
     get_leaderboard:      60 * 1000,        // 1 min
     get_my_attendance:    2  * 60 * 1000,   // 2 min
+    get_all_attendance:   60 * 1000,        // 1 min — admin full-alliance log
     get_my_payouts:       2  * 60 * 1000,
     get_grouped_runs:     90 * 1000,        // 90 sec (changes when attendance submitted)
     get_window_resets:    60 * 1000,
@@ -292,7 +340,7 @@ window.initAllianceTracker = async function(email) {
     if (loadingScreen) loadingScreen.style.display = 'none';
     appEl.style.display = 'flex';
     appEl.innerHTML = `
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:2rem;text-align:center;gap:1rem;background:#000;">
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:2rem;text-align:center;gap:1rem;background:var(--bg-deep);">
         <div style="font-size:3rem">⚠️</div>
         <div style="font-family:'Inter',sans-serif;color:var(--gold);font-size:1.1rem;letter-spacing:.1em">Connection Failed</div>
         <div style="color:var(--text-secondary);font-size:.9rem;max-width:320px">${msg}</div>
@@ -350,7 +398,23 @@ function _buildShell() {
         <button class="nav-btn active" data-view="home">🏠 Home</button>
         <button class="nav-btn" data-view="attendance">🗡 Attendance</button>
         <button class="nav-btn" data-view="my-splits">💰 My Splits</button>
-        <button id="header-hamburger" class="nav-btn hamburger-btn" aria-label="Open menu">☰ More</button>
+        <button class="nav-btn" data-view="my-attendance">📋 Attendance History</button>
+        <button class="nav-btn" data-view="leaderboard">🏆 Leaderboard</button>
+        <button class="nav-btn" data-view="rules">📜 Rules</button>
+        <button class="nav-btn" data-view="guide">📖 Guide</button>
+        <button class="nav-btn" data-view="announcements">📢 Announcements</button>
+        <button class="nav-btn" data-view="schedule">📅 Schedule</button>
+        ${App.user.isAdmin ? `
+        <div class="nav-dropdown" id="admin-pages-dropdown">
+          <button class="nav-btn nav-dropdown-toggle" id="admin-pages-toggle" type="button">⚙ Admin Pages <span class="nav-dropdown-caret">▼</span></button>
+          <div class="nav-dropdown-menu">
+            <button class="nav-dropdown-item" data-view="drops">💎 Drops</button>
+            <button class="nav-dropdown-item" data-view="inventory">🎒 Inventory</button>
+            <button class="nav-dropdown-item" data-view="payouts">📊 Payouts</button>
+            <button class="nav-dropdown-item" data-view="roster">👥 Roster</button>
+          </div>
+        </div>` : ''}
+        <button class="nav-btn" data-view="settings">⚙️ Settings</button>
       </div>
       <div class="header-right">
         <span id="header-username" class="header-user"></span>
@@ -372,6 +436,7 @@ function _buildShell() {
       <div id="view-inventory"   class="view"></div>
       <div id="view-payouts"     class="view"></div>
       <div id="view-roster"      class="view"></div>
+      <div id="view-settings"    class="view"></div>
       <div id="view-confirm"     class="view"></div>
     </main>
 
@@ -409,10 +474,16 @@ function _buildShell() {
         <button class="sidebar-link" data-view="announcements">📢 Announcements</button>
         <button class="sidebar-link" data-view="schedule">📅 Schedule</button>
         ${App.user.isAdmin ? `
-        <button class="sidebar-link" data-view="drops">💎 Drops</button>
-        <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
-        <button class="sidebar-link" data-view="payouts">📊 Payouts</button>
-        <button class="sidebar-link" data-view="roster">👥 Roster</button>` : ''}
+        <div class="sidebar-group-header" id="sidebar-admin-group-header">
+          <span>⚙ Admin Pages</span><span class="sidebar-group-arrow">▼</span>
+        </div>
+        <div class="sidebar-group-body" id="sidebar-admin-group-body">
+          <button class="sidebar-link" data-view="drops">💎 Drops</button>
+          <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
+          <button class="sidebar-link" data-view="payouts">📊 Payouts</button>
+          <button class="sidebar-link" data-view="roster">👥 Roster</button>
+        </div>` : ''}
+        <button class="sidebar-link" data-view="settings">⚙️ Settings</button>
       </div>
     </aside>`;
 
@@ -435,10 +506,14 @@ function _moveNavIndicator(view) {
 }
 
 function _initNav() {
+  // Top-level desktop nav buttons (excludes the Admin Pages dropdown
+  // toggle itself, which has no data-view and is wired separately below).
   document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.nav-dropdown-item').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      _closeAdminDropdown();
       showView(btn.dataset.view);
     });
   });
@@ -461,24 +536,60 @@ function _initNav() {
       showView(btn.dataset.view);
     });
   });
+
+  // ── ADMIN PAGES — desktop dropdown ────────────────────────
+  const adminDropdown = document.getElementById('admin-pages-dropdown');
+  const adminToggle   = document.getElementById('admin-pages-toggle');
+  if (adminDropdown && adminToggle) {
+    adminToggle.addEventListener('click', e => {
+      e.stopPropagation();
+      adminDropdown.classList.toggle('open');
+    });
+    adminDropdown.querySelectorAll('.nav-dropdown-item[data-view]').forEach(item => {
+      item.addEventListener('click', e => {
+        e.stopPropagation();
+        document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.nav-dropdown-item').forEach(b => b.classList.remove('active'));
+        item.classList.add('active');
+        _closeAdminDropdown();
+        showView(item.dataset.view);
+      });
+    });
+    document.addEventListener('click', () => _closeAdminDropdown());
+  }
+
+  // ── ADMIN PAGES — sidebar collapsible group ───────────────
+  const sidebarGroupHeader = document.getElementById('sidebar-admin-group-header');
+  const sidebarGroupBody   = document.getElementById('sidebar-admin-group-body');
+  if (sidebarGroupHeader && sidebarGroupBody) {
+    sidebarGroupHeader.addEventListener('click', () => {
+      sidebarGroupHeader.classList.toggle('open');
+      sidebarGroupBody.classList.toggle('open');
+    });
+  }
+
   document.getElementById('modal-overlay')?.addEventListener('click', e => {
     if (e.target.id === 'modal-overlay' && e.target.dataset.forceAck !== '1') closeModal();
   });
 
   // ── PULL-TO-REFRESH ───────────────────────────────────────
+  // The whole page (#app) slides down with the finger, revealing a
+  // fixed banner sitting behind it — rather than just a thin bar
+  // growing on top of the content.
   let _ptrStartY = 0, _ptrDelta = 0, _ptrActive = false, _ptrIndicator = null;
-  const PTR_THRESHOLD = 72;
+  const PTR_THRESHOLD = 76;   // px of (resisted) pull before release triggers a refresh
+  const PTR_REVEAL_MAX = 100; // px the page is allowed to slide down
 
   function _getPtrIndicator() {
     if (!_ptrIndicator) {
       _ptrIndicator = document.createElement('div');
       _ptrIndicator.id = 'ptr-indicator';
       _ptrIndicator.style.cssText = `
-        position:fixed;top:0;left:0;right:0;z-index:9000;
+        position:fixed;top:0;left:0;right:0;z-index:1;
         display:flex;align-items:center;justify-content:center;
         height:0;overflow:hidden;
-        background:linear-gradient(180deg,rgba(0,0,0,0.95),transparent);
-        transition:height .15s ease;pointer-events:none;
+        background:var(--bg-deep, #050505);
+        pointer-events:none;
       `;
       _ptrIndicator.innerHTML = `<div style="display:flex;align-items:center;gap:8px;color:#5b9cf6;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;letter-spacing:.1em;opacity:0;transition:opacity .2s" id="ptr-inner">
         <div id="ptr-spinner" style="width:18px;height:18px;border:2px solid #1a3a6a;border-top-color:#5b9cf6;border-radius:50%;transition:transform .1s linear"></div>
@@ -489,7 +600,16 @@ function _initNav() {
     return _ptrIndicator;
   }
 
+  function _setPageSlide(px, animate) {
+    const app = document.getElementById('app');
+    if (!app) return;
+    app.style.transition = animate ? 'transform .25s ease' : 'none';
+    app.style.transform = px > 0 ? `translateY(${px}px)` : '';
+  }
+
   document.addEventListener('touchstart', e => {
+    const modalOpen = !document.getElementById('modal-overlay')?.classList.contains('hidden');
+    if (modalOpen) return;
     const content = document.getElementById('main-content');
     if (!content) return;
     const atTop = content.scrollTop === 0 || window.scrollY === 0;
@@ -497,6 +617,7 @@ function _initNav() {
     _ptrStartY = e.touches[0].clientY;
     _ptrActive = true;
     _ptrDelta = 0;
+    _setPageSlide(0, false);
   }, { passive: true });
 
   document.addEventListener('touchmove', e => {
@@ -504,14 +625,15 @@ function _initNav() {
     _ptrDelta = Math.max(0, e.touches[0].clientY - _ptrStartY);
     if (_ptrDelta < 8) return;
     const ind = _getPtrIndicator();
-    const h = Math.min(_ptrDelta * 0.5, PTR_THRESHOLD);
+    const h = Math.min(_ptrDelta * 0.55, PTR_REVEAL_MAX);
     ind.style.height = h + 'px';
+    _setPageSlide(h, false);
     const inner = document.getElementById('ptr-inner');
     const spinner = document.getElementById('ptr-spinner');
     const label = document.getElementById('ptr-label');
     if (inner) inner.style.opacity = Math.min(1, (_ptrDelta - 8) / 40);
     if (spinner) spinner.style.transform = `rotate(${_ptrDelta * 3}deg)`;
-    const ready = _ptrDelta >= PTR_THRESHOLD;
+    const ready = h >= PTR_THRESHOLD;
     if (label) label.textContent = ready ? 'Release to refresh' : 'Pull to refresh';
     if (spinner) spinner.style.borderTopColor = ready ? '#7ab4ff' : '#5b9cf6';
   }, { passive: true });
@@ -520,9 +642,12 @@ function _initNav() {
     if (!_ptrActive) return;
     _ptrActive = false;
     const ind = _getPtrIndicator();
-    if (_ptrDelta >= PTR_THRESHOLD) {
-      // Trigger refresh of current view
-      ind.style.height = '48px';
+    const shown = Math.min(_ptrDelta * 0.55, PTR_REVEAL_MAX);
+    if (shown >= PTR_THRESHOLD) {
+      // Settle at a fixed "refreshing" position while the spinner spins.
+      const settleH = 60;
+      ind.style.height = settleH + 'px';
+      _setPageSlide(settleH, true);
       const label = document.getElementById('ptr-label');
       const spinner = document.getElementById('ptr-spinner');
       if (label) label.textContent = 'Refreshing…';
@@ -539,13 +664,18 @@ function _initNav() {
         setTimeout(() => {
           showView(viewName);
           ind.style.height = '0';
+          _setPageSlide(0, true);
           const inner = document.getElementById('ptr-inner');
           if (inner) inner.style.opacity = '0';
           if (spinner) spinner.style.animation = '';
         }, 600);
+      } else {
+        ind.style.height = '0';
+        _setPageSlide(0, true);
       }
     } else {
       ind.style.height = '0';
+      _setPageSlide(0, true);
       const inner = document.getElementById('ptr-inner');
       if (inner) inner.style.opacity = '0';
     }
@@ -622,6 +752,7 @@ function showView(name) {
     inventory:         renderInventory,
     payouts:           renderPayouts,
     roster:            renderRoster,
+    settings:          renderSettings,
   };
   map[name]?.();
 }
@@ -685,67 +816,67 @@ function _homeShell(char, stats, att) {
   const safeTop = `env(safe-area-inset-top, 0px)`;
 
   return `
-  <div style="background:#000;min-height:100%;font-family:'Inter',sans-serif;padding-bottom:1rem;">
+  <div style="background:var(--bg-deep);min-height:100%;font-family:'Inter',sans-serif;padding-bottom:1rem;">
 
     <!-- HERO -->
     <div style="padding:calc(${safeTop} + 14px) 12px 0;">
-      <div style="font-size:11px;font-weight:600;color:#4a7ad4;letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;">WELCOME BACK</div>
+      <div style="font-size:11px;font-weight:600;color:var(--gold-dim);letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;">WELCOME BACK</div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-        <div style="font-size:32px;font-weight:800;color:#ffffff;letter-spacing:-.5px;display:flex;align-items:center;gap:8px;flex:1">
+        <div style="font-size:32px;font-weight:800;color:var(--text-primary);letter-spacing:-.5px;display:flex;align-items:center;gap:8px;flex:1">
           ${App.user.characters && App.user.characters.length > 1
-            ? `<select id="home-char-select" onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:#fff;font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:#06090f;font-size:16px">${c.ign}</option>`).join('')}</select>`
+            ? `<select id="home-char-select" onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:var(--text-primary);font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:var(--bg-deep);font-size:16px">${c.ign}</option>`).join('')}</select>`
             : `<span>${char?.ign || 'Adventurer'}</span>`}
         </div>
-        <div id="home-bell" style="width:36px;height:36px;border-radius:10px;background:#0d1220;border:1px solid #1a2d50;display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;" onclick="showView('announcements');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">
+        <div id="home-bell" style="width:36px;height:36px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-mid);display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;" onclick="showView('announcements');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">
           <span style="font-size:18px;">🔔</span>
           <span id="bell-badge" style="display:none;position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;padding:0 3px;border-radius:99px;background:var(--danger,#EF4444);color:#fff;font-size:10px;font-weight:700;align-items:center;justify-content:center;line-height:16px;text-align:center;"></span>
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid #0d1525;">
-        <span style="color:#4a7ad4;font-weight:700;">Lv.${char?.level||'—'}</span>
-        <span style="color:#2a3a55;">|</span>
-        <span style="color:#8899aa;">${char?.charClass||'—'}</span>
-        <span style="color:#2a3a55;">|</span>
-        <span style="display:flex;align-items:center;gap:4px;color:#8899aa;">🛡 ${char?.guild||char?.faction||'—'}</span>
+      <div style="display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--border);">
+        <span style="color:var(--gold-dim);font-weight:700;">Lv.${char?.level||'—'}</span>
+        <span style="color:var(--text-muted);">|</span>
+        <span style="color:var(--text-secondary);">${char?.charClass||'—'}</span>
+        <span style="color:var(--text-muted);">|</span>
+        <span style="display:flex;align-items:center;gap:4px;color:var(--text-secondary);">🛡 ${char?.guild||char?.faction||'—'}</span>
       </div>
     </div>
 
     <!-- SUBMIT ATTENDANCE CTA -->
-    <div style="margin:10px 12px 0;background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:12px;display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="showView('attendance');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='attendance')});_moveNavIndicator('attendance');">
-      <div style="width:44px;height:44px;border-radius:10px;background:#111c30;border:1px solid #1e3560;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:22px;">📋</div>
+    <div style="margin:10px 12px 0;background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:12px;display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="showView('attendance');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='attendance')});_moveNavIndicator('attendance');">
+      <div style="width:44px;height:44px;border-radius:10px;background:var(--bg-hover);border:1px solid var(--border-mid);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:22px;">📋</div>
       <div style="flex:1;">
-        <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:2px;">Submit Attendance</div>
-        <div style="font-size:12px;color:#4a6080;">Earn points for your alliance!</div>
+        <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:2px;">Submit Attendance</div>
+        <div style="font-size:12px;color:var(--text-muted);">Earn points for your alliance!</div>
       </div>
-      <div style="width:28px;height:28px;border-radius:50%;background:#1a3a7a;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-        <span style="color:#5b9cf6;font-size:15px;font-weight:700;">›</span>
+      <div style="width:28px;height:28px;border-radius:50%;background:var(--gold-glow);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <span style="color:var(--gold);font-size:15px;font-weight:700;">›</span>
       </div>
     </div>
 
     <!-- YOUR OVERVIEW -->
     <div style="padding:12px 12px 0;">
-      <div style="font-size:15px;font-weight:700;color:#ffffff;margin-bottom:8px;">Your Overview</div>
+      <div style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:8px;">Your Overview</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
           <div style="font-size:16px;margin-bottom:5px;">⭐</div>
-          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Total Points</div>
-          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;word-break:break-all;">${charPoints === '—' ? '—' : fmtGold(charPoints)}</div>
+          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Total Points</div>
+          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;word-break:break-all;">${charPoints === '—' ? '—' : fmtGold(charPoints)}</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
           <div style="font-size:16px;margin-bottom:5px;">💰</div>
-          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Lifetime Gold</div>
-          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;">${totalGold}</div>
+          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Lifetime Gold</div>
+          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;">${totalGold}</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('leaderboard')">
           <div style="font-size:16px;margin-bottom:5px;">🏆</div>
-          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Your Rank</div>
-          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;">${rankNum ? '#'+rankNum : '—'}</div>
-          ${topPct ? `<div style="font-size:9px;color:#4a7ad4;margin-top:2px;">Top ${topPct}%</div>` : ''}
+          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Your Rank</div>
+          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;">${rankNum ? '#'+rankNum : '—'}</div>
+          ${topPct ? `<div style="font-size:9px;color:var(--gold-dim);margin-top:2px;">Top ${topPct}%</div>` : ''}
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
           <div style="font-size:16px;margin-bottom:5px;">📅</div>
-          <div style="font-size:8px;color:#4a6080;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Split Events</div>
-          <div style="font-size:15px;font-weight:800;color:#ffffff;line-height:1;">${splitEvents}</div>
+          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Split Events</div>
+          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;">${splitEvents}</div>
         </div>
       </div>
     </div>
@@ -753,24 +884,24 @@ function _homeShell(char, stats, att) {
     <!-- RECENT ACTIVITY -->
     <div style="padding:12px 12px 0;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <div style="font-size:16px;font-weight:700;color:#ffffff;">Recent Activity</div>
-        <button onclick="showView('my-attendance')" style="background:none;border:none;color:#4a7ad4;font-size:13px;font-weight:600;cursor:pointer;padding:0;">View All</button>
+        <div style="font-size:16px;font-weight:700;color:var(--text-primary);">Recent Activity</div>
+        <button onclick="showView('my-attendance')" style="background:none;border:none;color:var(--gold-dim);font-size:13px;font-weight:600;cursor:pointer;padding:0;">View All</button>
       </div>
-      <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;overflow:hidden;">
+      <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;overflow:hidden;">
         ${!recent.length
-          ? `<div style="padding:24px;text-align:center;color:#2a3a55;font-size:13px;">No activity yet.</div>`
+          ? `<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:13px;">No activity yet.</div>`
           : recent.map((a, i) => {
               const sprite = BOSS_SPRITES[a.boss];
               const thumb = sprite
                 ? `<img src="${sprite}" alt="${a.boss}" style="width:100%;height:100%;object-fit:contain;border-radius:8px;" onerror="this.style.display='none'">`
                 : `<span style="font-size:16px;">⚔️</span>`;
               const ago = _timeAgo(a.timestamp);
-              return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;${i < recent.length-1 ? 'border-bottom:1px solid #0a1020;' : ''}">
-                <div style="width:38px;height:38px;padding:5px;box-sizing:border-box;border-radius:10px;background:#111c30;border:1px solid #1a2d50;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">${thumb}</div>
+              return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;${i < recent.length-1 ? 'border-bottom:1px solid var(--border);' : ''}">
+                <div style="width:38px;height:38px;padding:5px;box-sizing:border-box;border-radius:10px;background:var(--bg-hover);border:1px solid var(--border-mid);flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">${thumb}</div>
                 <div style="flex:1;min-width:0;">
-                  <div style="font-size:14px;font-weight:600;color:#e0eaff;">${a.boss}</div>
+                  <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${a.boss}</div>
                 </div>
-                <div style="font-size:12px;color:#3a5070;flex-shrink:0;">${ago}</div>
+                <div style="font-size:12px;color:var(--text-secondary);flex-shrink:0;">${ago}</div>
               </div>`;
             }).join('')}
       </div>
@@ -778,23 +909,23 @@ function _homeShell(char, stats, att) {
 
     <!-- QUICK ACTIONS -->
     <div style="padding:12px 12px 0;">
-      <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:14px;">Quick Actions</div>
+      <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:14px;">Quick Actions</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('my-splits');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='my-splits')});_moveNavIndicator('my-splits');">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('my-splits');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='my-splits')});_moveNavIndicator('my-splits');">
           <div style="font-size:24px;margin-bottom:8px;">💰</div>
-          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">My Splits</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">My Splits</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('leaderboard')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('leaderboard')">
           <div style="font-size:24px;margin-bottom:8px;">🏆</div>
-          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">Leaderboard</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Leaderboard</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('rules')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('rules')">
           <div style="font-size:24px;margin-bottom:8px;">📜</div>
-          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">Rules</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Rules</div>
         </div>
-        <div style="background:#0d1525;border:1px solid #1a2d50;border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('guide')">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('guide')">
           <div style="font-size:24px;margin-bottom:8px;">📖</div>
-          <div style="font-size:11px;font-weight:600;color:#8899aa;line-height:1.3;">Guide</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Guide</div>
         </div>
       </div>
     </div>
@@ -1119,57 +1250,94 @@ function _loadMySplitsMonth(allPays, paidByMonth, month) {
 
 // ============================================================
 //  MY ATTENDANCE HISTORY  (separate page)
+//  Admins additionally get an "All Members" option in the
+//  "Showing history for" dropdown, which pulls the full alliance
+//  attendance log via get_all_attendance instead of just their
+//  own character(s).
 // ============================================================
-function renderMyAttendanceHistory() {
-  const el   = document.getElementById('view-my-attendance');
-  const char = getActiveChar();
-  const chars = App.user.characters || [];
-  if (!char) { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">📋</span>No character found.</div>`; return; }
+// Page-local selection state — kept separate from App.activeCharId so
+// picking "All" here never affects which character is active elsewhere
+// in the app (e.g. the Attendance submission page).
+window._attHistorySelection = null; // null = default to active char; 'all' = alliance-wide
 
-  el.innerHTML = `
-    <div class="section-title">📋 My Attendance History</div>
+function _attHistorySelectOptions() {
+  const chars = App.user.characters || [];
+  const current = window._attHistorySelection || getActiveChar()?.charId || '';
+  const charOptions = chars.map(c =>
+    `<option value="${c.charId}" ${c.charId === current ? 'selected' : ''}>${escHtml(c.ign)}</option>`).join('');
+  const allOption = App.user.isAdmin
+    ? `<option value="all" ${current === 'all' ? 'selected' : ''}>— All Members (Alliance) —</option>`
+    : '';
+  return `<select class="char-select" id="att-history-select" onchange="_onAttHistorySelectChange(this.value)">${charOptions}${allOption}</select>`;
+}
+
+function _onAttHistorySelectChange(value) {
+  window._attHistorySelection = value;
+  if (value === 'all') {
+    // "All Members" is page-local — doesn't touch the app-wide active character
+    renderMyAttendanceHistory();
+  } else {
+    // A real character was picked — keep this in sync with the rest of the
+    // app's shared "active character" concept (header, other pages, etc.)
+    switchChar(value);
+  }
+}
+
+function renderMyAttendanceHistory() {
+  const el    = document.getElementById('view-my-attendance');
+  const char  = getActiveChar();
+  const chars = App.user.characters || [];
+  if (!char && !App.user.isAdmin) { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">📋</span>No character found.</div>`; return; }
+
+  const selection = window._attHistorySelection || char?.charId || (App.user.isAdmin ? 'all' : '');
+  const showingAll = selection === 'all';
+
+  const headerBlock = `
+    <div class="section-title">📋 ${showingAll ? 'Alliance Attendance History' : 'My Attendance History'}</div>
     <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
       <span style="color:var(--text-secondary);font-size:.85rem">Showing history for</span>
-      <div id="att-history-char-switcher"></div>
-    </div>
-    ${Skeleton.table('', [40, 15, 30], 6)}`;
+      <div id="att-history-char-switcher">${(chars.length > 1 || App.user.isAdmin) ? _attHistorySelectOptions() : ''}</div>
+      ${(chars.length <= 1 && !App.user.isAdmin) ? `<strong style="color:var(--gold)">${escHtml(char.ign)}</strong>` : ''}
+    </div>`;
 
-  _renderCharSwitcher('att-history-char-switcher');
-  if (chars.length <= 1) {
-    document.getElementById('att-history-char-switcher').innerHTML =
-      `<strong style="color:var(--gold)">${char.ign}</strong>`;
-  }
+  el.innerHTML = `${headerBlock}${Skeleton.table('', showingAll ? [22, 28, 15, 35] : [40, 15, 30], 6)}`;
 
-  API.read('get_my_attendance', { charId: char.charId }).then(att => {
+  const fetchPromise = showingAll
+    ? API.read('get_all_attendance')
+    : API.read('get_my_attendance', { charId: selection });
+
+  fetchPromise.then(att => {
     att = att || [];
+    const totalPoints = att.reduce((s, a) => s + (Number(a.points) || 0), 0).toLocaleString();
+
     el.innerHTML = `
-      <div class="section-title">📋 My Attendance History</div>
-      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
-        <span style="color:var(--text-secondary);font-size:.85rem">Showing history for</span>
-        <div id="att-history-char-switcher"></div>
-      </div>
+      ${headerBlock}
       <div class="stats-row" style="margin-bottom:1rem">
-        <div class="stat-chip"><div class="stat-chip-label">Total Bosses</div><div class="stat-chip-value">${att.length}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Total Points</div><div class="stat-chip-value">${att.reduce((s,a)=>s+(Number(a.points)||0),0).toLocaleString()}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">${showingAll ? 'Total Submissions' : 'Total Bosses'}</div><div class="stat-chip-value">${att.length}</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Total Points</div><div class="stat-chip-value">${totalPoints}</div></div>
       </div>
       <div class="table-scroll">
         ${!att.length
           ? `<div class="empty-state"><span class="empty-state-icon">🗡</span>No attendance recorded yet.</div>`
-          : `<table class="data-table">
-              <thead><tr><th>Boss</th><th>Points</th><th>Date</th></tr></thead>
+          : showingAll
+          ? `<table class="data-table">
+              <thead><tr><th>Member</th><th>Boss</th><th>Points</th><th>Timestamp</th></tr></thead>
               <tbody>${att.map(a=>`<tr>
-                <td>${a.boss}</td>
+                <td>${escHtml(a.ign || '—')}</td>
+                <td>${escHtml(a.boss)}</td>
                 <td style="color:var(--gold)">+${a.points}</td>
-                <td style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(a.timestamp)}</td>
+                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
+              </tr>`).join('')}</tbody>
+            </table>`
+          : `<table class="data-table">
+              <thead><tr><th>Boss</th><th>Points</th><th>Timestamp</th></tr></thead>
+              <tbody>${att.map(a=>`<tr>
+                <td>${escHtml(a.boss)}</td>
+                <td style="color:var(--gold)">+${a.points}</td>
+                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
               </tr>`).join('')}</tbody>
             </table>`}
       </div>`;
-
-    _renderCharSwitcher('att-history-char-switcher');
-    if (chars.length <= 1) {
-      document.getElementById('att-history-char-switcher').innerHTML =
-        `<strong style="color:var(--gold)">${char.ign}</strong>`;
-    }
   });
 }
 
@@ -1223,6 +1391,69 @@ function renderGuide() {
 }
 
 // ============================================================
+//  SETTINGS
+// ============================================================
+function renderSettings() {
+  const el    = document.getElementById('view-settings');
+  const char  = getActiveChar();
+  const theme = getTheme();
+
+  el.innerHTML = `
+    <div class="section-title">⚙️ Settings</div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Appearance</div>
+          <div class="card-meta">Choose how Alliance Tracker looks on this device.</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Theme</div>
+          <div class="settings-row-desc">Switch between dark and light mode. The blue accent stays the same either way.</div>
+        </div>
+        <div class="settings-theme-options">
+          <button type="button" class="theme-option-btn ${theme === 'dark' ? 'active' : ''}" onclick="setTheme('dark')">🌙 Dark</button>
+          <button type="button" class="theme-option-btn ${theme === 'light' ? 'active' : ''}" onclick="setTheme('light')">☀️ Light</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Quick toggle</div>
+          <div class="settings-row-desc">Flip between dark and light with a single switch.</div>
+        </div>
+        <label class="theme-switch">
+          <input type="checkbox" id="theme-toggle-checkbox" ${theme === 'light' ? 'checked' : ''} onchange="setTheme(this.checked ? 'light' : 'dark')">
+          <span class="theme-switch-track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Account</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Signed in as</div>
+          <div class="settings-row-desc">${escHtml(App.user.email)}${char ? ` · Playing as ${escHtml(char.ign)}` : ''}</div>
+        </div>
+        <span class="role-badge ${App.user.isAdmin ? 'admin' : ''}">${App.user.isSuperAdmin ? 'Super Admin' : (App.user.isAdmin ? 'Admin' : 'Member')}</span>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Sign out</div>
+          <div class="settings-row-desc">You'll need to sign in with Google again to come back.</div>
+        </div>
+        <button class="btn btn-secondary" onclick="window.signOut()">Sign Out</button>
+      </div>
+    </div>`;
+}
+
+// ============================================================
 //  BELL BADGE (unread announcement count)
 // ============================================================
 function _refreshBellBadge() {
@@ -1265,7 +1496,7 @@ function renderAnnouncements() {
               <div style="font-family:var(--font-display);font-size:1.05rem;color:var(--text-primary);margin-bottom:.35rem;padding-right:1.2rem">${escHtml(r.title)}</div>
               <div style="font-size:.85rem;color:var(--text-secondary);white-space:pre-wrap;line-height:1.5;margin-bottom:.6rem">${escHtml(r.body)}</div>
               <div style="display:flex;align-items:center;justify-content:space-between;font-size:.75rem;color:var(--text-muted)">
-                <span>${escHtml(r.createdBy)} · ${fmtDate(r.createdAt)} ${fmtTime(r.createdAt)}</span>
+                <span>${escHtml(r.createdByIgn)} · ${fmtDate(r.createdAt)} ${fmtTime(r.createdAt)}</span>
                 ${App.user.isSuperAdmin ? `<button class="btn btn-sm btn-danger" onclick="deleteAnnouncement('${r.id}')" title="Delete">🗑</button>` : ''}
               </div>
             </div>`).join('')}
@@ -1321,6 +1552,7 @@ function deleteAnnouncement(id) {
 //  SCHEDULE / CALENDAR — readable by everyone, writable by any admin
 // ============================================================
 let _scheduleMonth = null; // Date, always normalized to the 1st of the month
+let _dayViewDate   = null; // 'YYYY-MM-DD' of the day-view currently open in the modal, or null
 
 function renderSchedule() {
   const el = document.getElementById('view-schedule');
@@ -1354,12 +1586,6 @@ function _renderCalendarGrid() {
     const key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
     (byDay[key] = byDay[key] || []).push(ev);
   });
-  const isLive = ev => {
-    const start = new Date(ev.scheduledAt).getTime();
-    const end = start + (Number(ev.durationMinutes) || 240) * 60000;
-    return now >= start && now <= end;
-  };
-
   const firstOfMonth = new Date(year, month, 1);
   const startWeekday = firstOfMonth.getDay(); // 0=Sun
   const daysInMonth  = new Date(year, month + 1, 0).getDate();
@@ -1384,18 +1610,13 @@ function _renderCalendarGrid() {
       ${cells.map(d => {
         if (d === null) return `<div class="cal-cell cal-cell-empty"></div>`;
         const key = year + '-' + month + '-' + d;
-        const dayEvents = (byDay[key] || []).sort((a,b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+        const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const hasEvents = !!(byDay[key] || []).length;
         const isToday = key === todayKey;
         return `
-          <div class="cal-cell${isToday ? ' cal-cell-today' : ''}" onclick="${App.user.isAdmin ? `openCreateEventModal('${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}')` : ''}">
+          <div class="cal-cell${isToday ? ' cal-cell-today' : ''}" onclick="openDayView('${dateStr}')">
             <div class="cal-daynum">${d}</div>
-            <div class="cal-events">
-              ${dayEvents.slice(0,3).map(ev => `
-                <div class="cal-event-chip${isLive(ev) ? ' cal-event-live' : ''}" onclick="event.stopPropagation();openEventModal('${ev.id}')" title="${escHtml(ev.boss)} — ${fmtTime(ev.scheduledAt)}">
-                  ${isLive(ev) ? '🔴 ' : ''}${fmtTime(ev.scheduledAt)} ${escHtml(ev.boss)}
-                </div>`).join('')}
-              ${dayEvents.length > 3 ? `<div class="cal-event-more">+${dayEvents.length-3} more</div>` : ''}
-            </div>
+            ${hasEvents ? `<div class="cal-event-dot"></div>` : ''}
           </div>`;
       }).join('')}
     </div>
@@ -1415,7 +1636,7 @@ function _renderUpcomingList(events, now) {
     ${upcoming.map(ev => {
       const live = now >= new Date(ev.scheduledAt).getTime() && now <= new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes)||240)*60000;
       return `
-      <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;cursor:pointer" onclick="openEventModal('${ev.id}')">
+      <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;cursor:pointer" onclick="openEventDetails('${ev.id}')">
         <div>
           <div style="font-size:.92rem;color:var(--text-primary)">${live ? '🔴 LIVE — ' : ''}${escHtml(ev.boss)}</div>
           <div style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)}</div>
@@ -1448,10 +1669,150 @@ function _allBossNames() {
   return names;
 }
 
-function openCreateEventModal(prefillDate) {
+// ── DAY VIEW — fullscreen single-day agenda list ──────────────
+// Tapping a calendar cell opens this instead of jumping straight into
+// event creation. Rows are plain list entries (no proportional time-block
+// height) since this alliance runs many short back-to-back events.
+// Tapping a row opens the Event Details screen (see below).
+
+function _dayEventsFor(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return (window._events || [])
+    .filter(ev => {
+      const dt = new Date(ev.scheduledAt);
+      return dt.getFullYear() === y && (dt.getMonth() + 1) === m && dt.getDate() === d;
+    })
+    .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+}
+
+function _isEventLive(ev, now) {
+  now = now || Date.now();
+  const start = new Date(ev.scheduledAt).getTime();
+  const end = start + (Number(ev.durationMinutes) || 240) * 60000;
+  return now >= start && now <= end;
+}
+
+function openDayView(dateStr) {
+  _dayViewDate = dateStr;
+  showModal(_dayViewHtml(dateStr), { fullscreen: true });
+}
+
+function _dayViewHtml(dateStr) {
+  const events = _dayEventsFor(dateStr);
+  const now = Date.now();
+  const dateObj = new Date(dateStr + 'T00:00:00');
+  const weekdayLabel = dateObj.toLocaleDateString(undefined, { weekday: 'short' });
+  const fullLabel = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+  const rows = events.map(ev => {
+    const live = _isEventLive(ev, now);
+    const end = new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes) || 240) * 60000;
+    return `
+      <div class="day-agenda-row${live ? ' day-agenda-row-live' : ''}" onclick="openEventDetails('${ev.id}','${dateStr}')">
+        <div class="day-agenda-rail">
+          <div class="day-agenda-dot"></div>
+          <div class="day-agenda-line"></div>
+        </div>
+        <div class="day-agenda-main">
+          <div class="day-agenda-title">${live ? '🔴 ' : ''}${escHtml(ev.boss)}</div>
+          <div class="day-agenda-time">${fmtTime(ev.scheduledAt)} – ${fmtTime(new Date(end).toISOString())}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="day-view-header">
+      <div>
+        <div class="day-view-header-title">${weekdayLabel} ${dateObj.getDate()}</div>
+        <div class="day-view-header-sub">${fullLabel}</div>
+      </div>
+      <button class="day-view-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="day-view-body">
+      ${App.user.isAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.5rem 1rem;margin-bottom:.75rem" onclick="openCreateEventModal('${dateStr}','${dateStr}')">+ New Event</button>` : ''}
+      ${rows || `<div class="empty-state"><span class="empty-state-icon">📅</span>No events scheduled this day.</div>`}
+    </div>`;
+}
+
+// ── EVENT DETAILS — fullscreen screen shown after tapping an agenda row ──
+// Shows who created the event and when, a countdown reminder, and the
+// date/length of the event. Admins get a top-right "⋯" menu to edit or
+// delete the event; everyone else just gets Back.
+function _timeUntilLabel(scheduledAt, durationMinutes) {
+  const now = Date.now();
+  const start = new Date(scheduledAt).getTime();
+  const end = start + (Number(durationMinutes) || 240) * 60000;
+  if (now >= start && now <= end) return { text: 'Happening now', live: true };
+  if (now > end) return { text: 'Already happened', live: false };
+  const diffMs = start - now;
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 60) return { text: `${mins} minute${mins === 1 ? '' : 's'}`, live: false };
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return { text: `${hours} hour${hours === 1 ? '' : 's'}`, live: false };
+  const days = Math.round(hours / 24);
+  return { text: `${days} day${days === 1 ? '' : 's'}`, live: false };
+}
+
+function openEventDetails(eventId, dayViewDate) {
+  const ev = (window._events || []).find(e => e.id === eventId);
+  if (!ev) return;
+  const back = dayViewDate ? `openDayView('${dayViewDate}')` : 'closeModal()';
+  const end = new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes) || 240) * 60000;
+  const until = _timeUntilLabel(ev.scheduledAt, ev.durationMinutes);
+  const initial = (ev.createdBy || '?').trim().charAt(0).toUpperCase();
+
+  showModal(`
+    <div class="evt-details-header">
+      <button class="evt-details-back" onclick="${back}">‹</button>
+      <div class="evt-details-header-title">Details</div>
+      ${App.user.isAdmin ? `
+        <div class="evt-details-menu-wrap">
+          <button class="evt-details-menu-btn" onclick="_toggleEvtDetailsMenu(event)">⋯</button>
+          <div class="evt-details-menu" id="evt-details-menu">
+            <button class="evt-details-menu-item" onclick="openEventModal('${ev.id}','${dayViewDate||''}')">✏️ Edit</button>
+            <button class="evt-details-menu-item danger" onclick="deleteEvent('${ev.id}','${dayViewDate||''}')">🗑 Delete</button>
+          </div>
+        </div>` : `<div style="width:40px"></div>`}
+    </div>
+    <div class="evt-details-body">
+      <div class="evt-details-creator">
+        <div class="evt-details-avatar">${escHtml(initial)}</div>
+        <div>
+          <div class="evt-details-creator-name">${escHtml(ev.createdBy || 'Unknown')}${ev.source === 'discord_bot' ? ' · Discord bot' : ''}</div>
+          <div class="evt-details-creator-meta">${fmtDate(ev.createdAt)} ${fmtTime(ev.createdAt)}</div>
+        </div>
+      </div>
+      <div class="evt-details-reminder${until.live ? ' live' : ''}">
+        🕐 ${until.live ? `<b>${until.text}</b>` : `Reminder: <b>${until.text}</b> until event`}
+      </div>
+      <div class="evt-details-card">
+        <div class="evt-details-card-title">${escHtml(ev.boss)}</div>
+        <div class="evt-details-card-when">${fmtDate(ev.scheduledAt)} (${new Date(ev.scheduledAt).toLocaleDateString(undefined,{weekday:'short'})}) ${fmtTime(ev.scheduledAt)} ~ ${fmtTime(new Date(end).toISOString())}</div>
+      </div>
+      ${ev.notes ? `<div class="evt-details-notes">${escHtml(ev.notes)}</div>` : ''}
+      ${until.live && !App.user.isAdmin ? `<button class="btn btn-primary" style="margin-top:1rem;width:100%" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+    </div>`, { fullscreen: true });
+}
+
+function _toggleEvtDetailsMenu(evt) {
+  evt.stopPropagation();
+  document.getElementById('evt-details-menu')?.classList.toggle('open');
+}
+document.addEventListener('click', e => {
+  const menu = document.getElementById('evt-details-menu');
+  if (menu && menu.classList.contains('open') && !e.target.closest('.evt-details-menu-wrap')) {
+    menu.classList.remove('open');
+  }
+});
+
+// prefillDate: 'YYYY-MM-DD' to default the date field to.
+// returnDate: if set, Cancel/Save return to that day's day-view instead
+// of closing the modal outright (i.e. we were opened from inside it).
+function openCreateEventModal(prefillDate, returnDate) {
   const bosses = _allBossNames();
   const d = prefillDate ? new Date(prefillDate + 'T00:00:00') : new Date();
   const dateVal = prefillDate || `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const back = returnDate ? `openDayView('${returnDate}')` : 'closeModal()';
 
   showModal(`
     <div class="modal-title">📅 New Event</div>
@@ -1488,8 +1849,8 @@ function openCreateEventModal(prefillDate) {
       <textarea class="form-textarea" id="evt-notes" placeholder="Anything admins/members should know…"></textarea>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="evt-submit-btn" onclick="submitCreateEvent()">📅 Create</button>
+      <button class="btn btn-secondary" onclick="${back}">Cancel</button>
+      <button class="btn btn-primary" id="evt-submit-btn" onclick="submitCreateEvent(${returnDate ? `'${returnDate}'` : 'null'})">📅 Create</button>
     </div>`);
   _evtBossChanged();
 }
@@ -1504,7 +1865,7 @@ function _evtBossChanged() {
   durEl.value = boss === 'Siege' ? 30 : 240;
 }
 
-function submitCreateEvent() {
+function submitCreateEvent(returnDate) {
   const boss = document.getElementById('evt-boss').value;
   const dateStr = document.getElementById('evt-date').value;
   const timeStr = document.getElementById('evt-time').value;
@@ -1518,39 +1879,133 @@ function submitCreateEvent() {
   btn.disabled = true; btn.textContent = 'Creating…';
 
   API.write('create_event', { boss, scheduledAt, durationMinutes, notes }, ['get_events']).then(res => {
-    if (res.success) { toast('Event created.', 'success'); closeModal(); renderSchedule(); }
-    else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; }
+    if (res.success) {
+      toast('Event created.', 'success');
+      API.read('get_events').then(events => {
+        window._events = events || [];
+        _renderCalendarGrid();
+        if (returnDate) openDayView(returnDate); else closeModal();
+      });
+    } else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; }
   }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; });
 }
 
-function openEventModal(eventId) {
+// dayViewDate: 'YYYY-MM-DD' of the day-view this was opened from, if any —
+// used to return there after Save/Delete/Back instead of just closing.
+// Reached only via the Event Details screen's "⋯ → Edit" menu item, so
+// this is admin-only now (Details covers the read-only view for everyone,
+// including the live "Submit Attendance" shortcut). Back returns to
+// Details rather than the day view, since that's where Edit was opened from.
+function openEventModal(eventId, dayViewDate) {
   const ev = (window._events || []).find(e => e.id === eventId);
   if (!ev) return;
-  const now = Date.now();
-  const start = new Date(ev.scheduledAt).getTime();
-  const end = start + (Number(ev.durationMinutes) || 240) * 60000;
-  const live = now >= start && now <= end;
+  const back = `openEventDetails('${eventId}','${dayViewDate||''}')`;
+
+  if (!App.user.isAdmin) { openEventDetails(eventId, dayViewDate); return; }
+
+  const bosses = _allBossNames();
+  const start = new Date(ev.scheduledAt);
+  const dateVal = `${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,'0')}-${String(start.getDate()).padStart(2,'0')}`;
+  const timeVal = `${String(start.getHours()).padStart(2,'0')}:${String(start.getMinutes()).padStart(2,'0')}`;
 
   showModal(`
-    <div class="modal-title">${live ? '🔴 ' : '📅 '}${escHtml(ev.boss)}</div>
-    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">
-      ${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)} — window closes ${fmtTime(new Date(end).toISOString())}
+    <div class="modal-title">✏️ Edit Event</div>
+    <div class="form-group">
+      <label class="form-label">Boss / Mini</label>
+      <select class="form-input" id="evt-edit-boss">
+        ${bosses.map(b => `<option value="${escHtml(b)}" ${b===ev.boss?'selected':''}>${escHtml(b)}</option>`).join('')}
+      </select>
     </div>
-    ${ev.notes ? `<p style="font-size:.88rem;color:var(--text-primary);white-space:pre-wrap;margin-bottom:1rem;line-height:1.5">${escHtml(ev.notes)}</p>` : ''}
-    <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:1rem">Created by ${escHtml(ev.createdBy)}${ev.source === 'discord_bot' ? ' · via Discord bot' : ''}</div>
+    <div style="display:flex;gap:.75rem">
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Date</label>
+        <input type="date" class="form-input" id="evt-edit-date" value="${dateVal}">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Time</label>
+        <input type="time" class="form-input" id="evt-edit-time" value="${timeVal}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Timezone</label>
+      <select class="form-input" id="evt-edit-tz">
+        <option value="local">My local time (browser)</option>
+        <option value="eastern_fixed">US Eastern — fixed, no DST (e.g. Siege)</option>
+        <option value="utc">UTC</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Attendance window (minutes)</label>
+      <input type="number" class="form-input" id="evt-edit-duration" min="5" max="1440" value="${Number(ev.durationMinutes) || 240}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes (optional)</label>
+      <textarea class="form-textarea" id="evt-edit-notes" placeholder="Anything admins/members should know…">${escHtml(ev.notes || '')}</textarea>
+    </div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:.5rem">Created by ${escHtml(ev.createdBy)}${ev.source === 'discord_bot' ? ' · via Discord bot' : ''}</div>
     <div class="modal-actions">
-      ${App.user.isAdmin ? `<button class="btn btn-danger" onclick="deleteEvent('${ev.id}')">🗑 Delete</button>` : ''}
-      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
-      ${live ? `<button class="btn btn-primary" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+      <button class="btn btn-danger" onclick="deleteEvent('${ev.id}','${dayViewDate||''}')">🗑 Delete</button>
+      <button class="btn btn-secondary" onclick="${back}">Back</button>
+      <button class="btn btn-primary" id="evt-edit-submit-btn" onclick="submitEditEvent('${ev.id}','${dayViewDate||''}')">💾 Save</button>
     </div>`);
 }
 
-function deleteEvent(eventId) {
+function submitEditEvent(eventId, dayViewDate) {
+  const boss = document.getElementById('evt-edit-boss').value;
+  const dateStr = document.getElementById('evt-edit-date').value;
+  const timeStr = document.getElementById('evt-edit-time').value;
+  const tz = document.getElementById('evt-edit-tz').value;
+  const durationMinutes = Number(document.getElementById('evt-edit-duration').value) || 240;
+  const notes = document.getElementById('evt-edit-notes').value.trim();
+  const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, tz);
+  if (!scheduledAt) { toast('Date and time are required.', 'error'); return; }
+
+  const btn = document.getElementById('evt-edit-submit-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+
+  API.write('update_event', { eventId, boss, scheduledAt, durationMinutes, notes }, ['get_events']).then(res => {
+    if (res.success) {
+      toast('Event updated.', 'success');
+      API.read('get_events').then(events => {
+        window._events = events || [];
+        _renderCalendarGrid();
+        if (dayViewDate) openDayView(dayViewDate); else closeModal();
+      });
+    } else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '💾 Save'; }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '💾 Save'; });
+}
+
+function deleteEvent(eventId, dayViewDate) {
   if (!confirm('Delete this event?')) return;
   API.write('delete_event', { eventId }, ['get_events']).then(res => {
-    if (res.success) { toast('Event deleted.', 'success'); closeModal(); renderSchedule(); }
-    else toast(res.error || 'Error', 'error');
+    if (res.success) {
+      toast('Event deleted.', 'success');
+      API.read('get_events').then(events => {
+        window._events = events || [];
+        _renderCalendarGrid();
+        if (dayViewDate) openDayView(dayViewDate); else closeModal();
+      });
+    } else toast(res.error || 'Error', 'error');
   }).catch(() => toast('Network error', 'error'));
+}
+
+// Renders a small boss thumbnail — the boss's sprite image if we have one
+// in BOSS_SPRITES, falling back to its config-defined emoji so nothing
+// ever renders blank for a boss we haven't added art for yet.
+function _bossThumbHtml(bossName) {
+  const sprite = BOSS_SPRITES[bossName];
+  if (sprite) {
+    return `<span class="boss-row-thumb"><img src="${sprite}" alt="${escHtml(bossName)}" onerror="this.parentElement.innerHTML='${_bossEmoji(bossName).replace(/'/g, "\\'")}'"></span>`;
+  }
+  return `<span class="boss-row-thumb"><span class="boss-row-emoji">${_bossEmoji(bossName)}</span></span>`;
+}
+
+function _bossEmoji(bossName) {
+  for (const cat of (App.config?.bossCategories || [])) {
+    const b = cat.bosses.find(x => x.name === bossName);
+    if (b) return b.emoji;
+  }
+  return '⚔️';
 }
 
 // Formats the raw `drops` payload — usually a JSON string like
@@ -1595,7 +2050,7 @@ function renderDrops() {
               : runs.map((r,i) => `
                 <tr onclick="openRunModal(${i})">
                   <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
-                  <td><strong>${r.boss}</strong></td>
+                  <td><span class="boss-row-name">${_bossThumbHtml(r.boss)}<strong>${r.boss}</strong></span></td>
                   <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_fmtDropsCell(r.drops)}</td>
                   <td><span style="color:var(--gold)">${r.participantCount}</span> players</td>
                   <td><span class="status ${r.status==='Confirmed'?'status-confirmed':'status-pending'}">${r.status}</span></td>
@@ -1631,7 +2086,7 @@ function renderLateLinkedBanner() {
             <tbody>${rows.map(r => `
               <tr>
                 <td>${escHtml(r.ign)}</td>
-                <td>${escHtml(r.boss)}</td>
+                <td><span class="boss-row-name">${_bossThumbHtml(r.boss)}${escHtml(r.boss)}</span></td>
                 <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.timestamp)} ${fmtTime(r.timestamp)}</td>
                 <td style="font-size:.78rem;color:var(--text-secondary)">${escHtml(r.confirmedBy||'—')}</td>
                 <td>${App.user.isSuperAdmin
@@ -1692,7 +2147,7 @@ function openRunModal(idx) {
   try { savedDrops = run.drops ? JSON.parse(run.drops) : []; } catch(e) {}
 
   showModal(`
-    <div class="modal-title">💎 ${run.boss} — ${fmtDate(run.windowStart)} ${fmtTime(run.windowStart)}</div>
+    <div class="modal-title" style="display:flex;align-items:center">${_bossThumbHtml(run.boss)} ${run.boss} — ${fmtDate(run.windowStart)} ${fmtTime(run.windowStart)}</div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
       <span style="font-size:.82rem;color:var(--text-secondary)">Window: ${fmtTime(run.windowStart)} – ${fmtTime(run.windowEnd)}</span>
       <span class="status ${run.status==='Confirmed'?'status-confirmed':'status-pending'}">${run.status}</span>
@@ -2166,9 +2621,9 @@ function openRegisterMemberModal(pre='') {
     <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="reg-email" value="${pre}" ${pre?'readonly style="opacity:.6"':''} placeholder="player@gmail.com"></div>
     <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="reg-ign" placeholder="Character name"></div>
     <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="reg-level" type="number" placeholder="e.g. 50"></div>
-    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="reg-class"><option value="">Select class…</option>${_optionList(CHAR_CLASSES)}</select></div>
-    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="reg-guild"><option value="">Select guild…</option>${_optionList(CHAR_GUILDS)}</select></div>
-    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="reg-faction"><option value="">Select faction…</option>${_optionList(CHAR_FACTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="reg-class">${_selectOptions(CLASS_OPTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="reg-guild">${_selectOptions(GUILD_OPTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="reg-faction">${_selectOptions(FACTION_OPTIONS)}</select></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitRegisterMember()">Register</button>
@@ -2197,9 +2652,9 @@ function openAddCharModal(memberEmail) {
     <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">${memberEmail}</p>
     <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="ac-ign" placeholder="Character name"></div>
     <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="ac-level" type="number" placeholder="e.g. 50"></div>
-    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="ac-class"><option value="">Select class…</option>${_optionList(CHAR_CLASSES)}</select></div>
-    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="ac-guild"><option value="">Select guild…</option>${_optionList(CHAR_GUILDS)}</select></div>
-    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="ac-faction"><option value="">Select faction…</option>${_optionList(CHAR_FACTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="ac-class">${_selectOptions(CLASS_OPTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="ac-guild">${_selectOptions(GUILD_OPTIONS)}</select></div>
+    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="ac-faction">${_selectOptions(FACTION_OPTIONS)}</select></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitAddChar('${memberEmail}')">Add</button>
@@ -2293,18 +2748,9 @@ function _deleteAttendanceCore(id) {
 // ============================================================
 //  SIDEBAR / MODAL / TOAST / UTILS
 // ============================================================
-function _openSidebar() {
-  document.getElementById('sidebar').classList.remove('hidden');
-  document.getElementById('sidebar-overlay').classList.remove('hidden');
-  document.getElementById('more-btn')?.classList.add('active');
-  document.getElementById('header-hamburger')?.classList.add('active');
-}
-function _closeSidebar() {
-  document.getElementById('sidebar').classList.add('hidden');
-  document.getElementById('sidebar-overlay').classList.add('hidden');
-  document.getElementById('more-btn')?.classList.remove('active');
-  document.getElementById('header-hamburger')?.classList.remove('active');
-}
+function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
+function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
+function _closeAdminDropdown() { document.getElementById('admin-pages-dropdown')?.classList.remove('open'); }
 
 // ─── SWIPE TO CLOSE (mobile sidebar) ─────────────────────
 // Sidebar slides in from the right, so a rightward swipe closes it.
@@ -2375,37 +2821,156 @@ function _closeSidebar() {
   document.addEventListener('touchend',   onTouchEnd,   { passive: true });
   document.addEventListener('touchcancel', onTouchEnd,  { passive: true });
 })();
-function showModal(html, opts={}) {
-  document.getElementById('modal-box').innerHTML = html;
-  const overlay = document.getElementById('modal-overlay');
-  overlay.classList.remove('hidden');
-  // forceAck modals can only be dismissed via their own button — clicking
-  // the overlay backdrop won't close them.
-  overlay.dataset.forceAck = opts.forceAck ? '1' : '';
-}
-function closeModal() {
-  const overlay = document.getElementById('modal-overlay');
-  overlay.classList.add('hidden');
-  overlay.dataset.forceAck = '';
+
+// ─── SWIPE TO CHANGE TAB (mobile bottom-nav pages) ───────────
+// Starting a horizontal drag from the very edge of the screen slides
+// to the adjacent tab, the way the bottom nav is ordered: Home ↔
+// Attendance ↔ My Splits. Swiping in from the right edge moves
+// forward (e.g. Home → Attendance); from the left edge moves back.
+function _goToTab(name) {
+  document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  document.querySelectorAll('#desktop-nav .nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  showView(name); // also repositions the nav indicator
 }
 
-// Centered popup with a single forced "Okay" acknowledgement button —
-// used for things the user must actively confirm they've read (e.g. the
-// duplicate-attendance block) rather than a passing toast that's easy to miss.
-function showAckModal(title, message, onOkay) {
-  window._ackModalCallback = onOkay || null;
-  showModal(`
-    <div class="modal-title">${title}</div>
-    <p style="font-size:.88rem;color:var(--text-secondary);line-height:1.6;margin-bottom:1.25rem">${escHtml(message)}</p>
-    <div class="modal-actions" style="justify-content:center">
-      <button class="btn btn-primary" style="min-width:120px" onclick="_dismissAckModal()">Okay</button>
-    </div>`, { forceAck: true });
+(function initTabSwipe() {
+  const TAB_ORDER = ['home', 'attendance', 'my-splits'];
+  const EDGE_ZONE = 24;      // px from screen edge that can start the gesture
+  const MOBILE_BP = 700;     // matches the CSS breakpoint that shows #mobile-nav
+  const SLIDE_MS = 280;
+
+  let startX = 0, startY = 0, currentX = 0, dragging = false, isHorizontal = null, edge = null, curEl = null;
+
+  function currentTabName() {
+    const active = document.querySelector('.view.active');
+    return active ? active.id.replace('view-', '') : null;
+  }
+
+  function onTouchStart(e) {
+    if (window.innerWidth > MOBILE_BP) return;
+    const modalOpen = !document.getElementById('modal-overlay')?.classList.contains('hidden');
+    const sidebarOpen = !document.getElementById('sidebar')?.classList.contains('hidden');
+    if (modalOpen || sidebarOpen) return;
+
+    const tab = currentTabName();
+    if (!TAB_ORDER.includes(tab)) return; // only swipe between the 3 main tabs
+
+    const t = e.touches[0];
+    if (t.clientX <= EDGE_ZONE) edge = 'left';
+    else if (t.clientX >= window.innerWidth - EDGE_ZONE) edge = 'right';
+    else { edge = null; return; }
+
+    startX = currentX = t.clientX;
+    startY = t.clientY;
+    dragging = true;
+    isHorizontal = null;
+    curEl = document.getElementById('view-' + tab);
+    if (curEl) curEl.style.transition = 'none';
+  }
+
+  function onTouchMove(e) {
+    if (!dragging || !curEl) return;
+    const t = e.touches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+
+    if (isHorizontal === null) {
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      isHorizontal = Math.abs(dx) > Math.abs(dy);
+      if (!isHorizontal) { dragging = false; return; }
+    }
+    if (!isHorizontal) return;
+
+    const tab = currentTabName();
+    const idx = TAB_ORDER.indexOf(tab);
+    // Only allow the drag in the direction that has an adjacent tab to go to.
+    if (edge === 'right' && idx >= TAB_ORDER.length - 1) return;
+    if (edge === 'left' && idx <= 0) return;
+
+    currentX = t.clientX;
+    let delta = edge === 'right' ? Math.min(0, dx) : Math.max(0, dx);
+    if (delta !== 0) {
+      e.preventDefault();
+      curEl.style.transform = `translateX(${delta}px)`;
+    }
+  }
+
+  function onTouchEnd() {
+    if (!dragging) return;
+    dragging = false;
+    if (!curEl) return;
+    curEl.style.transition = '';
+
+    const tab = currentTabName();
+    const idx = TAB_ORDER.indexOf(tab);
+    const draggedDistance = currentX - startX;
+    const threshold = Math.min(120, window.innerWidth * 0.22);
+    const goingNext = edge === 'right' && draggedDistance <= -threshold && idx < TAB_ORDER.length - 1;
+    const goingPrev = edge === 'left'  && draggedDistance >= threshold  && idx > 0;
+
+    if (goingNext || goingPrev) {
+      const nextTab = TAB_ORDER[idx + (goingNext ? 1 : -1)];
+      const outDir = goingNext ? -1 : 1; // outgoing view exits this direction
+      const outgoing = curEl;
+
+      outgoing.style.transition = `transform ${SLIDE_MS}ms ease`;
+      outgoing.style.transform = `translateX(${outDir * 100}%)`;
+
+      setTimeout(() => {
+        outgoing.classList.remove('active');
+        outgoing.style.transition = '';
+        outgoing.style.transform = '';
+
+        const incoming = document.getElementById('view-' + nextTab);
+        if (incoming) {
+          incoming.style.transition = 'none';
+          incoming.style.animation = 'none';
+          incoming.style.transform = `translateX(${-outDir * 100}%)`;
+        }
+        _goToTab(nextTab);
+        requestAnimationFrame(() => {
+          if (!incoming) return;
+          incoming.style.transition = `transform ${SLIDE_MS}ms ease`;
+          requestAnimationFrame(() => { incoming.style.transform = 'translateX(0)'; });
+        });
+        setTimeout(() => {
+          if (!incoming) return;
+          incoming.style.transition = '';
+          incoming.style.transform = '';
+          incoming.style.animation = '';
+        }, SLIDE_MS + 40);
+      }, SLIDE_MS);
+    } else {
+      // Not past threshold — spring back to place.
+      curEl.style.transition = `transform .22s ease`;
+      curEl.style.transform = '';
+      setTimeout(() => { if (curEl) curEl.style.transition = ''; }, 240);
+    }
+    isHorizontal = null;
+    edge = null;
+    curEl = null;
+  }
+
+  document.addEventListener('touchstart', onTouchStart, { passive: true });
+  document.addEventListener('touchmove',  onTouchMove,  { passive: false });
+  document.addEventListener('touchend',   onTouchEnd,   { passive: true });
+  document.addEventListener('touchcancel', onTouchEnd,  { passive: true });
+})();
+
+// opts.fullscreen: renders the modal edge-to-edge (no card, no backdrop
+// blur) for screens meant to feel like their own page — the day-agenda
+// list and event-details screen use this.
+function showModal(html, opts) {
+  const full = !!(opts && opts.fullscreen);
+  document.getElementById('modal-box').innerHTML = html;
+  document.getElementById('modal-box').classList.toggle('modal-box-full', full);
+  document.getElementById('modal-overlay').classList.toggle('modal-overlay-full', full);
+  document.getElementById('modal-overlay').classList.remove('hidden');
 }
-function _dismissAckModal() {
-  closeModal();
-  const cb = window._ackModalCallback;
-  window._ackModalCallback = null;
-  if (cb) cb();
+function closeModal() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+  document.getElementById('modal-overlay').classList.remove('modal-overlay-full');
+  document.getElementById('modal-box').classList.remove('modal-box-full');
 }
 
 function toast(msg, type='') {

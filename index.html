@@ -1,8 +1,29 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script>
+    // Set the theme attribute before any CSS paints, so returning users
+    // never see a flash of the wrong (default dark) theme on load.
+    // Also force the actual background-color (not just the CSS var) and
+    // the theme-color meta tag up front, since some mobile browsers paint
+    // the rubber-band overscroll strip / PWA status-bar tint from those
+    // directly rather than recomputing them from CSS variables.
+    (function() {
+      try {
+        var t = localStorage.getItem('alliance_theme') === 'light' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+        var bg = t === 'light' ? '#EEF1F7' : '#050505';
+        document.documentElement.style.backgroundColor = bg;
+        document.addEventListener('DOMContentLoaded', function() {
+          document.body.style.backgroundColor = bg;
+        });
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', bg);
+      } catch(e) {}
+    })();
+  </script>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0a0c14" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
