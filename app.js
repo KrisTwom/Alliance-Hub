@@ -34,6 +34,19 @@ function applyTheme(theme) {
   document.documentElement.style.backgroundColor = bg;
   document.body.style.backgroundColor = bg;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
+  const ptrIndicator = document.getElementById('ptr-indicator');
+  if (ptrIndicator) ptrIndicator.style.backgroundColor = bg;
+
+  // iOS Safari has a known bug where position:fixed elements (the
+  // pull-to-refresh banner, the safe-area top strip) don't actually get
+  // recomposited when only a color value changes underneath them — they
+  // only repaint on the next real scroll/layout event, which is exactly
+  // why scrolling the page "fixes" it. Nudging a transform on <html>
+  // forces a compositing pass immediately instead of waiting for that.
+  document.documentElement.style.transform = 'translateZ(0)';
+  requestAnimationFrame(() => {
+    document.documentElement.style.transform = '';
+  });
 }
 function setTheme(theme) {
   applyTheme(theme);
