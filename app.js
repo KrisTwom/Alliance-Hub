@@ -33,6 +33,7 @@ function applyTheme(theme) {
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg-deep').trim();
   document.documentElement.style.backgroundColor = bg;
   document.body.style.backgroundColor = bg;
+  document.getElementById('safe-top-fill')?.style.setProperty('background-color', bg);
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
 
   // Discard the pull-to-refresh banner rather than trying to repaint it —
