@@ -34,19 +34,10 @@ function applyTheme(theme) {
   document.documentElement.style.backgroundColor = bg;
   document.body.style.backgroundColor = bg;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
-  const ptrIndicator = document.getElementById('ptr-indicator');
-  if (ptrIndicator) ptrIndicator.style.backgroundColor = bg;
 
-  // iOS Safari has a known bug where position:fixed elements (the
-  // pull-to-refresh banner, the safe-area top strip) don't actually get
-  // recomposited when only a color value changes underneath them — they
-  // only repaint on the next real scroll/layout event, which is exactly
-  // why scrolling the page "fixes" it. Nudging a transform on <html>
-  // forces a compositing pass immediately instead of waiting for that.
-  document.documentElement.style.transform = 'translateZ(0)';
-  requestAnimationFrame(() => {
-    document.documentElement.style.transform = '';
-  });
+  // Discard the pull-to-refresh banner rather than trying to repaint it —
+  // see the note by window._resetPtrIndicatorForTheme for why.
+  window._resetPtrIndicatorForTheme?.();
 }
 function setTheme(theme) {
   applyTheme(theme);
@@ -602,6 +593,20 @@ function _initNav() {
     }
     return _ptrIndicator;
   }
+
+  // Exposed so applyTheme() (defined outside this closure) can drop the
+  // indicator entirely on a theme switch. Rather than trying to force a
+  // repaint of the existing fixed element — which iOS Safari can leave on
+  // a stale compositor layer no matter what style/transform tricks you
+  // throw at it — this just discards it, so the next pull-to-refresh
+  // creates a brand-new node with the correct var(--bg-deep) baked in
+  // from the start, guaranteed correct.
+  window._resetPtrIndicatorForTheme = function() {
+    if (_ptrIndicator) {
+      _ptrIndicator.remove();
+      _ptrIndicator = null;
+    }
+  };
 
   function _setPageSlide(px, animate) {
     const app = document.getElementById('app');
