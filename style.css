@@ -155,8 +155,9 @@ html,body {
   -webkit-backdrop-filter:blur(20px);
   backdrop-filter:blur(20px);
 }
+#safe-top-fill { position:fixed; top:0; left:0; right:0; height:0; background:var(--bg-deep); z-index:9999; pointer-events:none; }
 @media all and (display-mode: standalone) {
-  body::before { content:''; position:fixed; top:0; left:0; right:0; height:env(safe-area-inset-top,0px); background:var(--bg-deep); z-index:9999; }
+  #safe-top-fill { height:env(safe-area-inset-top,0px); }
   #mobile-nav { height:calc(var(--mob-nav-h) + var(--nav-safe-clearance)); }
   #main-content { padding-bottom:calc(var(--mob-nav-h) + var(--nav-safe-clearance) + 1.5rem); }
 }

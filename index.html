@@ -16,6 +16,8 @@
         document.documentElement.style.backgroundColor = bg;
         document.addEventListener('DOMContentLoaded', function() {
           document.body.style.backgroundColor = bg;
+          var stf = document.getElementById('safe-top-fill');
+          if (stf) stf.style.backgroundColor = bg;
         });
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', bg);
@@ -58,6 +60,8 @@
   </style>
 </head>
 <body>
+
+  <div id="safe-top-fill"></div>
 
   <!-- LOGIN SCREEN -->
   <div id="login-screen">
