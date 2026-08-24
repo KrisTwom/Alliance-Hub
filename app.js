@@ -49,6 +49,8 @@ function applyTheme(theme) {
     stf.style.display = '';
   }
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
+  const ptrIndicator = document.getElementById('ptr-indicator');
+  if (ptrIndicator) ptrIndicator.style.backgroundColor = bg;
 
 <<<<<<< HEAD
   // iOS Safari has a known bug where position:fixed elements (the
@@ -696,20 +698,6 @@ function _initNav() {
     }
     return _ptrIndicator;
   }
-
-  // Exposed so applyTheme() (defined outside this closure) can drop the
-  // indicator entirely on a theme switch. Rather than trying to force a
-  // repaint of the existing fixed element — which iOS Safari can leave on
-  // a stale compositor layer no matter what style/transform tricks you
-  // throw at it — this just discards it, so the next pull-to-refresh
-  // creates a brand-new node with the correct var(--bg-deep) baked in
-  // from the start, guaranteed correct.
-  window._resetPtrIndicatorForTheme = function() {
-    if (_ptrIndicator) {
-      _ptrIndicator.remove();
-      _ptrIndicator = null;
-    }
-  };
 
   function _setPageSlide(px, animate) {
     const app = document.getElementById('app');
