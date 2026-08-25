@@ -169,42 +169,17 @@ html,body {
     letter-spacing:-0.02em;
     color:var(--text-primary);
 }
-/* min-width:0 lets this flex item shrink below its content's natural
-   width (the flex default, min-width:auto, would otherwise refuse to
-   shrink it, forcing the header itself to overflow the viewport instead
-   — which is what was causing nav items to get visually cut off). With
-   min-width:0 + overflow:hidden here and flex-shrink:0 on the buttons
-   themselves (so they keep their natural size instead of squishing),
-   this container's scrollWidth > clientWidth becomes a clean, reliable
-   "nav doesn't fit" signal that JS uses to swap in the hamburger. */
-.header-center { display:flex; gap:2px; overflow:hidden; min-width:0; }
-.header-right  { display:flex; align-items:center; gap:.6rem; flex-shrink:0; }
+.header-center { display:flex; gap:2px; }
+.header-right  { display:flex; align-items:center; gap:.6rem; }
 .header-user   { font-size:.85rem; color:var(--text-secondary); }
 
 /* ── DESKTOP NAV ─────────────────────────── */
-.nav-btn { background:transparent; border:1px solid transparent; color:var(--text-secondary); font-family:var(--font-body); font-size:.88rem; font-weight:600; letter-spacing:.05em; padding:.4rem .9rem; border-radius:var(--radius); cursor:pointer; transition:all var(--transition); flex-shrink:0; white-space:nowrap; }
+.nav-btn { background:transparent; border:1px solid transparent; color:var(--text-secondary); font-family:var(--font-body); font-size:.88rem; font-weight:600; letter-spacing:.05em; padding:.4rem .9rem; border-radius:var(--radius); cursor:pointer; transition:all var(--transition); }
 .nav-btn:hover  { background:var(--bg-raised); color:var(--text-primary); border-color:var(--border); }
 .nav-btn.active { background:var(--gold-glow); color:var(--gold); border-color:var(--border-mid); }
 
-/* ── DESKTOP NAV: COLLAPSE-TO-HAMBURGER ────
-   #desktop-nav gets .overflowing added by JS (app.js: _checkNavOverflow)
-   whenever its buttons no longer fit at the current header width. */
-.nav-hamburger {
-  display:none; align-items:center; justify-content:center;
-  flex-shrink:0; width:38px; height:38px;
-  background:transparent; border:1px solid var(--border-mid); color:var(--text-primary);
-  font-size:1.15rem; border-radius:var(--radius); cursor:pointer; transition:all var(--transition);
-}
-.nav-hamburger:hover { background:var(--bg-raised); }
-#desktop-nav.overflowing > *:not(.nav-hamburger) { display:none; }
-#desktop-nav.overflowing .nav-hamburger { display:inline-flex; }
-/* Reuses .sidebar/.sidebar-overlay styling (see SIDEBAR section below);
-   #desktop-nav-sidebar/#desktop-nav-overlay are separate elements from
-   the mobile #sidebar so this never touches mobile "More" behavior. */
-.sidebar.desktop-sidebar { grid-template-rows:auto 1fr; }
-
 /* ── DESKTOP NAV: ADMIN PAGES DROPDOWN ───── */
-.nav-dropdown { position:relative; display:inline-block; flex-shrink:0; }
+.nav-dropdown { position:relative; display:inline-block; }
 .nav-dropdown-toggle { display:inline-flex; align-items:center; gap:4px; }
 .nav-dropdown-toggle .nav-dropdown-caret { font-size:.65em; transition:transform .2s ease; }
 .nav-dropdown.open .nav-dropdown-toggle .nav-dropdown-caret { transform:rotate(180deg); }

@@ -35,40 +35,10 @@ function applyTheme(theme) {
   document.body.style.backgroundColor = bg;
   document.getElementById('safe-top-fill')?.style.setProperty('background-color', bg);
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
-  const ptrIndicator = document.getElementById('ptr-indicator');
-  if (ptrIndicator) ptrIndicator.style.backgroundColor = bg;
 
-<<<<<<< HEAD
-  // iOS Safari has a known bug where position:fixed elements (the
-  // pull-to-refresh banner, the safe-area top strip) don't actually get
-  // recomposited when only a color value changes underneath them — they
-  // only repaint on the next real scroll/layout event, which is exactly
-  // why scrolling the page "fixes" it. Nudging a transform on <html>
-  // forces a compositing pass immediately instead of waiting for that.
-  //
-  // Two things are required for this nudge to actually take effect:
-  // 1) a *synchronous* reflow (reading offsetHeight) right after setting
-  //    the transform, so the browser commits to that intermediate style
-  //    instead of silently coalescing it away, and
-  // 2) waiting a full extra animation frame before clearing it. A single
-  //    requestAnimationFrame callback still runs *before* the next paint,
-  //    so setting-then-clearing inside one rAF means the browser only
-  //    ever paints the final (cleared) state — the forced recomposite
-  //    never actually happens. That's why this only broke when the page
-  //    was perfectly still: a real scroll supplies its own independent
-  //    repaint that happened to mask the fact that this nudge was inert.
-  document.documentElement.style.transform = 'translateZ(0)';
-  void document.documentElement.offsetHeight; // force sync reflow
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      document.documentElement.style.transform = '';
-    });
-  });
-=======
   // Discard the pull-to-refresh banner rather than trying to repaint it —
   // see the note by window._resetPtrIndicatorForTheme for why.
   window._resetPtrIndicatorForTheme?.();
->>>>>>> 0039656033fce71f9b6ee8122d9a12ff09e3413d
 }
 function setTheme(theme) {
   applyTheme(theme);
@@ -441,7 +411,6 @@ function _buildShell() {
           </div>
         </div>` : ''}
         <button class="nav-btn" data-view="settings">⚙️ Settings</button>
-        <button class="nav-hamburger" id="nav-hamburger" type="button" aria-label="Open navigation menu">☰</button>
       </div>
       <div class="header-right">
         <span id="header-username" class="header-user"></span>
@@ -512,36 +481,6 @@ function _buildShell() {
         </div>` : ''}
         <button class="sidebar-link" data-view="settings">⚙️ Settings</button>
       </div>
-    </aside>
-
-    <div id="desktop-nav-overlay" class="sidebar-overlay hidden"></div>
-    <aside id="desktop-nav-sidebar" class="sidebar desktop-sidebar hidden">
-      <div class="sidebar-header">
-        <span class="sidebar-title">Menu</span>
-        <button class="sidebar-close" id="desktop-nav-sidebar-close">✕</button>
-      </div>
-      <div class="sidebar-links">
-        <button class="sidebar-link dnav-link" data-view="home">🏠 Home</button>
-        <button class="sidebar-link dnav-link" data-view="attendance">🗡 Attendance</button>
-        <button class="sidebar-link dnav-link" data-view="my-splits">💰 My Splits</button>
-        <button class="sidebar-link dnav-link" data-view="my-attendance">📋 Attendance History</button>
-        <button class="sidebar-link dnav-link" data-view="leaderboard">🏆 Leaderboard</button>
-        <button class="sidebar-link dnav-link" data-view="rules">📜 Rules</button>
-        <button class="sidebar-link dnav-link" data-view="guide">📖 Guide</button>
-        <button class="sidebar-link dnav-link" data-view="announcements">📢 Announcements</button>
-        <button class="sidebar-link dnav-link" data-view="schedule">📅 Schedule</button>
-        ${App.user.isAdmin ? `
-        <div class="sidebar-group-header" id="dnav-admin-group-header">
-          <span>⚙ Admin Pages</span><span class="sidebar-group-arrow">▼</span>
-        </div>
-        <div class="sidebar-group-body" id="dnav-admin-group-body">
-          <button class="sidebar-link dnav-link" data-view="drops">💎 Drops</button>
-          <button class="sidebar-link dnav-link" data-view="inventory">🎒 Inventory</button>
-          <button class="sidebar-link dnav-link" data-view="payouts">📊 Payouts</button>
-          <button class="sidebar-link dnav-link" data-view="roster">👥 Roster</button>
-        </div>` : ''}
-        <button class="sidebar-link dnav-link" data-view="settings">⚙️ Settings</button>
-      </div>
     </aside>`;
 
   const char = getActiveChar();
@@ -585,39 +524,13 @@ function _initNav() {
   document.getElementById('more-btn')?.addEventListener('click', _openSidebar);
   document.getElementById('sidebar-close')?.addEventListener('click', _closeSidebar);
   document.getElementById('sidebar-overlay')?.addEventListener('click', _closeSidebar);
-  document.querySelectorAll('.sidebar-link[data-view]:not(.dnav-link)').forEach(btn => {
+  document.querySelectorAll('.sidebar-link[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
       _closeSidebar();
       document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.remove('active'));
       showView(btn.dataset.view);
     });
   });
-
-  // ── DESKTOP NAV HAMBURGER — opens when #desktop-nav can't fit ────
-  document.getElementById('nav-hamburger')?.addEventListener('click', e => {
-    e.stopPropagation();
-    _openDesktopNav();
-  });
-  document.getElementById('desktop-nav-sidebar-close')?.addEventListener('click', _closeDesktopNav);
-  document.getElementById('desktop-nav-overlay')?.addEventListener('click', _closeDesktopNav);
-  document.querySelectorAll('.dnav-link[data-view]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      _closeDesktopNav();
-      document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.nav-dropdown-item').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.dnav-link').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      showView(btn.dataset.view);
-    });
-  });
-  const dnavGroupHeader = document.getElementById('dnav-admin-group-header');
-  const dnavGroupBody   = document.getElementById('dnav-admin-group-body');
-  if (dnavGroupHeader && dnavGroupBody) {
-    dnavGroupHeader.addEventListener('click', () => {
-      dnavGroupHeader.classList.toggle('open');
-      dnavGroupBody.classList.toggle('open');
-    });
-  }
 
   // ── ADMIN PAGES — desktop dropdown ────────────────────────
   const adminDropdown = document.getElementById('admin-pages-dropdown');
@@ -650,9 +563,6 @@ function _initNav() {
     });
   }
 
-  _checkNavOverflow();
-  _watchNavOverflow();
-
   document.getElementById('modal-overlay')?.addEventListener('click', e => {
     if (e.target.id === 'modal-overlay') closeModal();
   });
@@ -684,6 +594,20 @@ function _initNav() {
     }
     return _ptrIndicator;
   }
+
+  // Exposed so applyTheme() (defined outside this closure) can drop the
+  // indicator entirely on a theme switch. Rather than trying to force a
+  // repaint of the existing fixed element — which iOS Safari can leave on
+  // a stale compositor layer no matter what style/transform tricks you
+  // throw at it — this just discards it, so the next pull-to-refresh
+  // creates a brand-new node with the correct var(--bg-deep) baked in
+  // from the start, guaranteed correct.
+  window._resetPtrIndicatorForTheme = function() {
+    if (_ptrIndicator) {
+      _ptrIndicator.remove();
+      _ptrIndicator = null;
+    }
+  };
 
   function _setPageSlide(px, animate) {
     const app = document.getElementById('app');
@@ -2823,49 +2747,6 @@ function _deleteAttendanceCore(id) {
 function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
 function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
 function _closeAdminDropdown() { document.getElementById('admin-pages-dropdown')?.classList.remove('open'); }
-
-function _openDesktopNav()  { document.getElementById('desktop-nav-sidebar')?.classList.remove('hidden'); document.getElementById('desktop-nav-overlay')?.classList.remove('hidden'); }
-function _closeDesktopNav() { document.getElementById('desktop-nav-sidebar')?.classList.add('hidden');    document.getElementById('desktop-nav-overlay')?.classList.add('hidden'); }
-
-// ============================================================
-//  DESKTOP NAV OVERFLOW → HAMBURGER
-//  #desktop-nav's buttons are flex-shrink:0 (style.css), so once they no
-//  longer fit the header at the current width, the container's
-//  scrollWidth exceeds its clientWidth — a clean, resolution-independent
-//  "doesn't fit" signal. We swap in the hamburger button rather than
-//  letting buttons squish/clip, which is what was cutting nav items off.
-// ============================================================
-function _checkNavOverflow() {
-  const nav = document.getElementById('desktop-nav');
-  if (!nav) return;
-  if (window.innerWidth <= 700) { nav.classList.remove('overflowing'); return; }
-
-  // Reveal the full button row to measure its true natural width —
-  // otherwise, once collapsed, only the hamburger contributes to scrollWidth.
-  nav.classList.remove('overflowing');
-  const overflowing = nav.scrollWidth > nav.clientWidth + 1; // +1px rounding guard
-  nav.classList.toggle('overflowing', overflowing);
-  if (!overflowing) _closeDesktopNav();
-}
-
-let _navOverflowRAF = null;
-function _scheduleNavOverflowCheck() {
-  if (_navOverflowRAF) cancelAnimationFrame(_navOverflowRAF);
-  _navOverflowRAF = requestAnimationFrame(_checkNavOverflow);
-}
-window.addEventListener('resize', _scheduleNavOverflowCheck);
-
-let _navOverflowObserver = null;
-function _watchNavOverflow() {
-  // Called from _initNav(), after #main-header actually exists in the DOM.
-  // Catches cases resize alone wouldn't (e.g. the username loading async
-  // and changing header-right's width, webfont swap reflowing button text).
-  if (_navOverflowObserver) _navOverflowObserver.disconnect();
-  const header = document.getElementById('main-header');
-  if (!header || !window.ResizeObserver) return;
-  _navOverflowObserver = new ResizeObserver(_scheduleNavOverflowCheck);
-  _navOverflowObserver.observe(header);
-}
 
 // ─── SWIPE TO CLOSE (mobile sidebar) ─────────────────────
 // Sidebar slides in from the right, so a rightward swipe closes it.
