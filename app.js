@@ -33,21 +33,7 @@ function applyTheme(theme) {
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg-deep').trim();
   document.documentElement.style.backgroundColor = bg;
   document.body.style.backgroundColor = bg;
-  const stf = document.getElementById('safe-top-fill');
-  if (stf) {
-    stf.style.backgroundColor = bg;
-    // On iOS Safari a position:fixed element can get its own compositor
-    // layer whose painted tile doesn't get invalidated just because an
-    // inline background-color changed — it needs an actual repaint forced
-    // on it (a real scroll does this as a side effect, which is why the
-    // strip "fixes itself" the moment the page moves even a pixel).
-    // Toggling display off/on forces a synchronous reflow + repaint of
-    // just this element, so the color updates immediately without
-    // requiring the user to touch the screen.
-    stf.style.display = 'none';
-    void stf.offsetHeight; // force reflow before re-showing
-    stf.style.display = '';
-  }
+  document.getElementById('safe-top-fill')?.style.setProperty('background-color', bg);
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
   const ptrIndicator = document.getElementById('ptr-indicator');
   if (ptrIndicator) ptrIndicator.style.backgroundColor = bg;
