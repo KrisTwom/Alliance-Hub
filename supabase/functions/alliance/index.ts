@@ -450,12 +450,24 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   const now = new Date();
   const nowIso = now.toISOString();
 
-  // Same char + same boss within the last 2h = a resubmission, not a
-  // second kill (double-tap, refresh-and-resubmit, etc.). Skip it before
-  // it ever creates a duplicate row and double-credits points. This
+  // Same char + same boss within the last GROUP_WINDOW_MS = a resubmission,
+  // not a second kill (double-tap, refresh-and-resubmit, etc.). Skip it
+  // before it ever creates a duplicate row and double-credits points. This
   // approximates "same run window" by anchoring to now rather than
   // replicating the full run-chain grouping logic from getGroupedRuns.
-  const windowFloor = new Date(now.getTime() - GROUP_WINDOW_MS).toISOString();
+  //
+  // Exception: an admin-triggered window reset (see resetWindow()) is the
+  // one case this block should NOT apply to. It exists specifically for
+  // emergency maintenance/respawns, where the same char legitimately needs
+  // to log the same boss again well inside the normal window. So if a
+  // reset happened more recently than the window would otherwise start,
+  // raise the floor to the reset time — anything submitted before the
+  // reset no longer counts as "already this window".
+  const windowFloorMs = now.getTime() - GROUP_WINDOW_MS;
+  const { data: resetRow } = await supabase.from('window_resets').select('reset_at').eq('id', 1).maybeSingle();
+  const resetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
+  const effectiveFloorMs = (resetMs != null && resetMs > windowFloorMs) ? resetMs : windowFloorMs;
+  const windowFloor = new Date(effectiveFloorMs).toISOString();
   const { data: recent } = await supabase
     .from('attendance')
     .select('boss')
