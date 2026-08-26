@@ -1272,6 +1272,73 @@ function _onAttHistorySelectChange(value) {
   }
 }
 
+// Sorts attendance rows by `key` ('ign' or 'boss'), direction `dir`
+// (1 = A→Z, -1 = Z→A). When key is null (default view), or as a
+// tiebreaker whenever two rows share the same key, rows fall back to
+// timestamp — always latest → oldest, regardless of `dir`.
+function _sortAttendanceRows(rows, key, dir) {
+  return [...rows].sort((a, b) => {
+    if (key) {
+      const av = String(a[key] || '').toLowerCase();
+      const bv = String(b[key] || '').toLowerCase();
+      if (av < bv) return -1 * dir;
+      if (av > bv) return  1 * dir;
+    }
+    return new Date(b.timestamp) - new Date(a.timestamp);
+  });
+}
+
+function _attHistorySortArrow(col) {
+  const s = window._attHistorySort || { key: null, dir: 1 };
+  if (s.key !== col) return '';
+  return ` <span style="font-size:.7em">${s.dir === 1 ? '▲' : '▼'}</span>`;
+}
+
+function _onAttHistorySortClick(col) {
+  const s = window._attHistorySort || { key: null, dir: 1 };
+  window._attHistorySort = (s.key === col) ? { key: col, dir: -s.dir } : { key: col, dir: 1 };
+  _renderAttHistoryTable();
+}
+
+// Rebuilds just the table (thead+tbody) from the already-fetched rows
+// using the current sort state — no re-fetch needed on header click.
+function _renderAttHistoryTable() {
+  const wrap = document.getElementById('att-history-table-wrap');
+  if (!wrap) return;
+  const att = window._attHistoryRows || [];
+  const showingAll = window._attHistoryShowingAll;
+  const s = window._attHistorySort || { key: null, dir: 1 };
+  const sorted = _sortAttendanceRows(att, s.key, s.dir);
+
+  wrap.innerHTML = !att.length
+    ? `<div class="empty-state"><span class="empty-state-icon">🗡</span>No attendance recorded yet.</div>`
+    : showingAll
+    ? `<table class="data-table">
+        <thead><tr>
+          <th class="sortable-th" onclick="_onAttHistorySortClick('ign')">Member${_attHistorySortArrow('ign')}</th>
+          <th class="sortable-th" onclick="_onAttHistorySortClick('boss')">Boss${_attHistorySortArrow('boss')}</th>
+          <th>Points</th><th>Timestamp</th>
+        </tr></thead>
+        <tbody>${sorted.map(a=>`<tr>
+          <td>${escHtml(a.ign || '—')}</td>
+          <td>${escHtml(a.boss)}</td>
+          <td style="color:var(--gold)">+${a.points}</td>
+          <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
+        </tr>`).join('')}</tbody>
+      </table>`
+    : `<table class="data-table">
+        <thead><tr>
+          <th class="sortable-th" onclick="_onAttHistorySortClick('boss')">Boss${_attHistorySortArrow('boss')}</th>
+          <th>Points</th><th>Timestamp</th>
+        </tr></thead>
+        <tbody>${sorted.map(a=>`<tr>
+          <td>${escHtml(a.boss)}</td>
+          <td style="color:var(--gold)">+${a.points}</td>
+          <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+}
+
 function renderMyAttendanceHistory() {
   const el    = document.getElementById('view-my-attendance');
   const char  = getActiveChar();
@@ -1297,6 +1364,9 @@ function renderMyAttendanceHistory() {
 
   fetchPromise.then(att => {
     att = att || [];
+    window._attHistoryRows       = att;
+    window._attHistoryShowingAll = showingAll;
+    window._attHistorySort       = { key: null, dir: 1 }; // reset sort on every fresh fetch
     const totalPoints = att.reduce((s, a) => s + (Number(a.points) || 0), 0).toLocaleString();
 
     el.innerHTML = `
@@ -1305,28 +1375,8 @@ function renderMyAttendanceHistory() {
         <div class="stat-chip"><div class="stat-chip-label">${showingAll ? 'Total Submissions' : 'Total Bosses'}</div><div class="stat-chip-value">${att.length}</div></div>
         <div class="stat-chip"><div class="stat-chip-label">Total Points</div><div class="stat-chip-value">${totalPoints}</div></div>
       </div>
-      <div class="table-scroll">
-        ${!att.length
-          ? `<div class="empty-state"><span class="empty-state-icon">🗡</span>No attendance recorded yet.</div>`
-          : showingAll
-          ? `<table class="data-table">
-              <thead><tr><th>Member</th><th>Boss</th><th>Points</th><th>Timestamp</th></tr></thead>
-              <tbody>${att.map(a=>`<tr>
-                <td>${escHtml(a.ign || '—')}</td>
-                <td>${escHtml(a.boss)}</td>
-                <td style="color:var(--gold)">+${a.points}</td>
-                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
-              </tr>`).join('')}</tbody>
-            </table>`
-          : `<table class="data-table">
-              <thead><tr><th>Boss</th><th>Points</th><th>Timestamp</th></tr></thead>
-              <tbody>${att.map(a=>`<tr>
-                <td>${escHtml(a.boss)}</td>
-                <td style="color:var(--gold)">+${a.points}</td>
-                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
-              </tr>`).join('')}</tbody>
-            </table>`}
-      </div>`;
+      <div class="table-scroll" id="att-history-table-wrap"></div>`;
+    _renderAttHistoryTable();
   });
 }
 

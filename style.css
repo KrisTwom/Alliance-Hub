@@ -369,6 +369,8 @@ html,body {
 .data-table tbody tr { cursor:pointer; transition:background var(--transition); }
 .data-table tbody tr:hover td { background:var(--bg-hover); }
 .data-table tbody tr.selected td { background:var(--gold-glow); }
+.data-table th.sortable-th { cursor:pointer; user-select:none; transition:color var(--transition); }
+.data-table th.sortable-th:hover { color:var(--gold); }
 
 /* ── BOSS GRID ───────────────────────────── */
 .boss-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:.55rem; margin-bottom:1rem; }
@@ -636,9 +638,15 @@ html,body {
     overflow:hidden;
   }
   #main-header  { margin-left:var(--dsb-w); transition:margin-left .25s ease; }
-  #main-content { margin-left:var(--dsb-w); margin-right:auto; transition:margin-left .25s ease; }
+  #main-content {
+    margin-right:auto;
+    margin-left:max(var(--dsb-w), calc((100vw + var(--dsb-w) - 1100px) / 2));
+    transition:margin-left .25s ease;
+  }
   #desktop-sidebar.collapsed ~ #main-header  { margin-left:var(--dsb-w-collapsed); }
-  #desktop-sidebar.collapsed ~ #main-content { margin-left:var(--dsb-w-collapsed); }
+  #desktop-sidebar.collapsed ~ #main-content {
+    margin-left:max(var(--dsb-w-collapsed), calc((100vw + var(--dsb-w-collapsed) - 1100px) / 2));
+  }
 }
 
 /* PWA standalone — same safe area rules, status bar background fill */
