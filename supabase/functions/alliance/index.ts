@@ -1200,6 +1200,7 @@ async function markCharPaid(supabase: ReturnType<typeof db>, email: string, data
 // ============================================================
 async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) {
   if (!email) return { error: 'No email provided' };
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
 
   const { data: rows, error } = await supabase
     .from('announcements')
@@ -1260,6 +1261,7 @@ async function deleteAnnouncement(supabase: ReturnType<typeof db>, email: string
 
 async function markAnnouncementsRead(supabase: ReturnType<typeof db>, email: string, announcementIds: string[]) {
   if (!email) return { error: 'No email provided' };
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
   if (!announcementIds || !announcementIds.length) return { success: true };
 
   const rows = announcementIds.map(id => ({ email, announcement_id: id }));
