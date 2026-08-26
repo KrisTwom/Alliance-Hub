@@ -161,44 +161,62 @@ html,body {
   #mobile-nav { height:calc(var(--mob-nav-h) + var(--nav-safe-clearance)); }
   #main-content { padding-bottom:calc(var(--mob-nav-h) + var(--nav-safe-clearance) + 1.5rem); }
 }
-.header-left  { display:flex; align-items:center; gap:.6rem; }
-.header-emblem { font-size:1.3rem; filter:drop-shadow(0 0 6px var(--gold)); color:var(--gold); }
-.header-title {
-    font-size:1rem;
-    font-weight:700;
-    letter-spacing:-0.02em;
-    color:var(--text-primary);
-}
-.header-center { display:flex; gap:2px; }
-.header-right  { display:flex; align-items:center; gap:.6rem; }
+.header-right  { display:flex; align-items:center; gap:.6rem; margin-left:auto; }
 .header-user   { font-size:.85rem; color:var(--text-secondary); }
 
-/* ── DESKTOP NAV ─────────────────────────── */
-.nav-btn { background:transparent; border:1px solid transparent; color:var(--text-secondary); font-family:var(--font-body); font-size:.88rem; font-weight:600; letter-spacing:.05em; padding:.4rem .9rem; border-radius:var(--radius); cursor:pointer; transition:all var(--transition); }
-.nav-btn:hover  { background:var(--bg-raised); color:var(--text-primary); border-color:var(--border); }
-.nav-btn.active { background:var(--gold-glow); color:var(--gold); border-color:var(--border-mid); }
+/* ── DESKTOP SIDEBAR (replaces the old horizontal header nav) ───── */
+:root { --dsb-w:232px; --dsb-w-collapsed:76px; }
 
-/* ── DESKTOP NAV: ADMIN PAGES DROPDOWN ───── */
-.nav-dropdown { position:relative; display:inline-block; }
-.nav-dropdown-toggle { display:inline-flex; align-items:center; gap:4px; }
-.nav-dropdown-toggle .nav-dropdown-caret { font-size:.65em; transition:transform .2s ease; }
-.nav-dropdown.open .nav-dropdown-toggle .nav-dropdown-caret { transform:rotate(180deg); }
-.nav-dropdown.open .nav-dropdown-toggle { background:var(--bg-raised); color:var(--text-primary); border-color:var(--border); }
-.nav-dropdown-menu {
-  position:absolute; top:calc(100% + 6px); right:0; min-width:180px;
-  background:var(--bg-card); border:1px solid var(--border-mid); border-radius:var(--radius);
-  box-shadow:0 12px 40px var(--shadow-color-strong); padding:.4rem; z-index:150;
-  display:none; flex-direction:column; gap:2px;
+.desktop-sidebar { display:none; }
+.dsb-top {
+  display:flex; align-items:center; justify-content:space-between; gap:.4rem;
+  padding:calc(var(--safe-top) + .9rem) .9rem .9rem;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
 }
-.nav-dropdown.open .nav-dropdown-menu { display:flex; }
-.nav-dropdown-item {
-  background:transparent; border:1px solid transparent; color:var(--text-secondary);
-  font-family:var(--font-body); font-size:.85rem; font-weight:600; text-align:left;
-  padding:.55rem .75rem; border-radius:calc(var(--radius) - 4px); cursor:pointer;
-  transition:all var(--transition); white-space:nowrap;
+.dsb-brand {
+  display:flex; align-items:center; gap:.6rem; min-width:0;
+  background:transparent; border:none; cursor:pointer; padding:2px; border-radius:var(--radius);
+  transition:background var(--transition);
 }
-.nav-dropdown-item:hover  { background:var(--bg-raised); color:var(--text-primary); }
-.nav-dropdown-item.active { background:var(--gold-glow); color:var(--gold); }
+.dsb-brand:hover { background:var(--bg-raised); }
+.dsb-logo { width:28px; height:28px; object-fit:contain; flex-shrink:0; filter:drop-shadow(0 0 6px var(--gold-glow)); }
+.dsb-brand-text {
+  font-family:var(--font-display); font-size:.85rem; font-weight:700; letter-spacing:.1em;
+  color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.dsb-collapse-btn {
+  background:transparent; border:1px solid var(--border-mid); color:var(--text-secondary);
+  width:24px; height:24px; border-radius:8px; cursor:pointer; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center; font-size:.75rem;
+  transition:all var(--transition);
+}
+.dsb-collapse-btn:hover { background:var(--bg-raised); color:var(--text-primary); }
+.dsb-nav {
+  display:flex; flex-direction:column; gap:3px; padding:.75rem; overflow-y:auto; min-height:0; flex:1;
+}
+.dsb-link {
+  display:flex; align-items:center; gap:.75rem; background:transparent; border:1px solid transparent;
+  color:var(--text-secondary); font-family:var(--font-body); font-size:.88rem; font-weight:600;
+  text-align:left; padding:.6rem .7rem; border-radius:var(--radius); cursor:pointer;
+  transition:all var(--transition); white-space:nowrap; overflow:hidden;
+}
+.dsb-link:hover  { background:var(--bg-raised); color:var(--text-primary); border-color:var(--border); }
+.dsb-link.active { background:var(--gold-glow); color:var(--gold); border-color:var(--border-mid); }
+.dsb-icon  { font-size:1.05rem; flex-shrink:0; width:22px; text-align:center; }
+.dsb-label { overflow:hidden; text-overflow:ellipsis; }
+.dsb-section-label {
+  font-size:.68rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--text-muted); padding:.9rem .7rem .3rem; white-space:nowrap; overflow:hidden;
+}
+
+/* Collapsed: icon rail only — labels, brand text, and section labels hide */
+.desktop-sidebar.collapsed { width:var(--dsb-w-collapsed); }
+.desktop-sidebar.collapsed .dsb-brand-text,
+.desktop-sidebar.collapsed .dsb-label,
+.desktop-sidebar.collapsed .dsb-section-label { display:none; }
+.desktop-sidebar.collapsed .dsb-top { justify-content:center; flex-direction:column; gap:.6rem; }
+.desktop-sidebar.collapsed .dsb-link { justify-content:center; padding:.6rem; }
 
 /* ── ROLE BADGE ─────────────────────────── */
 .role-badge { font-size:.7rem; font-weight:700; letter-spacing:.1em; padding:2px 8px; border-radius:99px; background:var(--gold-glow); border:1px solid var(--gold-dim); color:var(--gold); display:inline-block; }
@@ -295,6 +313,14 @@ html,body {
 .sidebar-group-body.open { max-height:400px; }
 
 /* ── SECTION TITLE ───────────────────────── */
+.back-arrow-btn {
+  background:transparent; border:1px solid var(--border-mid); color:var(--text-secondary);
+  width:32px; height:32px; border-radius:10px; cursor:pointer; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center; font-size:1.05rem;
+  transition:all var(--transition);
+}
+.back-arrow-btn:hover { background:var(--bg-raised); color:var(--text-primary); }
+
 .section-title {
     font-size:1.1rem;
     font-weight:700;
@@ -598,6 +624,21 @@ html,body {
   #sidebar, #sidebar-overlay { display:none !important; }
   #main-content { padding-bottom:1.5rem; }
   #toast { bottom:1.5rem; }
+
+  .desktop-sidebar {
+    display:flex; flex-direction:column;
+    position:fixed; top:0; left:0; bottom:0;
+    width:var(--dsb-w);
+    background:var(--bg-card);
+    border-right:1px solid var(--border);
+    z-index:250;
+    transition:width .25s ease;
+    overflow:hidden;
+  }
+  #main-header  { margin-left:var(--dsb-w); transition:margin-left .25s ease; }
+  #main-content { margin-left:var(--dsb-w); margin-right:auto; transition:margin-left .25s ease; }
+  #desktop-sidebar.collapsed ~ #main-header  { margin-left:var(--dsb-w-collapsed); }
+  #desktop-sidebar.collapsed ~ #main-content { margin-left:var(--dsb-w-collapsed); }
 }
 
 /* PWA standalone — same safe area rules, status bar background fill */

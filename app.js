@@ -384,34 +384,38 @@ window.initAllianceTracker = async function(email) {
 // ============================================================
 function _buildShell() {
   const app = document.getElementById('app');
+  const dsbCollapsed = localStorage.getItem('dsb_collapsed') === '1';
+
   app.innerHTML = `
-    <header id="main-header">
-      <div class="header-left">
-        <span class="header-emblem">⚔</span>
-        <span class="header-title">KANOS ALLIANCE</span>
+    <aside id="desktop-sidebar" class="desktop-sidebar${dsbCollapsed ? ' collapsed' : ''}">
+      <div class="dsb-top">
+        <button class="dsb-brand" id="dsb-home-btn" data-view="home" title="Home">
+          <img src="/icons/Kanos Alliance Symbol.png" class="dsb-logo" alt="Kanos Alliance">
+          <span class="dsb-brand-text">Kanos Alliance</span>
+        </button>
+        <button class="dsb-collapse-btn" id="dsb-collapse-btn" title="${dsbCollapsed ? 'Expand' : 'Collapse'}">${dsbCollapsed ? '»' : '«'}</button>
       </div>
-      <div class="header-center" id="desktop-nav">
-        <button class="nav-btn active" data-view="home">🏠 Home</button>
-        <button class="nav-btn" data-view="attendance">🗡 Attendance</button>
-        <button class="nav-btn" data-view="my-splits">💰 My Splits</button>
-        <button class="nav-btn" data-view="my-attendance">📋 Attendance History</button>
-        <button class="nav-btn" data-view="leaderboard">🏆 Leaderboard</button>
-        <button class="nav-btn" data-view="rules">📜 Rules</button>
-        <button class="nav-btn" data-view="guide">📖 Guide</button>
-        <button class="nav-btn" data-view="announcements">📢 Announcements</button>
-        <button class="nav-btn" data-view="schedule">📅 Schedule</button>
+      <nav class="dsb-nav">
+        <button class="dsb-link active" data-view="home" title="Home"><span class="dsb-icon">🏠</span><span class="dsb-label">Home</span></button>
+        <button class="dsb-link" data-view="attendance" title="Attendance"><span class="dsb-icon">🗡</span><span class="dsb-label">Attendance</span></button>
+        <button class="dsb-link" data-view="my-splits" title="My Splits"><span class="dsb-icon">💰</span><span class="dsb-label">My Splits</span></button>
+        <button class="dsb-link" data-view="my-attendance" title="Attendance History"><span class="dsb-icon">📋</span><span class="dsb-label">Attendance History</span></button>
+        <button class="dsb-link" data-view="leaderboard" title="Leaderboard"><span class="dsb-icon">🏆</span><span class="dsb-label">Leaderboard</span></button>
+        <button class="dsb-link" data-view="rules" title="Rules"><span class="dsb-icon">📜</span><span class="dsb-label">Rules</span></button>
+        <button class="dsb-link" data-view="guide" title="Guide"><span class="dsb-icon">📖</span><span class="dsb-label">Guide</span></button>
+        ${App.user.isAdmin ? `<button class="dsb-link" data-view="announcements" title="Announcements"><span class="dsb-icon">📢</span><span class="dsb-label">Announcements</span></button>` : ''}
+        <button class="dsb-link" data-view="schedule" title="Schedule"><span class="dsb-icon">📅</span><span class="dsb-label">Schedule</span></button>
         ${App.user.isAdmin ? `
-        <div class="nav-dropdown" id="admin-pages-dropdown">
-          <button class="nav-btn nav-dropdown-toggle" id="admin-pages-toggle" type="button">⚙ Admin Pages <span class="nav-dropdown-caret">▼</span></button>
-          <div class="nav-dropdown-menu">
-            <button class="nav-dropdown-item" data-view="drops">💎 Drops</button>
-            <button class="nav-dropdown-item" data-view="inventory">🎒 Inventory</button>
-            <button class="nav-dropdown-item" data-view="payouts">📊 Payouts</button>
-            <button class="nav-dropdown-item" data-view="roster">👥 Roster</button>
-          </div>
-        </div>` : ''}
-        <button class="nav-btn" data-view="settings">⚙️ Settings</button>
-      </div>
+        <div class="dsb-section-label"><span>Admin Pages</span></div>
+        <button class="dsb-link" data-view="drops" title="Drops"><span class="dsb-icon">💎</span><span class="dsb-label">Drops</span></button>
+        <button class="dsb-link" data-view="inventory" title="Inventory"><span class="dsb-icon">🎒</span><span class="dsb-label">Inventory</span></button>
+        <button class="dsb-link" data-view="payouts" title="Payouts"><span class="dsb-icon">📊</span><span class="dsb-label">Payouts</span></button>
+        <button class="dsb-link" data-view="roster" title="Roster"><span class="dsb-icon">👥</span><span class="dsb-label">Roster</span></button>` : ''}
+        <button class="dsb-link" data-view="settings" title="Settings"><span class="dsb-icon">⚙️</span><span class="dsb-label">Settings</span></button>
+      </nav>
+    </aside>
+
+    <header id="main-header">
       <div class="header-right">
         <span id="header-username" class="header-user"></span>
         <span id="header-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}">${App.user.isAdmin ? 'Admin' : 'Member'}</span>
@@ -467,7 +471,7 @@ function _buildShell() {
         <button class="sidebar-link" data-view="leaderboard">🏆 Leaderboard</button>
         <button class="sidebar-link" data-view="rules">📜 Rules</button>
         <button class="sidebar-link" data-view="guide">📖 App & Alliance Guide</button>
-        <button class="sidebar-link" data-view="announcements">📢 Announcements</button>
+        ${App.user.isAdmin ? `<button class="sidebar-link" data-view="announcements">📢 Announcements</button>` : ''}
         <button class="sidebar-link" data-view="schedule">📅 Schedule</button>
         ${App.user.isAdmin ? `
         <div class="sidebar-group-header" id="sidebar-admin-group-header">
@@ -502,17 +506,21 @@ function _moveNavIndicator(view) {
 }
 
 function _initNav() {
-  // Top-level desktop nav buttons (excludes the Admin Pages dropdown
-  // toggle itself, which has no data-view and is wired separately below).
-  document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(btn => {
+  // Desktop vertical sidebar nav (replaces the old horizontal header nav).
+  document.querySelectorAll('.dsb-link[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.nav-dropdown-item').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.dsb-link').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      _closeAdminDropdown();
       showView(btn.dataset.view);
     });
   });
+  document.getElementById('dsb-home-btn')?.addEventListener('click', () => {
+    document.querySelectorAll('.dsb-link').forEach(b => b.classList.remove('active'));
+    document.querySelector('.dsb-link[data-view="home"]')?.classList.add('active');
+    showView('home');
+  });
+  document.getElementById('dsb-collapse-btn')?.addEventListener('click', _toggleDesktopSidebar);
+
   document.querySelectorAll('#mobile-nav .mob-nav-btn[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.remove('active'));
@@ -531,27 +539,6 @@ function _initNav() {
       showView(btn.dataset.view);
     });
   });
-
-  // ── ADMIN PAGES — desktop dropdown ────────────────────────
-  const adminDropdown = document.getElementById('admin-pages-dropdown');
-  const adminToggle   = document.getElementById('admin-pages-toggle');
-  if (adminDropdown && adminToggle) {
-    adminToggle.addEventListener('click', e => {
-      e.stopPropagation();
-      adminDropdown.classList.toggle('open');
-    });
-    adminDropdown.querySelectorAll('.nav-dropdown-item[data-view]').forEach(item => {
-      item.addEventListener('click', e => {
-        e.stopPropagation();
-        document.querySelectorAll('#desktop-nav .nav-btn[data-view]').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.nav-dropdown-item').forEach(b => b.classList.remove('active'));
-        item.classList.add('active');
-        _closeAdminDropdown();
-        showView(item.dataset.view);
-      });
-    });
-    document.addEventListener('click', () => _closeAdminDropdown());
-  }
 
   // ── ADMIN PAGES — sidebar collapsible group ───────────────
   const sidebarGroupHeader = document.getElementById('sidebar-admin-group-header');
@@ -746,6 +733,7 @@ function _sizeSelectToContent(selectEl) {
 function showView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name)?.classList.add('active');
+  document.querySelectorAll('.dsb-link').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   _moveNavIndicator(name);
   const map = {
     home:              renderHome,
@@ -836,10 +824,11 @@ function _homeShell(char, stats, att) {
             ? `<select id="home-char-select" onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:var(--text-primary);font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:var(--bg-deep);font-size:16px">${c.ign}</option>`).join('')}</select>`
             : `<span>${char?.ign || 'Adventurer'}</span>`}
         </div>
-        <div id="home-bell" style="width:36px;height:36px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-mid);display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;" onclick="showView('announcements');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">
+        ${App.user.isAdmin ? `
+        <div id="home-bell" style="width:36px;height:36px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-mid);display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;" onclick="document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));showView('announcements');">
           <span style="font-size:18px;">🔔</span>
           <span id="bell-badge" style="display:none;position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;padding:0 3px;border-radius:99px;background:var(--danger,#EF4444);color:#fff;font-size:10px;font-weight:700;align-items:center;justify-content:center;line-height:16px;text-align:center;"></span>
-        </div>
+        </div>` : ''}
       </div>
       <div style="display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--border);">
         <span style="color:var(--gold-dim);font-weight:700;">Lv.${char?.level||'—'}</span>
@@ -1118,12 +1107,11 @@ function _showConfirmation(bosses, pts, ign, skippedMessage) {
       <button class="btn btn-primary" style="margin-bottom:.75rem" onclick="_goToAttendance()">⚔ Log More Bosses</button>
       <button class="btn btn-secondary" onclick="showView('home')">🏠 Go to Home</button>
     </div>`;
-  document.querySelectorAll('.mob-nav-btn,.nav-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.mob-nav-btn,.dsb-link').forEach(b => b.classList.remove('active'));
 }
 
 function _goToAttendance() {
   document.querySelectorAll('.mob-nav-btn').forEach(b => { if(b.dataset.view==='attendance') b.classList.add('active'); else b.classList.remove('active'); });
-  document.querySelectorAll('#desktop-nav .nav-btn').forEach(b => { if(b.dataset.view==='attendance') b.classList.add('active'); else b.classList.remove('active'); });
   showView('attendance');
 }
 
@@ -1458,6 +1446,7 @@ function renderSettings() {
 //  BELL BADGE (unread announcement count)
 // ============================================================
 function _refreshBellBadge() {
+  if (!App.user.isAdmin) return;
   API.read('get_announcements').then(rows => {
     const badge = document.getElementById('bell-badge');
     if (!badge) return;
@@ -1468,13 +1457,37 @@ function _refreshBellBadge() {
 }
 
 // ============================================================
-//  ANNOUNCEMENTS — readable by everyone, writable by super admins
+//  ANNOUNCEMENTS — admin-only (readable by any admin, writable by
+//  super admins). Enforced both here (nav/render) and server-side
+//  in getAnnouncements/markAnnouncementsRead.
 // ============================================================
+function _goHomeFromAnnouncements() {
+  document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b => b.classList.remove('active'));
+  document.querySelector('.mob-nav-btn[data-view="home"]')?.classList.add('active');
+  showView('home'); // also syncs .dsb-link active state and the mobile nav indicator
+}
+
 function renderAnnouncements() {
   const el = document.getElementById('view-announcements');
+
+  // Admin-only page — the nav/bell are already hidden from non-admins,
+  // but guard the render itself in case someone lands here another way.
+  if (!App.user.isAdmin) {
+    el.innerHTML = `
+      <div class="card"><div class="empty-state">
+        <span class="empty-state-icon">🔒</span>Admins only.
+      </div></div>`;
+    return;
+  }
+
+  const backBtn = `<button class="back-arrow-btn" onclick="_goHomeFromAnnouncements()" title="Back to Home" aria-label="Back to Home">←</button>`;
+
   el.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
-      <div class="section-title" style="margin-bottom:0">📢 Announcements</div>
+      <div style="display:flex;align-items:center;gap:.6rem">
+        ${backBtn}
+        <div class="section-title" style="margin-bottom:0">📢 Announcements</div>
+      </div>
       ${App.user.isSuperAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateAnnouncementModal()">+ New Announcement</button>` : ''}
     </div>
     ${Skeleton.spinner()}`;
@@ -1485,7 +1498,10 @@ function renderAnnouncements() {
 
     el.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;margin-bottom:1rem">
-        <div class="section-title" style="margin-bottom:0">📢 Announcements</div>
+        <div style="display:flex;align-items:center;gap:.6rem">
+          ${backBtn}
+          <div class="section-title" style="margin-bottom:0">📢 Announcements</div>
+        </div>
         ${App.user.isSuperAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateAnnouncementModal()">+ New Announcement</button>` : ''}
       </div>
       <div style="display:flex;flex-direction:column;gap:.75rem">
@@ -1642,7 +1658,7 @@ function _renderUpcomingList(events, now) {
           <div style="font-size:.92rem;color:var(--text-primary)">${live ? '🔴 LIVE — ' : ''}${escHtml(ev.boss)}</div>
           <div style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)}</div>
         </div>
-        ${live ? `<button class="btn btn-primary" style="font-size:.78rem;padding:.35rem .7rem" onclick="event.stopPropagation();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+        ${live ? `<button class="btn btn-primary" style="font-size:.78rem;padding:.35rem .7rem" onclick="event.stopPropagation();showView('attendance');document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
       </div>`;
     }).join('')}
   </div>`;
@@ -1791,7 +1807,7 @@ function openEventDetails(eventId, dayViewDate) {
         <div class="evt-details-card-when">${fmtDate(ev.scheduledAt)} (${new Date(ev.scheduledAt).toLocaleDateString(undefined,{weekday:'short'})}) ${fmtTime(ev.scheduledAt)} ~ ${fmtTime(new Date(end).toISOString())}</div>
       </div>
       ${ev.notes ? `<div class="evt-details-notes">${escHtml(ev.notes)}</div>` : ''}
-      ${until.live && !App.user.isAdmin ? `<button class="btn btn-primary" style="margin-top:1rem;width:100%" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+      ${until.live && !App.user.isAdmin ? `<button class="btn btn-primary" style="margin-top:1rem;width:100%" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
     </div>`, { fullscreen: true });
 }
 
@@ -2299,8 +2315,6 @@ function renderInventory() {
 
   API.read('get_inventory').then(bossItems => {
     bossItems = bossItems || {};
-    const emojiMap = {};
-    App.config.bossCategories.forEach(cat => cat.bosses.forEach(b => { emojiMap[b.name] = b.emoji; }));
 
     const allBossDrops = App.config.bossDrops || {};
     const merged = {};
@@ -2333,7 +2347,7 @@ function renderInventory() {
         return `
         <div class="inv-section">
           <div class="inv-section-title collapsible-header" onclick="toggleCollapsible(this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between">
-            <span>${emojiMap[boss]||'⚔'} ${boss}${availCount > 0 ? ` <span style="font-size:.75rem;color:var(--gold);margin-left:.5rem">${availCount} available</span>` : ''}</span>
+            <span>${_bossThumbHtml(boss)}${boss}${availCount > 0 ? ` <span style="font-size:.75rem;color:var(--gold);margin-left:.5rem">${availCount} available</span>` : ''}</span>
             <span class="collapsible-arrow" style="font-size:.75rem;color:var(--text-secondary)">▼</span>
           </div>
           <div class="collapsible-body${idx === 0 ? '' : ' collapsed'}" style="max-height:${idx === 0 ? 'none' : '0'}">
@@ -2746,7 +2760,16 @@ function _deleteAttendanceCore(id) {
 // ============================================================
 function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
 function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
-function _closeAdminDropdown() { document.getElementById('admin-pages-dropdown')?.classList.remove('open'); }
+
+// ── DESKTOP SIDEBAR — collapse to an icon rail, expanded by default ──
+function _toggleDesktopSidebar() {
+  const dsb = document.getElementById('desktop-sidebar');
+  const btn = document.getElementById('dsb-collapse-btn');
+  if (!dsb) return;
+  const collapsed = dsb.classList.toggle('collapsed');
+  if (btn) { btn.textContent = collapsed ? '»' : '«'; btn.title = collapsed ? 'Expand' : 'Collapse'; }
+  localStorage.setItem('dsb_collapsed', collapsed ? '1' : '0');
+}
 
 // ─── SWIPE TO CLOSE (mobile sidebar) ─────────────────────
 // Sidebar slides in from the right, so a rightward swipe closes it.
@@ -2825,7 +2848,6 @@ function _closeAdminDropdown() { document.getElementById('admin-pages-dropdown')
 // forward (e.g. Home → Attendance); from the left edge moves back.
 function _goToTab(name) {
   document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
-  document.querySelectorAll('#desktop-nav .nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   showView(name); // also repositions the nav indicator
 }
 
