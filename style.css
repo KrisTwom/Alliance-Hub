@@ -376,7 +376,10 @@ html,body {
 .boss-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:.55rem; margin-bottom:1rem; }
 .boss-check { display:flex; align-items:center; gap:.5rem; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:.65rem .75rem; cursor:pointer; transition:all var(--transition); font-size:.9rem; color:var(--text-secondary); user-select:none; -webkit-tap-highlight-color:transparent; overflow:hidden; min-width:0; }
 .boss-check:hover   { border-color:var(--border-mid); color:var(--text-primary); background:var(--bg-hover); }
-.boss-check.selected { border-color:#2a5ab0; background:rgba(58,123,213,0.2); color:#7ab4ff; }
+/* Stronger, more saturated blue so the selected state reads clearly on
+   both dark and light themes (was a faint 20%-opacity wash before). */
+.boss-check.selected { border-color:#2f6fe0; background:rgba(47,111,224,0.35); color:#eaf2ff; box-shadow:inset 0 0 0 1px rgba(47,111,224,.5); }
+html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16); color:#173d8a; }
 .boss-check input[type="checkbox"] { display:none; }
 .boss-check-icon { width:18px; height:18px; border:1.5px solid var(--text-muted); border-radius:3px; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:all var(--transition); font-size:.75rem; }
 .boss-check.selected .boss-check-icon { background:var(--gold); border-color:var(--gold); color:#fff; }
@@ -411,6 +414,12 @@ html,body {
 .status-sold      { background:rgba(78,203,113,.1);  color:var(--success); border:1px solid rgba(78,203,113,.3); }
 .status-available { background:rgba(91,156,246,.1);  color:var(--accent);  border:1px solid rgba(91,156,246,.3); }
 
+/* ── EMAIL PRIVACY (Roster page only) ────────────────────── */
+/* Raw emails only ever render here, and only for admins — blurred
+   until/unless the viewer is a super admin (JS decides which class
+   applies; this just supplies the blur look + a hover hint). */
+.email-blurred { filter:blur(4px); -webkit-filter:blur(4px); user-select:none; cursor:default; transition:filter .15s ease; }
+
 /* ── FORMS ───────────────────────────────── */
 .form-group { margin-bottom:1rem; }
 .form-label { display:block; font-size:.8rem; font-weight:700; letter-spacing:.1em; color:var(--text-secondary); margin-bottom:.4rem; text-transform:uppercase; }
@@ -418,6 +427,12 @@ html,body {
 .form-input:focus,.form-select:focus,.form-textarea:focus { border-color:var(--gold); box-shadow:0 0 0 3px var(--gold-glow); }
 .form-textarea { resize:vertical; min-height:70px; }
 .form-select option { background:var(--bg-deep); }
+
+/* ── POINTS SEARCHER (admin, leaderboard page) ───────────── */
+.ps-suggest { position:absolute; top:100%; left:0; right:2.4rem; margin-top:2px; background:var(--bg-card); border:1px solid var(--border-mid); border-radius:var(--radius); box-shadow:0 8px 24px rgba(0,0,0,.35); z-index:40; max-height:220px; overflow-y:auto; }
+.ps-suggest.hidden { display:none; }
+.ps-suggest-item { padding:.55rem .75rem; font-size:.85rem; color:var(--text-primary); cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
+.ps-suggest-item:hover { background:var(--bg-hover); }
 
 /* ── BUTTONS ─────────────────────────────── */
 .btn { display:inline-flex; align-items:center; gap:.4rem; font-family:var(--font-body); font-size:.9rem; font-weight:700; letter-spacing:.08em; padding:.6rem 1.2rem; border-radius:var(--radius); border:1px solid transparent; cursor:pointer; transition:all var(--transition); -webkit-tap-highlight-color:transparent; }
@@ -638,15 +653,17 @@ html,body {
     overflow:hidden;
   }
   #main-header  { margin-left:var(--dsb-w); transition:margin-left .25s ease; }
+  /* Centered against the EXPANDED sidebar width always (not the current
+     collapsed/expanded state) so the content column never shifts when an
+     admin toggles the sidebar — only the sidebar's own width animates.
+     Floor is also the EXPANDED width so content can never sit underneath
+     the sidebar on a narrow viewport, even while collapsed. */
   #main-content {
     margin-right:auto;
     margin-left:max(var(--dsb-w), calc((100vw + var(--dsb-w) - 1100px) / 2));
-    transition:margin-left .25s ease;
+    transition:none;
   }
   #desktop-sidebar.collapsed ~ #main-header  { margin-left:var(--dsb-w-collapsed); }
-  #desktop-sidebar.collapsed ~ #main-content {
-    margin-left:max(var(--dsb-w-collapsed), calc((100vw + var(--dsb-w-collapsed) - 1100px) / 2));
-  }
 }
 
 /* PWA standalone — same safe area rules, status bar background fill */

@@ -78,6 +78,63 @@ const BOSS_DROPS: Record<string, string[]> = {
 const BOSS_POINTS: Record<string, number> = {};
 BOSS_CATEGORIES.forEach(cat => cat.bosses.forEach(b => { BOSS_POINTS[b.name] = b.points; }));
 
+// ── Boss event duration by category ────────────────────────────
+// Fixed fight-window lengths, not admin-editable: Raid Bosses = 5min,
+// Mini Bosses = 2min, Library Bosses = 3min. Computed server-side so a
+// tampered or stale client payload can never override it.
+const CATEGORY_DURATION_MINUTES: Record<string, number> = {
+  'Raid Bosses': 5, 'Mini Bosses': 2, 'Library Bosses': 3,
+};
+const BOSS_DURATION_MINUTES: Record<string, number> = {};
+BOSS_CATEGORIES.forEach(cat => cat.bosses.forEach(b => {
+  BOSS_DURATION_MINUTES[b.name] = CATEGORY_DURATION_MINUTES[cat.category] ?? 5;
+}));
+function durationForBoss(boss: string): number {
+  return BOSS_DURATION_MINUTES[boss] ?? 5;
+}
+
+// ── Nickname / display-name resolution ─────────────────────────
+// Everywhere in the app that used to show a raw email now shows
+// "Nickname (FirstIGN)" instead (falling back gracefully if either
+// piece is missing). The only screen allowed to show a raw email at
+// all is the admin Roster page, and even there it's blurred for
+// plain admins — only a super admin sees it in the clear.
+async function resolveDisplayNames(supabase: ReturnType<typeof db>, emails: string[]): Promise<Record<string, { nickname: string; ign: string; display: string }>> {
+  const uniq = [...new Set(emails.filter(Boolean))];
+  if (!uniq.length) return {};
+
+  const [{ data: rosterRows }, { data: charRows }] = await Promise.all([
+    supabase.from('roster').select('email, nickname').in('email', uniq),
+    supabase.from('characters').select('email, ign, char_id').in('email', uniq),
+  ]);
+
+  const nicknameByEmail: Record<string, string> = {};
+  (rosterRows || []).forEach(r => { if (r.nickname) nicknameByEmail[r.email] = r.nickname; });
+
+  const firstIgnByEmail: Record<string, string> = {};
+  (charRows || [])
+    .sort((a, b) => String(a.char_id).localeCompare(String(b.char_id)))
+    .forEach(c => { if (!firstIgnByEmail[c.email]) firstIgnByEmail[c.email] = c.ign; });
+
+  const out: Record<string, { nickname: string; ign: string; display: string }> = {};
+  for (const e of uniq) {
+    const nick = nicknameByEmail[e] || '';
+    const ign  = firstIgnByEmail[e] || '';
+    out[e] = { nickname: nick, ign, display: nick && ign ? `${nick} (${ign})` : (nick || ign || 'Unknown Member') };
+  }
+  return out;
+}
+
+async function updateNickname(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!email) return { error: 'No email provided' };
+  let nickname = (data.nickname as string || '').trim();
+  if (nickname.length > 10) return { error: 'Nickname must be 10 characters or fewer.' };
+
+  const { error } = await supabase.from('roster').update({ nickname }).eq('email', email);
+  if (error) throw error;
+  return { success: true, nickname };
+}
+
 // ── Helpers ───────────────────────────────────────────────────
 function isAdmin(email: string)      { return ADMIN_EMAILS.includes(email); }
 function isSuperAdmin(email: string) { return SUPER_ADMIN_EMAILS.includes(email); }
@@ -128,6 +185,7 @@ Deno.serve(async (req) => {
       // ── User ────────────────────────────────────────────────
       case 'get_current_user':    return ok(await getCurrentUser(supabase, email));
       case 'request_access':      return ok(await requestAccess(supabase, email));
+      case 'update_nickname':     return ok(await updateNickname(supabase, email, data));
       case 'request_access_with_info': return ok(await requestAccessWithInfo(supabase, email, data));
       case 'submit_attendance':   return ok(await submitAttendance(supabase, email, data.charId as string, data.bosses as string[]));
       case 'get_my_attendance':   return ok(await getMyAttendance(supabase, email, data.charId as string));
@@ -213,7 +271,7 @@ async function getCurrentUser(supabase: ReturnType<typeof db>, email: string) {
   // instead of a wrong status.
   const { data: rosterRow, error: rosterErr } = await supabase
     .from('roster')
-    .select('status')
+    .select('status, nickname')
     .eq('email', email)
     .maybeSingle();
   if (rosterErr) throw rosterErr;
@@ -229,6 +287,7 @@ async function getCurrentUser(supabase: ReturnType<typeof db>, email: string) {
     isAdmin: isAdmin(email),
     isSuperAdmin: isSuperAdmin(email),
     status: rosterRow?.status || 'unregistered',
+    nickname: rosterRow?.nickname || '',
     characters: (chars || []).map(c => ({
       charId: c.char_id, email: c.email, ign: c.ign,
       level: c.level, charClass: c.char_class, guild: c.guild,
@@ -321,6 +380,7 @@ async function getRosterAdmin(supabase: ReturnType<typeof db>, email: string) {
 
   return (roster || []).map(r => ({
     email:        r.email,
+    nickname:     r.nickname || '',
     status:       r.status,
     registeredAt: r.registered_at || '',
     registeredBy: r.registered_by || '',
@@ -1178,11 +1238,14 @@ async function getPayoutsPage(supabase: ReturnType<typeof db>, email: string, mo
   const paidMap: Record<string, string> = {};
   (paidRows || []).forEach(r => { paidMap[r.char_id] = r.action; });
 
+  // Never send the raw email to the frontend — resolve to nickname/IGN instead.
+  const displayByEmail = await resolveDisplayNames(supabase, Object.values(charMap).map(c => c.email));
+
   return {
     month, totalRevenue, totalDistributed, monthSales,
     characterPayouts: Object.values(charMap)
       .sort((a, b) => b.totalGold - a.totalGold)
-      .map(c => ({ ...c, paid: paidMap[c.charId] === 'Paid' })),
+      .map(({ email: charEmail, ...c }) => ({ ...c, nickname: displayByEmail[charEmail]?.nickname || '', paid: paidMap[c.charId] === 'Paid' })),
   };
 }
 
@@ -1227,23 +1290,14 @@ async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) 
     .eq('email', email);
   const readSet = new Set((reads || []).map(r => r.announcement_id));
 
-  // Resolve each poster's email to a character name — the frontend
-  // shows only the IGN, never the raw email, for privacy.
-  const posterEmails = [...new Set((rows || []).map(r => r.created_by))];
-  const charByEmail: Record<string, string> = {};
-  if (posterEmails.length) {
-    const { data: chars } = await supabase
-      .from('characters')
-      .select('email, ign')
-      .in('email', posterEmails);
-    for (const c of (chars || [])) {
-      if (!charByEmail[c.email]) charByEmail[c.email] = c.ign; // first character found per poster
-    }
-  }
+  // Resolve each poster's email to "Nickname (IGN)" — the frontend
+  // never sees the raw email, only this display string.
+  const posterEmails = [...new Set((rows || []).map(r => r.created_by))] as string[];
+  const displayByEmail = await resolveDisplayNames(supabase, posterEmails);
 
   return (rows || []).map(r => ({
     id: r.announcement_id, title: r.title, body: r.body,
-    createdByIgn: charByEmail[r.created_by] || 'Alliance Admin',
+    createdByIgn: displayByEmail[r.created_by]?.display || 'Alliance Admin',
     createdAt: r.created_at,
     read: readSet.has(r.announcement_id),
   }));
@@ -1296,10 +1350,13 @@ async function getEvents(supabase: ReturnType<typeof db>, email: string) {
     .select('event_id, boss, scheduled_at, duration_minutes, notes, source, created_by, created_at')
     .order('scheduled_at', { ascending: true });
   if (error) throw error;
+
+  const displayByEmail = await resolveDisplayNames(supabase, (rows || []).map(r => r.created_by));
+
   return (rows || []).map(r => ({
     id: r.event_id, boss: r.boss, scheduledAt: r.scheduled_at,
     durationMinutes: r.duration_minutes, notes: r.notes || '',
-    source: r.source, createdBy: r.created_by, createdAt: r.created_at,
+    source: r.source, createdBy: displayByEmail[r.created_by]?.display || 'Unknown Member', createdAt: r.created_at,
   }));
 }
 
@@ -1307,7 +1364,7 @@ async function createEvent(supabase: ReturnType<typeof db>, email: string, data:
   if (!isAdmin(email)) return { error: 'Unauthorized' };
   const boss = (data.boss as string || '').trim();
   const scheduledAt = data.scheduledAt as string;
-  const durationMinutes = Number(data.durationMinutes) || Math.round(GROUP_WINDOW_MS / 60000);
+  const durationMinutes = durationForBoss(boss);
   const notes = (data.notes as string) || '';
   if (!boss || !scheduledAt) return { error: 'boss and scheduledAt are required.' };
   if (isNaN(new Date(scheduledAt).getTime())) return { error: 'Invalid scheduledAt.' };
@@ -1329,7 +1386,9 @@ async function updateEvent(supabase: ReturnType<typeof db>, email: string, data:
   const fields: Record<string, unknown> = {};
   if (data.boss !== undefined) fields.boss = (data.boss as string).trim();
   if (data.scheduledAt !== undefined) fields.scheduled_at = data.scheduledAt;
-  if (data.durationMinutes !== undefined) fields.duration_minutes = Number(data.durationMinutes) || 240;
+  // Duration always tracks the (possibly-updated) boss, never the client's
+  // number — see durationForBoss().
+  if (data.boss !== undefined) fields.duration_minutes = durationForBoss(fields.boss as string);
   if (data.notes !== undefined) fields.notes = data.notes;
 
   const { error } = await supabase.from('events').update(fields).eq('event_id', eventId);
