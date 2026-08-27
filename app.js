@@ -448,8 +448,8 @@ function _buildShell() {
       <button class="mob-nav-btn" data-view="attendance">
         <span class="mob-nav-icon">🗡</span><span class="mob-nav-label">Attendance</span>
       </button>
-      <button class="mob-nav-btn" data-view="my-splits">
-        <span class="mob-nav-icon">💰</span><span class="mob-nav-label">My Splits</span>
+      <button class="mob-nav-btn" data-view="schedule">
+        <span class="mob-nav-icon">📅</span><span class="mob-nav-label">Schedule</span>
       </button>
       <button class="mob-nav-btn" id="more-btn">
         <span class="mob-nav-icon">☰</span><span class="mob-nav-label">More</span>
@@ -467,6 +467,7 @@ function _buildShell() {
         <div id="sidebar-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}" style="margin-top:4px">${App.user.isAdmin ? 'Admin' : 'Member'}</div>
       </div>
       <div class="sidebar-links">
+        <button class="sidebar-link" data-view="my-splits">💰 My Splits</button>
         <button class="sidebar-link" data-view="my-attendance">📋 Attendance History</button>
         <button class="sidebar-link" data-view="leaderboard">🏆 Leaderboard</button>
         <button class="sidebar-link" data-view="rules">📜 Rules</button>
@@ -499,7 +500,7 @@ function _moveNavIndicator(view) {
   const indicator = document.getElementById('nav-indicator');
   if (!indicator) return;
   // Map view name to tab index (0-3)
-  const tabMap = { home: 0, attendance: 1, 'my-splits': 2 };
+  const tabMap = { home: 0, attendance: 1, schedule: 2 };
   const idx = tabMap[view] ?? null;
   if (idx === null) return; // sidebar views don't move the indicator
   indicator.style.left = (idx * 25) + '%';
@@ -779,7 +780,7 @@ function renderHome() {
   const char = getActiveChar();
 
   // Render immediately with skeleton stats
-  el.innerHTML = _homeShell(char, null, []);
+  el.innerHTML = _homeShell(char, null, [], []);
   _sizeSelectToContent(document.getElementById('home-char-select'));
   _refreshBellBadge();
 
@@ -787,28 +788,74 @@ function renderHome() {
     API.read('get_leaderboard'),
     API.read('get_my_attendance', { charId: char?.charId }),
     API.read('get_my_payouts',    { charId: char?.charId }),
-  ]).then(([lb, att, paysRes]) => {
+    API.read('get_events'),
+  ]).then(([lb, att, paysRes, events]) => {
     const rank       = lb?.findIndex(p => p.charId === char?.charId);
     const rankNum    = rank != null && rank >= 0 ? rank + 1 : null;
     const topPct     = rankNum && lb?.length ? ((rankNum / lb.length) * 100).toFixed(1) : null;
     const bossCount  = (att || []).length;
     const pays       = paysRes?.payouts || [];
     const totalGold  = pays.reduce((s, p) => s + (Number(p.goldShare)||0), 0);
-    const splitEvents = pays.length;
     const charPoints = char?.points || 0;
-    el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, splitEvents, charPoints }, att || []);
+    window._events = events || [];
+    el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, charPoints }, att || [], events || []);
     _sizeSelectToContent(document.getElementById('home-char-select'));
+    _startHomeCountdownTicker();
   });
 }
 
-function _homeShell(char, stats, att) {
+// Events happening later today, in the viewer's own local timezone —
+// scheduledAt is stored as UTC ISO and `new Date()` already converts it
+// to local time for comparison/display, so no extra tz math is needed.
+function _upcomingBossesToday(events) {
+  const now = Date.now();
+  const endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999);
+  return (events || [])
+    .filter(ev => {
+      const t = new Date(ev.scheduledAt).getTime();
+      return t >= now && t <= endOfToday.getTime();
+    })
+    .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt))
+    .slice(0, 6);
+}
+
+function _fmtCountdown(ms) {
+  if (ms <= 0) return 'Spawning…';
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+// Ticks every second while the home view is showing, updating any
+// [data-countdown] elements in place (no full re-render, so scroll
+// position and everything else stays put). Self-clears once none of
+// those elements remain (e.g. user navigated away from Home).
+let _homeCountdownTimer = null;
+function _startHomeCountdownTicker() {
+  clearInterval(_homeCountdownTimer);
+  _homeCountdownTimer = setInterval(() => {
+    const nodes = document.querySelectorAll('[data-countdown]');
+    if (!nodes.length) { clearInterval(_homeCountdownTimer); return; }
+    const now = Date.now();
+    nodes.forEach(node => {
+      const target = Number(node.dataset.countdown);
+      node.textContent = _fmtCountdown(target - now);
+    });
+  }, 1000);
+}
+
+function _homeShell(char, stats, att, events) {
   const rankNum     = stats?.rankNum;
   const topPct      = stats?.topPct;
   const bossCount   = stats?.bossCount ?? '—';
   const totalGold   = stats ? fmtGold(stats.totalGold) : '—';
-  const splitEvents = stats?.splitEvents ?? '—';
   const charPoints  = stats?.charPoints ?? '—';
-  const recent      = (att || []).slice(0, 6);
+  const recent      = (att || []).slice(0, 10);
+  const upcoming    = _upcomingBossesToday(events);
 
   const safeTop = `env(safe-area-inset-top, 0px)`;
 
@@ -833,7 +880,7 @@ function _homeShell(char, stats, att) {
       <div style="display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--border);">
         <span style="color:var(--gold-dim);font-weight:700;">Lv.${char?.level||'—'}</span>
         <span style="color:var(--text-muted);">|</span>
-        <span style="color:var(--text-secondary);">${char?.charClass||'—'}</span>
+        <span style="color:var(--text-secondary);">${char?.charClass ? `${_classEmoji(char.charClass)} ${char.charClass}` : '—'}</span>
         <span style="color:var(--text-muted);">|</span>
         <span style="display:flex;align-items:center;gap:4px;color:var(--text-secondary);">🛡 ${char?.guild||char?.faction||'—'}</span>
       </div>
@@ -871,10 +918,60 @@ function _homeShell(char, stats, att) {
           <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;">${rankNum ? '#'+rankNum : '—'}</div>
           ${topPct ? `<div style="font-size:9px;color:var(--gold-dim);margin-top:2px;">Top ${topPct}%</div>` : ''}
         </div>
-        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-splits')">
-          <div style="font-size:16px;margin-bottom:5px;">📅</div>
-          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Split Events</div>
-          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;">${splitEvents}</div>
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:10px;padding:10px 8px;cursor:pointer;" onclick="showView('my-attendance')">
+          <div style="font-size:16px;margin-bottom:5px;">📋</div>
+          <div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;line-height:1.2;">Attendance History</div>
+          <div style="font-size:15px;font-weight:800;color:var(--text-primary);line-height:1;">${bossCount}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- UPCOMING BOSSES (later today, local time) -->
+    <div style="padding:12px 12px 0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div style="font-size:16px;font-weight:700;color:var(--text-primary);">Upcoming Bosses</div>
+        <button onclick="showView('schedule')" style="background:none;border:none;color:var(--gold-dim);font-size:13px;font-weight:600;cursor:pointer;padding:0;">View All</button>
+      </div>
+      <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;overflow:hidden;">
+        ${!upcoming.length
+          ? `<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:13px;">No more bosses spawning today.</div>`
+          : upcoming.map((ev, i) => {
+              const sprite = BOSS_SPRITES[ev.boss];
+              const thumb = sprite
+                ? `<img src="${sprite}" alt="${ev.boss}" style="width:100%;height:100%;object-fit:contain;border-radius:8px;" onerror="this.style.display='none'">`
+                : `<span style="font-size:16px;">⚔️</span>`;
+              const spawnMs = new Date(ev.scheduledAt).getTime();
+              return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;${i < upcoming.length-1 ? 'border-bottom:1px solid var(--border);' : ''}cursor:pointer;" onclick="openEventDetails('${ev.id}')">
+                <div style="width:38px;height:38px;padding:5px;box-sizing:border-box;border-radius:10px;background:var(--bg-hover);border:1px solid var(--border-mid);flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">${thumb}</div>
+                <div style="flex:1;min-width:0;">
+                  <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${escHtml(ev.boss)}</div>
+                  <div style="font-size:11px;color:var(--text-muted);">Spawns ${fmtTime(ev.scheduledAt)}</div>
+                </div>
+                <div style="font-size:13px;font-weight:700;color:var(--gold);flex-shrink:0;" data-countdown="${spawnMs}">${_fmtCountdown(spawnMs - Date.now())}</div>
+              </div>`;
+            }).join('')}
+      </div>
+    </div>
+
+    <!-- QUICK ACTIONS -->
+    <div style="padding:12px 12px 0;">
+      <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:14px;">Quick Actions</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('my-splits');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='my-splits')});_moveNavIndicator('my-splits');">
+          <div style="font-size:24px;margin-bottom:8px;">💰</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">My Splits</div>
+        </div>
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('leaderboard')">
+          <div style="font-size:24px;margin-bottom:8px;">🏆</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Leaderboard</div>
+        </div>
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('rules')">
+          <div style="font-size:24px;margin-bottom:8px;">📜</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Rules</div>
+        </div>
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('guide')">
+          <div style="font-size:24px;margin-bottom:8px;">📖</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Guide</div>
         </div>
       </div>
     </div>
@@ -902,29 +999,6 @@ function _homeShell(char, stats, att) {
                 <div style="font-size:12px;color:var(--text-secondary);flex-shrink:0;">${ago}</div>
               </div>`;
             }).join('')}
-      </div>
-    </div>
-
-    <!-- QUICK ACTIONS -->
-    <div style="padding:12px 12px 0;">
-      <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:14px;">Quick Actions</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
-        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('my-splits');document.querySelectorAll('.mob-nav-btn').forEach(b=>{b.classList.toggle('active',b.dataset.view==='my-splits')});_moveNavIndicator('my-splits');">
-          <div style="font-size:24px;margin-bottom:8px;">💰</div>
-          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">My Splits</div>
-        </div>
-        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('leaderboard')">
-          <div style="font-size:24px;margin-bottom:8px;">🏆</div>
-          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Leaderboard</div>
-        </div>
-        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('rules')">
-          <div style="font-size:24px;margin-bottom:8px;">📜</div>
-          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Rules</div>
-        </div>
-        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('guide')">
-          <div style="font-size:24px;margin-bottom:8px;">📖</div>
-          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Guide</div>
-        </div>
       </div>
     </div>
 
@@ -1383,23 +1457,128 @@ function renderMyAttendanceHistory() {
 // ============================================================
 //  LEADERBOARD  (standalone page)
 // ============================================================
+// Sword=Warrior, Bow=Ranger, Staff=Magician, Boxing glove=Breaker.
+function _classEmoji(cls) {
+  const map = { Warrior: '🗡️', Ranger: '🏹', Magician: '🪄', Breaker: '🥊' };
+  return map[cls] || '';
+}
+
 function renderLeaderboard() {
   const el = document.getElementById('view-leaderboard');
   el.innerHTML = `<div class="section-title">🏆 Leaderboard</div><div class="card" style="padding:0;overflow:hidden">${Skeleton.leaderboard()}</div>`;
 
   API.read('get_leaderboard').then(lb => {
     el.innerHTML = `
-      <div class="section-title">🏆 Leaderboard</div>
+      <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+        <span>🏆 Leaderboard</span>
+        ${App.user.isAdmin ? `<button class="btn btn-secondary" style="font-size:.78rem;padding:.4rem .7rem" onclick="openPointsSearcher()">🔍 Points Searcher</button>` : ''}
+      </div>
       <div class="card" style="padding:0;overflow:hidden">
         ${!lb?.length
           ? `<div class="empty-state"><span class="empty-state-icon">🏆</span>No points yet.</div>`
           : lb.map(p => `<div class="leaderboard-row">
               <span class="lb-rank ${p.rank===1?'top1':p.rank===2?'top2':p.rank===3?'top3':''}">${p.rank===1?'🥇':p.rank===2?'🥈':p.rank===3?'🥉':p.rank}</span>
-              <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${p.charClass||''}</div></div>
+              <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${_classEmoji(p.charClass)} ${p.charClass||''}</div></div>
               <div class="lb-points">${p.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
             </div>`).join('')}
       </div>`;
   });
+}
+
+// ============================================================
+//  POINTS SEARCHER (admin-only) — leaderboard page
+//  Lets an admin look up the point totals for an arbitrary set of
+//  IGNs (not just the top-20 shown on the public leaderboard).
+//  Data source is get_roster (already admin-gated, already returns
+//  every character with its points) flattened into one ign list.
+// ============================================================
+let _psChars = [];      // flat [{ign, points, charClass}] from get_roster
+let _psRows = 0;        // number of input rows rendered so far (ids)
+let _psSelected = {};   // rowId -> { ign, points, charClass } chosen for that row
+
+function openPointsSearcher() {
+  _psRows = 0;
+  _psSelected = {};
+  showModal(`
+    <div class="modal-title">🔍 Points Searcher</div>
+    <div id="ps-input-section">
+      <div id="ps-rows"></div>
+      <button class="btn btn-secondary" style="font-size:.8rem;margin-top:.4rem" onclick="_psAddRow()">+ Add IGN</button>
+    </div>
+    <div class="modal-actions" style="margin-top:.75rem">
+      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+      <button class="btn btn-primary" onclick="_psRunSearch()">🔍 Search</button>
+    </div>
+    <div style="margin-top:1rem">
+      <div class="form-label" style="margin-bottom:.4rem">Result</div>
+      <div id="ps-result"><div class="empty-state" style="padding:1rem"><span class="empty-state-icon">🔍</span>Add IGNs above and hit Search.</div></div>
+    </div>`, { fullscreen: true });
+
+  _psAddRow();
+  API.read('get_roster').then(roster => {
+    _psChars = [];
+    (roster || []).forEach(member => (member.characters || []).forEach(c => {
+      if (c.ign) _psChars.push({ ign: c.ign, points: Number(c.points) || 0, charClass: c.charClass || '' });
+    }));
+  }).catch(() => toast('Could not load character list', 'error'));
+}
+
+function _psAddRow() {
+  const id = 'ps-row-' + (_psRows++);
+  const wrap = document.getElementById('ps-rows');
+  const row = document.createElement('div');
+  row.id = id;
+  row.style.cssText = 'position:relative;display:flex;gap:.4rem;align-items:center;margin-bottom:.5rem';
+  row.innerHTML = `
+    <input type="text" class="form-input" placeholder="Type an IGN…" autocomplete="off"
+      oninput="_psOnType('${id}', this.value)" style="flex:1">
+    <button class="btn btn-secondary" style="padding:.4rem .6rem" onclick="_psRemoveRow('${id}')" title="Remove">✕</button>
+    <div id="${id}-suggest" class="ps-suggest hidden"></div>`;
+  wrap.appendChild(row);
+}
+
+function _psRemoveRow(id) {
+  delete _psSelected[id];
+  document.getElementById(id)?.remove();
+}
+
+function _psOnType(id, val) {
+  delete _psSelected[id]; // typing invalidates a previous selection for this row
+  const box = document.getElementById(`${id}-suggest`);
+  if (!box) return;
+  const q = val.trim().toLowerCase();
+  if (!q) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  const matches = _psChars.filter(c => c.ign.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  box.innerHTML = matches.map(c =>
+    `<div class="ps-suggest-item" onclick='_psSelect("${id}", ${JSON.stringify(c).replace(/'/g, "&#39;")})'>${escHtml(c.ign)} <span style="color:var(--text-muted);font-size:.78em">${_classEmoji(c.charClass)} ${escHtml(c.charClass||'')}</span></div>`
+  ).join('');
+  box.classList.remove('hidden');
+}
+
+function _psSelect(id, char) {
+  _psSelected[id] = char;
+  const row = document.getElementById(id);
+  if (row) row.querySelector('input').value = char.ign;
+  const box = document.getElementById(`${id}-suggest`);
+  if (box) { box.classList.add('hidden'); box.innerHTML = ''; }
+}
+
+function _psRunSearch() {
+  const results = Object.values(_psSelected);
+  const box = document.getElementById('ps-result');
+  if (!results.length) {
+    box.innerHTML = `<div class="empty-state" style="padding:1rem"><span class="empty-state-icon">🔍</span>Select at least one IGN from the suggestions first.</div>`;
+    return;
+  }
+  const sorted = [...results].sort((a, b) => b.points - a.points);
+  box.innerHTML = `<div class="card" style="padding:0;overflow:hidden">
+    ${sorted.map((c, i) => `<div class="leaderboard-row">
+      <span class="lb-rank">${i + 1}</span>
+      <div style="flex:1;min-width:0"><div class="lb-name">${escHtml(c.ign)}</div><div class="lb-class">${_classEmoji(c.charClass)} ${escHtml(c.charClass||'')}</div></div>
+      <div class="lb-points">${c.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
+    </div>`).join('')}
+  </div>`;
 }
 
 // ============================================================
@@ -1476,6 +1655,16 @@ function renderSettings() {
         </div>
       </div>
       <div class="settings-row">
+        <div style="flex:1">
+          <div class="settings-row-label">Nickname</div>
+          <div class="settings-row-desc">Shown instead of your email, next to your first IGN — e.g. "Kris (Sky)". Max 10 characters.</div>
+          <div style="display:flex;gap:.5rem;margin-top:.6rem;max-width:260px">
+            <input type="text" class="form-input" id="nickname-input" maxlength="10" placeholder="Nickname" value="${escHtml(App.user.nickname || '')}">
+            <button class="btn btn-primary" style="flex-shrink:0" onclick="submitNickname()">Save</button>
+          </div>
+        </div>
+      </div>
+      <div class="settings-row">
         <div>
           <div class="settings-row-label">Signed in as</div>
           <div class="settings-row-desc">${escHtml(App.user.email)}${char ? ` · Playing as ${escHtml(char.ign)}` : ''}</div>
@@ -1490,6 +1679,18 @@ function renderSettings() {
         <button class="btn btn-secondary" onclick="window.signOut()">Sign Out</button>
       </div>
     </div>`;
+}
+
+function submitNickname() {
+  const input = document.getElementById('nickname-input');
+  const nickname = input.value.trim();
+  if (nickname.length > 10) { toast('Nickname must be 10 characters or fewer.', 'error'); return; }
+  API.write('update_nickname', { nickname }, ['get_current_user']).then(res => {
+    if (res.success) {
+      App.user.nickname = res.nickname;
+      toast('Nickname saved.', 'success');
+    } else { toast(res.error || 'Error', 'error'); }
+  }).catch(() => toast('Network error', 'error'));
 }
 
 // ============================================================
@@ -1908,10 +2109,6 @@ function openCreateEventModal(prefillDate, returnDate) {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">Attendance window (minutes)</label>
-      <input type="number" class="form-input" id="evt-duration" min="5" max="1440" value="240">
-    </div>
-    <div class="form-group">
       <label class="form-label">Notes (optional)</label>
       <textarea class="form-textarea" id="evt-notes" placeholder="Anything admins/members should know…"></textarea>
     </div>
@@ -1922,14 +2119,22 @@ function openCreateEventModal(prefillDate, returnDate) {
   _evtBossChanged();
 }
 
-// Siege's real window is 30 min (12:30–1:00 AM ET) vs the default 4h
-// attendance window everything else uses — nudge the duration field so
-// admins don't have to remember to change it every time.
+// Duration is no longer admin-editable — it's derived from the boss's
+// category: Raid Bosses = 5min, Mini Bosses = 2min, Library Bosses = 3min.
+// The backend re-derives this independently too (see BOSS_DURATION_MINUTES
+// in index.ts), so this is just for any frontend logic that reads it
+// before the round-trip (e.g. optimistic UI) — the server value always wins.
+function _durationForBoss(boss) {
+  const DEFAULT_BY_CATEGORY = { 'Raid Bosses': 5, 'Mini Bosses': 2, 'Library Bosses': 3 };
+  for (const cat of (App.config?.bossCategories || [])) {
+    if (cat.bosses.some(b => b.name === boss)) return DEFAULT_BY_CATEGORY[cat.category] || 5;
+  }
+  return 5;
+}
+
 function _evtBossChanged() {
-  const boss = document.getElementById('evt-boss')?.value;
-  const durEl = document.getElementById('evt-duration');
-  if (!durEl) return;
-  durEl.value = boss === 'Siege' ? 30 : 240;
+  // No-op now that the duration field is gone — kept as a hook in case
+  // future per-boss UI (e.g. a "fight length" preview) needs it.
 }
 
 function submitCreateEvent(returnDate) {
@@ -1937,7 +2142,7 @@ function submitCreateEvent(returnDate) {
   const dateStr = document.getElementById('evt-date').value;
   const timeStr = document.getElementById('evt-time').value;
   const tz = document.getElementById('evt-tz').value;
-  const durationMinutes = Number(document.getElementById('evt-duration').value) || 240;
+  const durationMinutes = _durationForBoss(boss);
   const notes = document.getElementById('evt-notes').value.trim();
   const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, tz);
   if (!scheduledAt) { toast('Date and time are required.', 'error'); return; }
@@ -2002,10 +2207,6 @@ function openEventModal(eventId, dayViewDate) {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">Attendance window (minutes)</label>
-      <input type="number" class="form-input" id="evt-edit-duration" min="5" max="1440" value="${Number(ev.durationMinutes) || 240}">
-    </div>
-    <div class="form-group">
       <label class="form-label">Notes (optional)</label>
       <textarea class="form-textarea" id="evt-edit-notes" placeholder="Anything admins/members should know…">${escHtml(ev.notes || '')}</textarea>
     </div>
@@ -2022,7 +2223,7 @@ function submitEditEvent(eventId, dayViewDate) {
   const dateStr = document.getElementById('evt-edit-date').value;
   const timeStr = document.getElementById('evt-edit-time').value;
   const tz = document.getElementById('evt-edit-tz').value;
-  const durationMinutes = Number(document.getElementById('evt-edit-duration').value) || 240;
+  const durationMinutes = _durationForBoss(boss);
   const notes = document.getElementById('evt-edit-notes').value.trim();
   const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, tz);
   if (!scheduledAt) { toast('Date and time are required.', 'error'); return; }
@@ -2568,7 +2769,7 @@ function loadPayoutsMonth(month) {
           ? `<div class="empty-state"><span class="empty-state-icon">💰</span>No payouts this month.</div>`
           : `<table class="data-table"><thead><tr><th>Character</th><th>Total Splits</th><th>Paid</th></tr></thead>
               <tbody>${data.characterPayouts.map(c=>`<tr>
-                <td><div style="font-weight:600">${c.ign}</div><div style="font-size:.75rem;color:var(--text-secondary)">${c.email}</div></td>
+                <td><div style="font-weight:600">${c.ign}</div>${c.nickname ? `<div style="font-size:.75rem;color:var(--text-secondary)">${escHtml(c.nickname)}</div>` : ''}</td>
                 <td><span class="gold-amount">${Number(c.totalGold).toLocaleString()}</span></td>
                 <td><input type="checkbox" class="paid-check" data-char-id="${c.charId}" data-month="${month}" ${c.paid?'checked':''} onchange="togglePaid(this)"></td>
               </tr>`).join('')}</tbody></table>`}
@@ -2627,15 +2828,21 @@ function renderRoster() {
 function rosterCard(r) {
   const chars = r.characters || [];
   const pts   = chars.reduce((s,c) => s+(c.points||0), 0);
+  const nameLabel = r.nickname ? `${r.nickname} (${chars[0]?.ign || '—'})` : (chars.length ? chars.map(c=>c.ign).join(', ') : 'Unnamed member');
+  // Raw email only ever appears here (Roster, admin-only) — blurred for
+  // plain admins, in the clear only for a super admin.
+  const emailHtml = App.user.isSuperAdmin
+    ? escHtml(r.email)
+    : `<span class="email-blurred" title="Only super admins can view member emails">${escHtml(r.email)}</span>`;
   return `<div class="card">
     <div class="card-header">
-      <div><div class="card-title">${chars.length ? chars.map(c=>c.ign).join(', ') : r.email}</div><div class="card-meta">${r.email}</div></div>
+      <div><div class="card-title">${escHtml(nameLabel)}</div><div class="card-meta">${emailHtml}</div></div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         <span class="status ${r.status==='active'?'status-confirmed':'status-pending'}">${r.status}</span>
         ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
       </div>
     </div>
-    ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span onclick="openAttendanceHistoryModal('${c.charId}','${(c.ign||'').replace(/'/g,"\\'")}')" style="cursor:pointer;font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)" title="View attendance history">${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
+    ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span onclick="openAttendanceHistoryModal('${c.charId}','${(c.ign||'').replace(/'/g,"\\'")}')" style="cursor:pointer;font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)" title="View attendance history">${_classEmoji(c.charClass)} ${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
       <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
@@ -2652,7 +2859,7 @@ function openRemoveCharModal(memberEmail) {
 
   showModal(`
     <div class="modal-title">− Remove Character</div>
-    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">${memberEmail}</p>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">${escHtml(member?.nickname ? `${member.nickname} (${chars[0]?.ign||''})` : (chars[0]?.ign || 'this member'))}</p>
     <div class="form-group">
       <label class="form-label">Select Character to Remove</label>
       <select class="form-select" id="remove-char-select">
@@ -2707,9 +2914,13 @@ function submitRegisterMember() {
 }
 
 function openAddCharModal(memberEmail) {
+  const member = (window._rosterData || []).find(r => r.email === memberEmail);
+  const label = member?.nickname
+    ? `${member.nickname}${member.characters?.[0]?.ign ? ` (${member.characters[0].ign})` : ''}`
+    : (member?.characters?.[0]?.ign || 'this member');
   showModal(`
     <div class="modal-title">+ Add Character</div>
-    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">${memberEmail}</p>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Adding a character for ${escHtml(label)}</p>
     <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="ac-ign" placeholder="Character name"></div>
     <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="ac-level" type="number" placeholder="e.g. 50"></div>
     <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="ac-class">${_selectOptions(CLASS_OPTIONS)}</select></div>
@@ -2894,7 +3105,7 @@ function _toggleDesktopSidebar() {
 // ─── SWIPE TO CHANGE TAB (mobile bottom-nav pages) ───────────
 // Starting a horizontal drag from the very edge of the screen slides
 // to the adjacent tab, the way the bottom nav is ordered: Home ↔
-// Attendance ↔ My Splits. Swiping in from the right edge moves
+// Attendance ↔ Schedule. Swiping in from the right edge moves
 // forward (e.g. Home → Attendance); from the left edge moves back.
 function _goToTab(name) {
   document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
@@ -2902,7 +3113,7 @@ function _goToTab(name) {
 }
 
 (function initTabSwipe() {
-  const TAB_ORDER = ['home', 'attendance', 'my-splits'];
+  const TAB_ORDER = ['home', 'attendance', 'schedule'];
   const EDGE_ZONE = 24;      // px from screen edge that can start the gesture
   const MOBILE_BP = 700;     // matches the CSS breakpoint that shows #mobile-nav
   const SLIDE_MS = 280;
