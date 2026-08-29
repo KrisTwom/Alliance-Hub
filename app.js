@@ -331,6 +331,7 @@ window.initAllianceTracker = async function(email) {
   App.email = email;
   const loadingScreen = document.getElementById('loading-screen');
   const appEl         = document.getElementById('app');
+  const chromeEl       = document.getElementById('app-chrome');
 
   function showError(msg) {
     if (loadingScreen) loadingScreen.style.display = 'none';
@@ -369,6 +370,7 @@ window.initAllianceTracker = async function(email) {
 
     if (loadingScreen) loadingScreen.style.display = 'none';
     appEl.style.display = 'flex';
+    if (chromeEl) chromeEl.style.display = 'block';
 
     if (App.user.status === 'unregistered') { API._fetch('request_access'); _showPending(); return; }
     if (App.user.status === 'pending')      { _showPending(); return; }
@@ -383,38 +385,15 @@ window.initAllianceTracker = async function(email) {
 //  SHELL BUILDER
 // ============================================================
 function _buildShell() {
-  const app = document.getElementById('app');
+  const app    = document.getElementById('app');
+  const chrome = document.getElementById('app-chrome');
   const dsbCollapsed = localStorage.getItem('dsb_collapsed') === '1';
+  document.body.classList.toggle('dsb-collapsed', dsbCollapsed);
 
+  // Only the header + scrollable content live inside #app — this is the
+  // element pull-to-refresh slides down, so it must contain nothing that
+  // needs to stay pinned to the real viewport during that gesture.
   app.innerHTML = `
-    <aside id="desktop-sidebar" class="desktop-sidebar${dsbCollapsed ? ' collapsed' : ''}">
-      <div class="dsb-top">
-        <button class="dsb-brand" id="dsb-home-btn" data-view="home" title="Home">
-          <img src="/icons/Kanos Alliance Symbol.png" class="dsb-logo" alt="Kanos Alliance">
-          <span class="dsb-brand-text">Kanos Alliance</span>
-        </button>
-        <button class="dsb-collapse-btn" id="dsb-collapse-btn" title="${dsbCollapsed ? 'Expand' : 'Collapse'}">${dsbCollapsed ? '»' : '«'}</button>
-      </div>
-      <nav class="dsb-nav">
-        <button class="dsb-link active" data-view="home" title="Home"><span class="dsb-icon">🏠</span><span class="dsb-label">Home</span></button>
-        <button class="dsb-link" data-view="attendance" title="Attendance"><span class="dsb-icon">🗡</span><span class="dsb-label">Attendance</span></button>
-        <button class="dsb-link" data-view="my-splits" title="My Splits"><span class="dsb-icon">💰</span><span class="dsb-label">My Splits</span></button>
-        <button class="dsb-link" data-view="my-attendance" title="Attendance History"><span class="dsb-icon">📋</span><span class="dsb-label">Attendance History</span></button>
-        <button class="dsb-link" data-view="leaderboard" title="Leaderboard"><span class="dsb-icon">🏆</span><span class="dsb-label">Leaderboard</span></button>
-        <button class="dsb-link" data-view="rules" title="Rules"><span class="dsb-icon">📜</span><span class="dsb-label">Rules</span></button>
-        <button class="dsb-link" data-view="guide" title="Guide"><span class="dsb-icon">📖</span><span class="dsb-label">Guide</span></button>
-        ${App.user.isAdmin ? `<button class="dsb-link" data-view="announcements" title="Announcements"><span class="dsb-icon">📢</span><span class="dsb-label">Announcements</span></button>` : ''}
-        <button class="dsb-link" data-view="schedule" title="Schedule"><span class="dsb-icon">📅</span><span class="dsb-label">Schedule</span></button>
-        ${App.user.isAdmin ? `
-        <div class="dsb-section-label"><span>Admin Pages</span></div>
-        <button class="dsb-link" data-view="drops" title="Drops"><span class="dsb-icon">💎</span><span class="dsb-label">Drops</span></button>
-        <button class="dsb-link" data-view="inventory" title="Inventory"><span class="dsb-icon">🎒</span><span class="dsb-label">Inventory</span></button>
-        <button class="dsb-link" data-view="payouts" title="Payouts"><span class="dsb-icon">📊</span><span class="dsb-label">Payouts</span></button>
-        <button class="dsb-link" data-view="roster" title="Roster"><span class="dsb-icon">👥</span><span class="dsb-label">Roster</span></button>` : ''}
-        <button class="dsb-link" data-view="settings" title="Settings"><span class="dsb-icon">⚙️</span><span class="dsb-label">Settings</span></button>
-      </nav>
-    </aside>
-
     <header id="main-header">
       <div class="header-right">
         <span id="header-username" class="header-user"></span>
@@ -438,7 +417,39 @@ function _buildShell() {
       <div id="view-roster"      class="view"></div>
       <div id="view-settings"    class="view"></div>
       <div id="view-confirm"     class="view"></div>
-    </main>
+    </main>`;
+
+  // Persistent chrome — desktop sidebar, mobile bottom nav, mobile drawer.
+  // Lives in #app-chrome, a sibling of #app, so pull-to-refresh's
+  // transform on #app never touches these position:fixed elements.
+  chrome.innerHTML = `
+    <aside id="desktop-sidebar" class="desktop-sidebar${dsbCollapsed ? ' collapsed' : ''}">
+      <div class="dsb-top">
+        <button class="dsb-brand" id="dsb-home-btn" data-view="home" title="Home">
+          <img src="/icons/Kanos Alliance Symbol.png" class="dsb-logo" alt="Kanos Alliance">
+          <span class="dsb-brand-text">Kanos Alliance</span>
+        </button>
+        <button class="dsb-collapse-btn" id="dsb-collapse-btn" title="${dsbCollapsed ? 'Expand' : 'Collapse'}">${dsbCollapsed ? '»' : '«'}</button>
+      </div>
+      <nav class="dsb-nav">
+        <button class="dsb-link active" data-view="home" title="Home"><span class="dsb-icon">🏠</span><span class="dsb-label">Home</span></button>
+        <button class="dsb-link" data-view="attendance" title="Attendance"><span class="dsb-icon">🗡</span><span class="dsb-label">Attendance</span></button>
+        <button class="dsb-link" data-view="my-splits" title="My Splits"><span class="dsb-icon">💰</span><span class="dsb-label">My Splits</span></button>
+        <button class="dsb-link" data-view="my-attendance" title="Attendance History"><span class="dsb-icon">📋</span><span class="dsb-label">Attendance History</span></button>
+        <button class="dsb-link" data-view="leaderboard" title="Leaderboard"><span class="dsb-icon">🏆</span><span class="dsb-label">Leaderboard</span></button>
+        <button class="dsb-link" data-view="rules" title="Rules"><span class="dsb-icon">📜</span><span class="dsb-label">Rules</span></button>
+        <button class="dsb-link" data-view="guide" title="Guide"><span class="dsb-icon">📖</span><span class="dsb-label">Guide</span></button>
+        ${App.user.isAdmin ? `<button class="dsb-link" data-view="announcements" title="Announcements"><span class="dsb-icon">📢</span><span class="dsb-label">Announcements</span></button>` : ''}
+        <button class="dsb-link" data-view="schedule" title="Schedule"><span class="dsb-icon">📅</span><span class="dsb-label">Schedule</span></button>
+        ${App.user.isAdmin ? `
+        <div class="dsb-section-label"><span>Admin Pages</span></div>
+        <button class="dsb-link" data-view="drops" title="Drops"><span class="dsb-icon">💎</span><span class="dsb-label">Drops</span></button>
+        <button class="dsb-link" data-view="inventory" title="Inventory"><span class="dsb-icon">🎒</span><span class="dsb-label">Inventory</span></button>
+        <button class="dsb-link" data-view="payouts" title="Payouts"><span class="dsb-icon">📊</span><span class="dsb-label">Payouts</span></button>
+        ${App.user.isSuperAdmin ? `<button class="dsb-link" data-view="roster" title="Roster"><span class="dsb-icon">👥</span><span class="dsb-label">Roster</span></button>` : ''}` : ''}
+        <button class="dsb-link" data-view="settings" title="Settings"><span class="dsb-icon">⚙️</span><span class="dsb-label">Settings</span></button>
+      </nav>
+    </aside>
 
     <nav id="mobile-nav">
       <div class="nav-indicator" id="nav-indicator"></div>
@@ -482,7 +493,7 @@ function _buildShell() {
           <button class="sidebar-link" data-view="drops">💎 Drops</button>
           <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
           <button class="sidebar-link" data-view="payouts">📊 Payouts</button>
-          <button class="sidebar-link" data-view="roster">👥 Roster</button>
+          ${App.user.isSuperAdmin ? `<button class="sidebar-link" data-view="roster">👥 Roster</button>` : ''}
         </div>` : ''}
         <button class="sidebar-link" data-view="settings">⚙️ Settings</button>
       </div>
@@ -558,10 +569,18 @@ function _initNav() {
   // ── PULL-TO-REFRESH ───────────────────────────────────────
   // The whole page (#app) slides down with the finger, revealing a
   // fixed banner sitting behind it — rather than just a thin bar
-  // growing on top of the content.
+  // growing on top of the content. #app now contains ONLY the header
+  // and main-content (see _buildShell) — the persistent nav chrome
+  // lives in the sibling #app-chrome — so this transform can no longer
+  // drag the bottom navbar or the mobile drawer along with it.
   let _ptrStartY = 0, _ptrDelta = 0, _ptrActive = false, _ptrIndicator = null;
-  const PTR_THRESHOLD = 76;   // px of (resisted) pull before release triggers a refresh
-  const PTR_REVEAL_MAX = 100; // px the page is allowed to slide down
+  // Raised threshold + added resistance (see RESISTANCE below) so a fast
+  // scroll-up flick at the top of a long list needs a lot more sustained
+  // finger travel to accidentally cross into "release to refresh" territory.
+  const PTR_THRESHOLD = 110;  // px of (resisted) pull before release triggers a refresh
+  const PTR_REVEAL_MAX = 140; // px the page is allowed to slide down
+  const PTR_RESISTANCE = 0.4; // lower = more resistance = more raw finger travel needed
+  const PTR_SNAP_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)'; // springy overshoot on snap-back
 
   function _getPtrIndicator() {
     if (!_ptrIndicator) {
@@ -600,13 +619,18 @@ function _initNav() {
   function _setPageSlide(px, animate) {
     const app = document.getElementById('app');
     if (!app) return;
-    app.style.transition = animate ? 'transform .25s ease' : 'none';
+    app.style.transition = animate ? `transform .35s ${PTR_SNAP_EASE}` : 'none';
     app.style.transform = px > 0 ? `translateY(${px}px)` : '';
   }
 
   document.addEventListener('touchstart', e => {
     const modalOpen = !document.getElementById('modal-overlay')?.classList.contains('hidden');
     if (modalOpen) return;
+    // Also bail while the mobile drawer (or its overlay) is open — scrolling
+    // the admin-pages dropdown inside it shouldn't be interpreted as a page
+    // pull, even as a fallback if some other gesture starts it.
+    const sidebarOpen = !document.getElementById('sidebar')?.classList.contains('hidden');
+    if (sidebarOpen) return;
     const content = document.getElementById('main-content');
     if (!content) return;
     const atTop = content.scrollTop === 0 || window.scrollY === 0;
@@ -622,7 +646,7 @@ function _initNav() {
     _ptrDelta = Math.max(0, e.touches[0].clientY - _ptrStartY);
     if (_ptrDelta < 8) return;
     const ind = _getPtrIndicator();
-    const h = Math.min(_ptrDelta * 0.55, PTR_REVEAL_MAX);
+    const h = Math.min(_ptrDelta * PTR_RESISTANCE, PTR_REVEAL_MAX);
     ind.style.height = h + 'px';
     _setPageSlide(h, false);
     const inner = document.getElementById('ptr-inner');
@@ -639,7 +663,7 @@ function _initNav() {
     if (!_ptrActive) return;
     _ptrActive = false;
     const ind = _getPtrIndicator();
-    const shown = Math.min(_ptrDelta * 0.55, PTR_REVEAL_MAX);
+    const shown = Math.min(_ptrDelta * PTR_RESISTANCE, PTR_REVEAL_MAX);
     if (shown >= PTR_THRESHOLD) {
       // Settle at a fixed "refreshing" position while the spinner spins.
       const settleH = 60;
@@ -1500,7 +1524,10 @@ function openPointsSearcher() {
   _psRows = 0;
   _psSelected = {};
   showModal(`
-    <div class="modal-title">🔍 Points Searcher</div>
+    <div class="modal-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+      <span>🔍 Points Searcher</span>
+      <button class="modal-x-close" onclick="closeModal()" title="Close" aria-label="Close">✕</button>
+    </div>
     <div id="ps-input-section">
       <div id="ps-rows"></div>
       <button class="btn btn-secondary" style="font-size:.8rem;margin-top:.4rem" onclick="_psAddRow()">+ Add IGN</button>
@@ -1512,7 +1539,7 @@ function openPointsSearcher() {
     <div style="margin-top:1rem">
       <div class="form-label" style="margin-bottom:.4rem">Result</div>
       <div id="ps-result"><div class="empty-state" style="padding:1rem"><span class="empty-state-icon">🔍</span>Add IGNs above and hit Search.</div></div>
-    </div>`, { fullscreen: true });
+    </div>`);
 
   _psAddRow();
   API.read('get_roster').then(roster => {
@@ -2800,6 +2827,17 @@ function togglePaid(cb) {
 function renderRoster() {
   const el = document.getElementById('view-roster');
 
+  // Super-admin-only page — the nav entries are already hidden from
+  // plain admins, but guard the render itself in case someone lands
+  // here another way (stale bookmark, dev console, etc.).
+  if (!App.user.isSuperAdmin) {
+    el.innerHTML = `
+      <div class="card"><div class="empty-state">
+        <span class="empty-state-icon">🔒</span>Super admins only.
+      </div></div>`;
+    return;
+  }
+
   // Skeleton cards
   el.innerHTML = `
     <div class="section-title">👥 Roster</div>
@@ -3028,6 +3066,11 @@ function _toggleDesktopSidebar() {
   const btn = document.getElementById('dsb-collapse-btn');
   if (!dsb) return;
   const collapsed = dsb.classList.toggle('collapsed');
+  // #desktop-sidebar (in #app-chrome) and #main-content (in #app) are no
+  // longer DOM siblings, so CSS can't reach #main-content via a sibling
+  // combinator off #desktop-sidebar — mirror the state onto <body> instead,
+  // which both containers' CSS can key off regardless of where they live.
+  document.body.classList.toggle('dsb-collapsed', collapsed);
   if (btn) { btn.textContent = collapsed ? '»' : '«'; btn.title = collapsed ? 'Expand' : 'Collapse'; }
   localStorage.setItem('dsb_collapsed', collapsed ? '1' : '0');
 }

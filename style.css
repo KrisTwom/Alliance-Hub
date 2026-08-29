@@ -594,6 +594,8 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
 }
 @keyframes modal-in { from{opacity:0;transform:scale(.95) translateY(10px)} to{opacity:1;transform:none} }
 .modal-title   { font-family:var(--font-display); font-size:1rem; color:var(--gold); letter-spacing:.1em; margin-bottom:1.2rem; font-weight:700; }
+.modal-x-close { background:transparent; border:none; color:var(--text-secondary); font-size:1.15rem; line-height:1; cursor:pointer; padding:2px 4px; flex-shrink:0; transition:color var(--transition); }
+.modal-x-close:hover { color:var(--text-primary); }
 .modal-actions { display:flex; gap:.6rem; justify-content:flex-end; margin-top:1.2rem; flex-wrap:wrap; }
 
 /* ── TOAST ───────────────────────────────── */
@@ -653,17 +655,30 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
     overflow:hidden;
   }
   #main-header  { margin-left:var(--dsb-w); transition:margin-left .25s ease; }
-  /* Centered against the EXPANDED sidebar width always (not the current
-     collapsed/expanded state) so the content column never shifts when an
-     admin toggles the sidebar — only the sidebar's own width animates.
-     Floor is also the EXPANDED width so content can never sit underneath
-     the sidebar on a narrow viewport, even while collapsed. */
+  /* Centered on the FULL viewport width (true screen center), not on the
+     leftover space to the right of the sidebar — the old formula anchored
+     to the sidebar's expanded width, which dragged the content's visual
+     center to the right of true center. The floor still uses the sidebar's
+     CURRENT (collapsed/expanded) width so content is never allowed to sit
+     underneath it. At typical desktop widths the floor isn't reached, so
+     content also stays put when the sidebar is toggled; only on narrower
+     viewports where the two widths compete will it shift — which is
+     correct, since that's the only case where it's needed to avoid overlap.
+     Keyed off body.dsb-collapsed rather than a sibling combinator off
+     #desktop-sidebar: #desktop-sidebar now lives in #app-chrome while
+     #main-header/#main-content live in #app (separate parents, see
+     app.js _buildShell), so they're no longer DOM siblings CSS can reach
+     that way — _toggleDesktopSidebar() mirrors the collapsed state onto
+     <body> for exactly this reason. */
   #main-content {
     margin-right:auto;
-    margin-left:max(var(--dsb-w), calc((100vw + var(--dsb-w) - 1100px) / 2));
+    margin-left:max(var(--dsb-w), calc((100vw - 1100px) / 2));
     transition:none;
   }
-  #desktop-sidebar.collapsed ~ #main-header  { margin-left:var(--dsb-w-collapsed); }
+  body.dsb-collapsed #main-header  { margin-left:var(--dsb-w-collapsed); }
+  body.dsb-collapsed #main-content {
+    margin-left:max(var(--dsb-w-collapsed), calc((100vw - 1100px) / 2));
+  }
 }
 
 /* PWA standalone — same safe area rules, status bar background fill */
