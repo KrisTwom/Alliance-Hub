@@ -205,6 +205,8 @@ Deno.serve(async (req) => {
       case 'confirm_run':         return ok(await confirmRun(supabase, email, data.runData as Record<string, unknown>));
       case 'get_window_resets':   return ok(await getWindowResets(supabase, email));
       case 'reset_window':        return ok(await resetWindow(supabase, email));
+      case 'schedule_window_reset': return ok(await scheduleWindowReset(supabase, email, data));
+      case 'execute_scheduled_reset': return ok(await executeScheduledResetIfDue(supabase, email));
       case 'get_char_attendance': return ok(await getAttendanceForChar(supabase, email, data.charId as string));
       case 'delete_attendance':   return ok(await deleteAttendance(supabase, email, data.id as string));
       case 'get_late_linked_attendance': return ok(await getLateLinkedAttendance(supabase, email));
@@ -246,12 +248,16 @@ function getConfig() {
 //  LEADERBOARD
 // ============================================================
 async function getLeaderboard(supabase: ReturnType<typeof db>) {
+  // Limit raised from 20 to 500 (alliance is ~160 members) so the
+  // frontend's per-class filter can compute accurate class rankings —
+  // filtering client-side against only the top 20 overall would silently
+  // miss lower-ranked players of an underrepresented class.
   const { data, error } = await supabase
     .from('characters')
     .select('char_id, ign, points, char_class')
     .gt('points', 0)
     .order('points', { ascending: false })
-    .limit(20);
+    .limit(500);
   if (error) throw error;
   return (data || []).map((c, i) => ({ charId: c.char_id, ign: c.ign, points: c.points, charClass: c.char_class, rank: i + 1 }));
 }
@@ -770,9 +776,71 @@ async function resetWindow(supabase: ReturnType<typeof db>, email: string) {
 
 async function getWindowResets(supabase: ReturnType<typeof db>, email: string) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
-  const { data, error } = await supabase.from('window_resets').select('reset_at, reset_by').eq('id', 1).maybeSingle();
+  const { data, error } = await supabase.from('window_resets')
+    .select('reset_at, reset_by, pending_reset_at, pending_reset_by').eq('id', 1).maybeSingle();
   if (error) throw error;
-  return data ? { resetAt: data.reset_at, resetBy: data.reset_by } : null;
+  return data ? {
+    resetAt: data.reset_at, resetBy: data.reset_by,
+    pendingResetAt: data.pending_reset_at || null,
+    pendingResetBy: data.pending_reset_by || null,
+  } : null;
+}
+
+// ── SCHEDULED WINDOW RESET ──────────────────────────────────────
+// Reset Window no longer fires immediately — an admin sets a future
+// time, which is stored as a "pending" reset on the same window_resets
+// row. The button is disabled client-side while a pending reset exists.
+// An announcement is posted immediately (not at execution time) so the
+// alliance gets advance notice.
+//
+// NOTE: there is no server-side cron wired up for this yet, so the
+// pending reset only actually executes when some admin's Drops page
+// polls executeScheduledResetIfDue() past the target time — it is not
+// a guaranteed background job. If Kris wants this to fire even with
+// nobody online, this should move to a Supabase pg_cron job / scheduled
+// Edge Function invoke instead.
+async function scheduleWindowReset(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  const scheduledFor = data.scheduledFor as string;
+  if (!scheduledFor || isNaN(new Date(scheduledFor).getTime())) return { error: 'A valid scheduled time is required.' };
+  if (new Date(scheduledFor).getTime() <= Date.now()) return { error: 'Scheduled time must be in the future.' };
+
+  const { data: existing } = await supabase.from('window_resets').select('pending_reset_at').eq('id', 1).maybeSingle();
+  if (existing?.pending_reset_at) return { error: 'A window reset is already scheduled. Wait for it to run first.' };
+
+  const { error } = await supabase.from('window_resets').upsert({
+    id: 1, pending_reset_at: scheduledFor, pending_reset_by: email,
+  });
+  if (error) throw error;
+
+  const when = new Date(scheduledFor).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+  await _postSystemAnnouncement(
+    supabase,
+    '🔄 Boss Window Reset Scheduled',
+    `The submission window will reset at ${when}. Initiated by ${email}.`,
+    email,
+  );
+
+  return { success: true, scheduledFor };
+}
+
+// Called opportunistically (e.g. on Drops page load / poll) by any admin
+// client. If a pending reset's time has arrived, performs the actual
+// reset and clears the pending fields. No-ops otherwise.
+async function executeScheduledResetIfDue(supabase: ReturnType<typeof db>, email: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  const { data: row } = await supabase.from('window_resets').select('pending_reset_at, pending_reset_by').eq('id', 1).maybeSingle();
+  if (!row?.pending_reset_at) return { executed: false };
+  if (new Date(row.pending_reset_at).getTime() > Date.now()) return { executed: false };
+
+  const resetAt = new Date().toISOString();
+  const { error } = await supabase.from('window_resets').upsert({
+    id: 1, reset_at: resetAt, reset_by: row.pending_reset_by,
+    pending_reset_at: null, pending_reset_by: null,
+  });
+  if (error) throw error;
+
+  return { executed: true, resetAt };
 }
 
 // ============================================================
@@ -1275,7 +1343,6 @@ async function markCharPaid(supabase: ReturnType<typeof db>, email: string, data
 // ============================================================
 async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) {
   if (!email) return { error: 'No email provided' };
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
 
   const { data: rows, error } = await supabase
     .from('announcements')
@@ -1304,7 +1371,7 @@ async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) 
 }
 
 async function createAnnouncement(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isSuperAdmin(email)) return { error: 'Only a super admin can post announcements.' };
+  if (!isAdmin(email)) return { error: 'Only an admin can post announcements.' };
   const title = (data.title as string || '').trim();
   const body  = (data.body as string  || '').trim();
   if (!title || !body) return { error: 'Title and body are required.' };
@@ -1312,6 +1379,20 @@ async function createAnnouncement(supabase: ReturnType<typeof db>, email: string
   const id = 'ANN_' + crypto.randomUUID();
   const { error } = await supabase.from('announcements').insert({
     announcement_id: id, title, body, created_by: email,
+  });
+  if (error) throw error;
+  return { success: true, id };
+}
+
+// Internal system post — bypasses the isAdmin check above since it's
+// triggered by an automated action (e.g. a scheduled window reset),
+// not a manually-authored announcement. createdBy still records the
+// admin who took the underlying action, so it displays exactly like a
+// normal announcement (resolved to their nickname/IGN by getAnnouncements).
+async function _postSystemAnnouncement(supabase: ReturnType<typeof db>, title: string, body: string, createdBy: string) {
+  const id = 'ANN_' + crypto.randomUUID();
+  const { error } = await supabase.from('announcements').insert({
+    announcement_id: id, title, body, created_by: createdBy,
   });
   if (error) throw error;
   return { success: true, id };
@@ -1361,7 +1442,9 @@ async function getEvents(supabase: ReturnType<typeof db>, email: string) {
 }
 
 async function createEvent(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  // Opened up to every signed-in member (was isAdmin-only) — editing/deleting
+  // an event is still admin-only, see updateEvent/deleteEvent below.
+  if (!email) return { error: 'No email provided' };
   const boss = (data.boss as string || '').trim();
   const scheduledAt = data.scheduledAt as string;
   const durationMinutes = durationForBoss(boss);
