@@ -2109,7 +2109,7 @@ function openEventDetails(eventId, dayViewDate) {
       </div>
       ${ev.notes ? `<div class="evt-details-notes">${escHtml(ev.notes)}</div>` : ''}
       ${until.live && !App.user.isAdmin ? `<button class="btn btn-primary" style="margin-top:1rem;width:100%" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
-    </div>`, { fullscreen: true });
+    </div>`, { fullscreenMobile: true });
 }
 
 function _toggleEvtDetailsMenu(evt) {
@@ -3196,8 +3196,40 @@ function _deleteAttendanceCore(id) {
 // ============================================================
 //  SIDEBAR / MODAL / TOAST / UTILS
 // ============================================================
-function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
+function _openSidebar()  {
+  document.getElementById('sidebar').classList.remove('hidden');
+  document.getElementById('sidebar-overlay').classList.remove('hidden');
+  document.getElementById('more-btn').classList.add('active');
+  _sizeSidebarLinks();
+}
 function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
+
+// The CSS grid (`grid-template-rows:auto auto 1fr` + `min-height:0` on
+// .sidebar-links) SHOULD be enough on its own to force the link list into
+// the remaining space and let it scroll — but in practice some mobile
+// browsers still let .sidebar-links grow to its full content height
+// instead of clamping to the 1fr row, which is exactly what produced the
+// "pages overflow off-screen and can't be clicked" bug. Rather than keep
+// guessing at CSS-only fixes, this measures the ACTUAL space left inside
+// the drawer after the header/user blocks and sets an explicit inline
+// max-height in px on .sidebar-links — that can't silently fail the way
+// implicit grid/flex sizing can, so the overflow-y:auto underneath it is
+// guaranteed to kick in whenever the links don't fit.
+function _sizeSidebarLinks() {
+  const sidebar = document.getElementById('sidebar');
+  const header  = sidebar?.querySelector('.sidebar-header');
+  const user    = sidebar?.querySelector('.sidebar-user');
+  const links   = sidebar?.querySelector('.sidebar-links');
+  if (!sidebar || !header || !user || !links) return;
+  const used = header.offsetHeight + user.offsetHeight;
+  links.style.maxHeight = `calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - ${used}px)`;
+}
+// Re-measure on resize/orientation change (e.g. keyboard show/hide,
+// rotating the device, or the admin-pages dropdown opening/closing while
+// the drawer is already open) so the cap stays accurate.
+window.addEventListener('resize', () => {
+  if (!document.getElementById('sidebar')?.classList.contains('hidden')) _sizeSidebarLinks();
+});
 
 // ── DESKTOP SIDEBAR — collapse to an icon rail, expanded by default ──
 function _toggleDesktopSidebar() {
@@ -3419,11 +3451,13 @@ function _goToTab(name) {
 })();
 
 // opts.fullscreen: renders the modal edge-to-edge (no card, no backdrop
-// blur) for screens meant to feel like their own page — the
-// event-details screen uses this, on both mobile and desktop.
+// blur) on EVERY screen size, mobile and desktop alike. No modal should
+// use this anymore — desktop users should always get a centered card so
+// their focus stays in the middle of the screen — but the option is left
+// in place in case a genuine full-page takeover is ever needed again.
 // opts.fullscreenMobile: same edge-to-edge treatment, but only below the
 // 700px mobile breakpoint (see style.css) — above it, renders as a normal
-// centered card. The day-agenda list uses this.
+// centered card. The day-agenda list and event-details screen use this.
 function showModal(html, opts) {
   const full   = !!(opts && opts.fullscreen);
   const fullM  = !!(opts && opts.fullscreenMobile);
