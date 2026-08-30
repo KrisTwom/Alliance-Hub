@@ -530,6 +530,7 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   // raise the floor to the reset time — anything submitted before the
   // reset no longer counts as "already this window".
   const windowFloorMs = now.getTime() - GROUP_WINDOW_MS;
+  await _applyDueScheduledReset(supabase);
   const { data: resetRow } = await supabase.from('window_resets').select('reset_at').eq('id', 1).maybeSingle();
   const resetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
   const effectiveFloorMs = (resetMs != null && resetMs > windowFloorMs) ? resetMs : windowFloorMs;
@@ -762,6 +763,30 @@ function buildRun(boss: string, windowStart: number, entries: Array<{ id: string
 // whole alliance's schedule, not just one boss.
 // Does NOT touch already-confirmed runs or attendance rows; it only
 // affects how *future* get_grouped_runs calls bucket new submissions.
+// If a scheduled reset's time has arrived, applies it — moves reset_at
+// up to the ORIGINALLY SCHEDULED time (not now()) and clears the pending
+// fields. Stamping the scheduled time rather than the moment this happens
+// to run means a late trigger still honors exactly the cutoff that was
+// announced, instead of drifting later and blocking legitimate resubmissions
+// that land between the announced time and whenever this actually fires.
+//
+// Called opportunistically from submitAttendance — the highest-traffic
+// path that actually needs a fresh reset_at, since members submitting
+// attendance right as a boss respawns are far more likely to be "present"
+// at the scheduled moment than an admin idly watching the Drops page.
+async function _applyDueScheduledReset(supabase: ReturnType<typeof db>): Promise<boolean> {
+  const { data: row } = await supabase.from('window_resets').select('pending_reset_at, pending_reset_by').eq('id', 1).maybeSingle();
+  if (!row?.pending_reset_at) return false;
+  if (new Date(row.pending_reset_at).getTime() > Date.now()) return false;
+
+  const { error } = await supabase.from('window_resets').upsert({
+    id: 1, reset_at: row.pending_reset_at, reset_by: row.pending_reset_by,
+    pending_reset_at: null, pending_reset_by: null,
+  });
+  if (error) throw error;
+  return true;
+}
+
 async function resetWindow(supabase: ReturnType<typeof db>, email: string) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
 
@@ -824,23 +849,15 @@ async function scheduleWindowReset(supabase: ReturnType<typeof db>, email: strin
   return { success: true, scheduledFor };
 }
 
-// Called opportunistically (e.g. on Drops page load / poll) by any admin
-// client. If a pending reset's time has arrived, performs the actual
-// reset and clears the pending fields. No-ops otherwise.
+// Called opportunistically (e.g. on Drops page load) by any admin client
+// as a secondary trigger — the primary one is now inside submitAttendance
+// itself (see _applyDueScheduledReset). This is what powers the Drops-page
+// "Scheduled window reset executed" toast; it's a no-op if submitAttendance
+// already applied it first.
 async function executeScheduledResetIfDue(supabase: ReturnType<typeof db>, email: string) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
-  const { data: row } = await supabase.from('window_resets').select('pending_reset_at, pending_reset_by').eq('id', 1).maybeSingle();
-  if (!row?.pending_reset_at) return { executed: false };
-  if (new Date(row.pending_reset_at).getTime() > Date.now()) return { executed: false };
-
-  const resetAt = new Date().toISOString();
-  const { error } = await supabase.from('window_resets').upsert({
-    id: 1, reset_at: resetAt, reset_by: row.pending_reset_by,
-    pending_reset_at: null, pending_reset_by: null,
-  });
-  if (error) throw error;
-
-  return { executed: true, resetAt };
+  const executed = await _applyDueScheduledReset(supabase);
+  return { executed };
 }
 
 // ============================================================
