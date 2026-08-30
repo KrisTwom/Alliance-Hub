@@ -283,8 +283,18 @@ html,body {
    unreliable at shrinking a flex child to scroll inside a fixed-position,
    safe-area-padded ancestor. Grid's 1fr row sizes deterministically and
    the min-height:0 on that row is what actually enables the scrollbar. */
-.sidebar { position:fixed; top:0; right:0; bottom:0; width:260px; height:100dvh; background:var(--bg-card); border-left:1px solid var(--border); z-index:400; display:grid; grid-template-rows:auto auto 1fr; transform:translateX(0); transition:transform .3s ease; box-shadow:-20px 0 60px rgba(0,0,0,.5); padding-top:var(--safe-top); padding-bottom:var(--safe-bottom); overflow:hidden; }
-.sidebar.hidden { transform:translateX(100%); box-shadow:none; }
+.sidebar { position:fixed; top:0; right:0; bottom:0; width:260px; height:100dvh; background:var(--bg-card); border-left:1px solid var(--border); z-index:400; display:grid; grid-template-rows:auto auto 1fr; transition:right .3s ease, transform .3s ease; box-shadow:-20px 0 60px rgba(0,0,0,.5); padding-top:var(--safe-top); padding-bottom:var(--safe-bottom); overflow:hidden; }
+/* Closed state slides via `right`, not `transform` — WebKit has a
+   long-standing bug where a scrollable child (.sidebar-links,
+   overflow-y:auto) inside a parent with an ACTIVE transform can become
+   completely unresponsive to touch scrolling on iOS Safari. Since the
+   open/rest state previously kept `transform:translateX(0)` applied at
+   all times (not just mid-animation), the drawer itself was always a
+   "transformed ancestor" and its own link list could never be scrolled
+   on iPhone. The swipe-to-close drag below still uses a transient
+   inline `transform` for the live-follow effect, but only while a drag
+   is actually in progress — it's cleared back to none at rest. */
+.sidebar.hidden { right:-260px; box-shadow:none; }
 .sidebar-header { display:flex; align-items:center; justify-content:space-between; padding:1rem 1.2rem; border-bottom:1px solid var(--border); }
 .sidebar-title  { font-family:var(--font-display); color:var(--gold); font-size:.95rem; letter-spacing:.15em; font-weight:700; }
 .sidebar-close  { background:transparent; border:none; color:var(--text-secondary); font-size:1.1rem; cursor:pointer; padding:4px; }
