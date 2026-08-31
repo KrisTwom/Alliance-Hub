@@ -200,7 +200,9 @@ Deno.serve(async (req) => {
       case 'get_char_details':    return ok(await getCharDetails(supabase, email, data.charId as string));
       case 'update_character':    return ok(await updateCharacter(supabase, email, data.charId as string, data.fields as Record<string, string>));
       case 'add_character':       return ok(await adminAddCharacter(supabase, email, data));
-      case 'remove_character':    return ok(await removeCharacter(supabase, email, data.charId as string));
+      case 'remove_character':    return ok(await removeCharacter(supabase, email, data.charId as string, data.memberEmail as string));
+      case 'link_character':      return ok(await linkCharacter(supabase, email, data.memberEmail as string, data.charId as string));
+      case 'get_all_characters':  return ok(await getAllCharacters(supabase, email));
       case 'get_grouped_runs':    return ok(await getGroupedRuns(supabase, email));
       case 'confirm_run':         return ok(await confirmRun(supabase, email, data.runData as Record<string, unknown>));
       case 'get_window_resets':   return ok(await getWindowResets(supabase, email));
@@ -282,10 +284,13 @@ async function getCurrentUser(supabase: ReturnType<typeof db>, email: string) {
     .maybeSingle();
   if (rosterErr) throw rosterErr;
 
-  const { data: chars, error: charsErr } = await supabase
-    .from('characters')
-    .select('*')
-    .eq('email', email);
+  const { data: linkRows, error: linkErr } = await supabase.from('character_links').select('char_id').eq('email', email);
+  if (linkErr) throw linkErr;
+  const linkedCharIds = (linkRows || []).map(r => r.char_id);
+
+  const { data: chars, error: charsErr } = linkedCharIds.length
+    ? await supabase.from('characters').select('*').in('char_id', linkedCharIds)
+    : { data: [] as Array<Record<string, unknown>>, error: null };
   if (charsErr) throw charsErr;
 
   return {
@@ -383,6 +388,15 @@ async function getRosterAdmin(supabase: ReturnType<typeof db>, email: string) {
   if (re) throw re;
   const { data: chars, error: ce } = await supabase.from('characters').select('*');
   if (ce) throw ce;
+  const { data: links, error: le } = await supabase.from('character_links').select('char_id, email');
+  if (le) throw le;
+
+  // Build charId -> [every email linked to it] so each roster card can
+  // show a character it shares as well as who else it's shared with.
+  const emailsByChar: Record<string, string[]> = {};
+  (links || []).forEach(l => { (emailsByChar[l.char_id] ||= []).push(l.email); });
+  const charIdsByEmail: Record<string, string[]> = {};
+  (links || []).forEach(l => { (charIdsByEmail[l.email] ||= []).push(l.char_id); });
 
   return (roster || []).map(r => ({
     email:        r.email,
@@ -395,7 +409,7 @@ async function getRosterAdmin(supabase: ReturnType<typeof db>, email: string) {
     pendingClass: r.pending_class || '',
     pendingGuild: r.pending_guild || '',
     characters: (chars || [])
-      .filter(c => c.email === r.email)
+      .filter(c => (charIdsByEmail[r.email] || []).includes(c.char_id))
       .map(c => ({
         charId:       c.char_id,
         ign:          c.ign,
@@ -404,7 +418,7 @@ async function getRosterAdmin(supabase: ReturnType<typeof db>, email: string) {
         guild:        c.guild,
         faction:      c.faction,
         points:       Number(c.points) || 0,
-        linkedEmails: (c.linked_emails || '').split(',').map((e: string) => e.trim()).filter(Boolean),
+        linkedEmails: (emailsByChar[c.char_id] || []).filter(e => e !== r.email),
       })),
   }));
 }
@@ -435,7 +449,7 @@ async function adminAddCharacter(supabase: ReturnType<typeof db>, email: string,
   const charId = 'CHAR_' + crypto.randomUUID();
   const { error } = await supabase.from('characters').insert({
     char_id:    charId,
-    email:      memberEmail,
+    email:      memberEmail, // primary/payee email — unaffected by sharing
     ign:        data.ign       || '',
     level:      data.level     || '',
     char_class: data.charClass || '',
@@ -444,15 +458,83 @@ async function adminAddCharacter(supabase: ReturnType<typeof db>, email: string,
     points:     0,
   });
   if (error) throw error;
+  // The creator is always linked to their own new character.
+  const { error: le } = await supabase.from('character_links').insert({ char_id: charId, email: memberEmail });
+  if (le) throw le;
   return { success: true, charId };
 }
 
-async function removeCharacter(supabase: ReturnType<typeof db>, email: string, charId: string) {
+// Shares an already-existing character with another approved member —
+// used both from the "Approve & Set Up" flow (linking a brand-new pending
+// member to a character someone else already plays) and from an existing
+// member's roster card ("Link Existing Character"). Does NOT touch
+// characters.email (the payout/payee email stays whoever created it) —
+// this only grants the new member visibility + submit access via
+// character_links.
+async function linkCharacter(supabase: ReturnType<typeof db>, email: string, memberEmail: string, charId: string) {
   if (!isAdmin(email)) return { error: 'Unauthorized' };
-  if (!charId) return { error: 'No character ID' };
-  const { error } = await supabase.from('characters').delete().eq('char_id', charId);
+  memberEmail = (memberEmail || '').toLowerCase().trim();
+  if (!memberEmail || !charId) return { error: 'Member email and character required.' };
+
+  const { data: memberRow } = await supabase.from('roster').select('status').eq('email', memberEmail).maybeSingle();
+  if (!memberRow) {
+    const { error } = await supabase.from('roster').insert({ email: memberEmail, status: 'active', registered_by: email });
+    if (error) throw error;
+  } else if (memberRow.status !== 'active') {
+    await supabase.from('roster').update({ status: 'active' }).eq('email', memberEmail);
+  }
+
+  const { data: char } = await supabase.from('characters').select('char_id').eq('char_id', charId).maybeSingle();
+  if (!char) return { error: 'Character not found.' };
+
+  const { error } = await supabase.from('character_links').upsert(
+    { char_id: charId, email: memberEmail },
+    { onConflict: 'char_id,email', ignoreDuplicates: true }
+  );
   if (error) throw error;
   return { success: true };
+}
+
+// Flat list of every character (id, ign, level, class, guild, primary
+// email) for the admin "link an existing character" search/picker.
+async function getAllCharacters(supabase: ReturnType<typeof db>, email: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  const { data, error } = await supabase.from('characters').select('char_id, ign, level, char_class, guild, email');
+  if (error) throw error;
+  return (data || []).map(c => ({
+    charId: c.char_id, ign: c.ign, level: c.level, charClass: c.char_class, guild: c.guild, primaryEmail: c.email,
+  }));
+}
+
+// Unlinks memberEmail from charId. If that was the character's last
+// remaining link, the character (and its links row) is fully deleted —
+// same end result as the old single-owner "remove character" behavior.
+// If other members are still linked, the character survives for them.
+async function removeCharacter(supabase: ReturnType<typeof db>, email: string, charId: string, memberEmail?: string) {
+  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!charId) return { error: 'No character ID' };
+
+  if (memberEmail) {
+    const { error: ule } = await supabase.from('character_links').delete().eq('char_id', charId).eq('email', memberEmail.toLowerCase().trim());
+    if (ule) throw ule;
+  } else {
+    // No specific member given — caller wants the character gone entirely.
+    await supabase.from('character_links').delete().eq('char_id', charId);
+  }
+
+  const { count } = await supabase.from('character_links').select('email', { count: 'exact', head: true }).eq('char_id', charId);
+  if (!count) {
+    const { error } = await supabase.from('characters').delete().eq('char_id', charId);
+    if (error) throw error;
+  }
+  return { success: true };
+}
+
+// Access-control check used by submit_attendance and the "my X" endpoints:
+// is this email allowed to act as/view this character right now?
+async function isLinkedToChar(supabase: ReturnType<typeof db>, email: string, charId: string): Promise<boolean> {
+  const { data } = await supabase.from('character_links').select('email').eq('char_id', charId).eq('email', email).maybeSingle();
+  return !!data;
 }
 
 async function declineMember(supabase: ReturnType<typeof db>, email: string, memberEmail: string) {
@@ -510,8 +592,9 @@ async function getCharDetails(supabase: ReturnType<typeof db>, email: string, ch
 async function submitAttendance(supabase: ReturnType<typeof db>, email: string, charId: string, bosses: string[]) {
   if (!bosses || !bosses.length) return { success: false, message: 'No bosses selected.' };
 
-  const { data: char } = await supabase.from('characters').select('ign, points').eq('char_id', charId).eq('email', email).maybeSingle();
+  const { data: char } = await supabase.from('characters').select('ign, points').eq('char_id', charId).maybeSingle();
   if (!char) return { success: false, message: 'Invalid character.' };
+  if (!(await isLinkedToChar(supabase, email, charId))) return { success: false, message: 'You are not linked to this character.' };
 
   const now = new Date();
   const nowIso = now.toISOString();
@@ -622,10 +705,13 @@ async function linkLateSubmissions(supabase: ReturnType<typeof db>, charId: stri
 }
 
 async function getMyAttendance(supabase: ReturnType<typeof db>, email: string, charId: string) {
+  if (!(await isLinkedToChar(supabase, email, charId))) return { error: 'Not linked to this character.' };
+  // Filtered by char_id only (not by submitter email) so a shared
+  // character shows its full history to everyone linked to it, not just
+  // whichever of the linked members happened to tap the boss in-app.
   const { data, error } = await supabase
     .from('attendance')
     .select('ts, boss, points, run_id')
-    .eq('email', email)
     .eq('char_id', charId)
     .order('ts', { ascending: false });
   if (error) throw error;
@@ -1250,10 +1336,10 @@ async function markItemsSold(supabase: ReturnType<typeof db>, email: string, dat
 //  PAYOUTS
 // ============================================================
 async function getMyPayouts(supabase: ReturnType<typeof db>, email: string, charId: string) {
+  if (!(await isLinkedToChar(supabase, email, charId))) return { error: 'Not linked to this character.' };
   const { data, error } = await supabase
     .from('payouts')
     .select('payout_id, sale_id, gold_share, month, created_at')
-    .eq('email', email)
     .eq('char_id', charId)
     .order('created_at', { ascending: false });
   if (error) throw error;

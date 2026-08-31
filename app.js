@@ -2963,7 +2963,11 @@ function rosterCard(r) {
         ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
       </div>
     </div>
-    ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>`<span onclick="openAttendanceHistoryModal('${c.charId}','${(c.ign||'').replace(/'/g,"\\'")}')" style="cursor:pointer;font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)" title="View attendance history">${_classEmoji(c.charClass)} ${c.ign} · Lv${c.level} ${c.charClass}</span>`).join('')}</div>` : ''}
+    ${chars.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">${chars.map(c=>{
+      const shared = c.linkedEmails && c.linkedEmails.length > 0;
+      const title = shared ? `Also linked to ${c.linkedEmails.length} other member(s) — click for history` : 'View attendance history';
+      return `<span onclick="openAttendanceHistoryModal('${c.charId}','${(c.ign||'').replace(/'/g,"\\'")}')" style="cursor:pointer;font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)" title="${title}">${_classEmoji(c.charClass)} ${c.ign} · Lv${c.level} ${c.charClass}${shared ? ' 🔗' : ''}</span>`;
+    }).join('')}</div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
       <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
@@ -2987,7 +2991,7 @@ function openRemoveCharModal(memberEmail) {
         ${chars.map(c => `<option value="${c.charId}">${c.ign} · Lv${c.level} ${c.charClass}</option>`).join('')}
       </select>
     </div>
-    <p style="font-size:.78rem;color:var(--danger);margin-bottom:1rem">This will permanently remove the character. Attendance and payout history will remain in the spreadsheet but the character will no longer appear in the app.</p>
+    <p style="font-size:.78rem;color:var(--danger);margin-bottom:1rem">If this character is shared with another member, this only unlinks it from ${escHtml(member?.nickname || 'this member')} — it stays registered for whoever else has it. If this is the last member linked to it, the character is removed entirely (attendance/payout history stays in the database either way).</p>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-danger" onclick="submitRemoveChar('${memberEmail}')">− Remove Character</button>
@@ -2997,21 +3001,77 @@ function openRemoveCharModal(memberEmail) {
 function submitRemoveChar(memberEmail) {
   const charId = document.getElementById('remove-char-select').value;
   if (!charId) { toast('Select a character.', 'error'); return; }
-  API.write('remove_character', { charId }, ['get_roster']).then(res => {
+  API.write('remove_character', { charId, memberEmail }, ['get_roster', 'get_all_characters']).then(res => {
     if (res.success) { toast('Character removed.', 'success'); closeModal(); renderRoster(); }
     else { toast(res.error||'Error', 'error'); }
   });
 }
 
+// ── Shared "New Character" vs "Existing Character" toggle ────────────
+// Used by both the approval modal (openRegisterMemberModal) and the
+// already-active "+ Add Character" modal (openAddCharModal), since both
+// need the same choice: register a brand new character, or attach a
+// member to a character someone else already has registered.
+function _charModeToggleHtml() {
+  return `
+    <div style="display:flex;gap:.5rem;margin-bottom:1rem">
+      <button type="button" class="btn btn-sm btn-primary" id="char-mode-new" onclick="_setCharMode('new')">+ New Character</button>
+      <button type="button" class="btn btn-sm btn-secondary" id="char-mode-existing" onclick="_setCharMode('existing')">🔗 Link Existing</button>
+    </div>`;
+}
+
+function _setCharMode(mode) {
+  document.getElementById('char-mode-new').className = 'btn btn-sm ' + (mode === 'new' ? 'btn-primary' : 'btn-secondary');
+  document.getElementById('char-mode-existing').className = 'btn btn-sm ' + (mode === 'existing' ? 'btn-primary' : 'btn-secondary');
+  document.getElementById('char-form-new').style.display = mode === 'new' ? '' : 'none';
+  document.getElementById('char-form-existing').style.display = mode === 'existing' ? '' : 'none';
+  if (mode === 'existing') {
+    API.read('get_all_characters').then(list => {
+      window._allCharsCache = Array.isArray(list) ? list : [];
+      _renderCharPicker(document.getElementById('char-picker-search')?.value || '');
+    });
+  }
+}
+
+function _existingCharPickerHtml() {
+  return `
+    <div class="form-group"><label class="form-label">Search by In-Game Name</label><input class="form-input" id="char-picker-search" placeholder="Start typing an IGN…" oninput="_renderCharPicker(this.value)"></div>
+    <div id="char-picker-results" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:.4rem"></div>
+    <input type="hidden" id="char-picker-selected">`;
+}
+
+function _renderCharPicker(query) {
+  const results = document.getElementById('char-picker-results');
+  if (!results) return;
+  const list = window._allCharsCache || [];
+  if (!list.length) { results.innerHTML = `<div style="font-size:.8rem;color:var(--text-secondary)">Loading…</div>`; return; }
+  const q = (query || '').trim().toLowerCase();
+  const matches = (q ? list.filter(c => (c.ign || '').toLowerCase().includes(q)) : list).slice(0, 25);
+  const selected = document.getElementById('char-picker-selected')?.value;
+  results.innerHTML = matches.length ? matches.map(c => `
+    <div onclick="_selectPickedChar('${c.charId}')" style="cursor:pointer;padding:.5rem .7rem;border-radius:8px;border:1px solid ${selected===c.charId?'var(--gold)':'var(--border)'};background:${selected===c.charId?'var(--bg-raised)':'transparent'};font-size:.85rem">
+      ${_classEmoji(c.charClass)} <strong>${escHtml(c.ign)}</strong> · Lv${c.level||'?'} ${escHtml(c.charClass||'')} ${c.guild?`· ${escHtml(c.guild)}`:''}
+    </div>`).join('') : `<div style="font-size:.8rem;color:var(--text-secondary)">No characters match.</div>`;
+}
+
+function _selectPickedChar(charId) {
+  document.getElementById('char-picker-selected').value = charId;
+  _renderCharPicker(document.getElementById('char-picker-search').value);
+}
+
 function openRegisterMemberModal(pre='') {
   showModal(`
-    <div class="modal-title">+ Register Member</div>
+    <div class="modal-title">✓ Approve & Set Up</div>
     <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="reg-email" value="${pre}" ${pre?'readonly style="opacity:.6"':''} placeholder="player@gmail.com"></div>
-    <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="reg-ign" placeholder="Character name"></div>
-    <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="reg-level" type="number" placeholder="e.g. 50"></div>
-    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="reg-class">${_selectOptions(CLASS_OPTIONS)}</select></div>
-    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="reg-guild">${_selectOptions(GUILD_OPTIONS)}</select></div>
-    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="reg-faction">${_selectOptions(FACTION_OPTIONS)}</select></div>
+    ${_charModeToggleHtml()}
+    <div id="char-form-new">
+      <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="reg-ign" placeholder="Character name"></div>
+      <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="reg-level" type="number" placeholder="e.g. 50"></div>
+      <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="reg-class">${_selectOptions(CLASS_OPTIONS)}</select></div>
+      <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="reg-guild">${_selectOptions(GUILD_OPTIONS)}</select></div>
+      <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="reg-faction">${_selectOptions(FACTION_OPTIONS)}</select></div>
+    </div>
+    <div id="char-form-existing" style="display:none">${_existingCharPickerHtml()}</div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitRegisterMember()">Register</button>
@@ -3020,15 +3080,28 @@ function openRegisterMemberModal(pre='') {
 
 function submitRegisterMember() {
   const memberEmail = document.getElementById('reg-email').value.trim();
-  const ign         = document.getElementById('reg-ign').value.trim();
-  if (!memberEmail || !ign) { toast('Email and IGN required.', 'error'); return; }
+  if (!memberEmail) { toast('Email required.', 'error'); return; }
+
+  const usingExisting = document.getElementById('char-form-existing').style.display !== 'none';
+  if (usingExisting) {
+    const charId = document.getElementById('char-picker-selected').value;
+    if (!charId) { toast('Select a character.', 'error'); return; }
+    API.write('link_character', { memberEmail, charId }, ['get_roster', 'get_all_characters']).then(res => {
+      if (res.success) { toast('Member approved and linked!', 'success'); closeModal(); renderRoster(); }
+      else { toast(res.error||'Error', 'error'); }
+    });
+    return;
+  }
+
+  const ign = document.getElementById('reg-ign').value.trim();
+  if (!ign) { toast('IGN required.', 'error'); return; }
   API.write('register_member', {
     memberEmail, ign,
     level:     document.getElementById('reg-level').value.trim(),
     charClass: document.getElementById('reg-class').value.trim(),
     guild:     document.getElementById('reg-guild').value.trim(),
     faction:   document.getElementById('reg-faction').value.trim(),
-  }, ['get_roster']).then(res => {
+  }, ['get_roster', 'get_all_characters']).then(res => {
     if (res.success) { toast('Member registered!', 'success'); closeModal(); renderRoster(); }
     else { toast(res.error||'Error', 'error'); }
   });
@@ -3042,11 +3115,15 @@ function openAddCharModal(memberEmail) {
   showModal(`
     <div class="modal-title">+ Add Character</div>
     <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Adding a character for ${escHtml(label)}</p>
-    <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="ac-ign" placeholder="Character name"></div>
-    <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="ac-level" type="number" placeholder="e.g. 50"></div>
-    <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="ac-class">${_selectOptions(CLASS_OPTIONS)}</select></div>
-    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="ac-guild">${_selectOptions(GUILD_OPTIONS)}</select></div>
-    <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="ac-faction">${_selectOptions(FACTION_OPTIONS)}</select></div>
+    ${_charModeToggleHtml()}
+    <div id="char-form-new">
+      <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="ac-ign" placeholder="Character name"></div>
+      <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="ac-level" type="number" placeholder="e.g. 50"></div>
+      <div class="form-group"><label class="form-label">Class</label><select class="form-select" id="ac-class">${_selectOptions(CLASS_OPTIONS)}</select></div>
+      <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="ac-guild">${_selectOptions(GUILD_OPTIONS)}</select></div>
+      <div class="form-group"><label class="form-label">Faction</label><select class="form-select" id="ac-faction">${_selectOptions(FACTION_OPTIONS)}</select></div>
+    </div>
+    <div id="char-form-existing" style="display:none">${_existingCharPickerHtml()}</div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitAddChar('${memberEmail}')">Add</button>
@@ -3054,6 +3131,17 @@ function openAddCharModal(memberEmail) {
 }
 
 function submitAddChar(memberEmail) {
+  const usingExisting = document.getElementById('char-form-existing').style.display !== 'none';
+  if (usingExisting) {
+    const charId = document.getElementById('char-picker-selected').value;
+    if (!charId) { toast('Select a character.', 'error'); return; }
+    API.write('link_character', { memberEmail, charId }, ['get_roster', 'get_all_characters']).then(res => {
+      if (res.success) { toast('Character linked!', 'success'); closeModal(); renderRoster(); }
+      else { toast(res.error||'Error', 'error'); }
+    });
+    return;
+  }
+
   const ign = document.getElementById('ac-ign').value.trim();
   if (!ign) { toast('IGN required.', 'error'); return; }
   API.write('add_character', {
@@ -3062,7 +3150,7 @@ function submitAddChar(memberEmail) {
     charClass: document.getElementById('ac-class').value.trim(),
     guild:     document.getElementById('ac-guild').value.trim(),
     faction:   document.getElementById('ac-faction').value.trim(),
-  }, ['get_roster']).then(res => {
+  }, ['get_roster', 'get_all_characters']).then(res => {
     if (res.success) { toast('Character added!', 'success'); closeModal(); renderRoster(); }
     else { toast(res.error||'Error', 'error'); }
   });
