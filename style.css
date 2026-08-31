@@ -283,8 +283,18 @@ html,body {
    unreliable at shrinking a flex child to scroll inside a fixed-position,
    safe-area-padded ancestor. Grid's 1fr row sizes deterministically and
    the min-height:0 on that row is what actually enables the scrollbar. */
-.sidebar { position:fixed; top:0; right:0; bottom:0; width:260px; height:100dvh; background:var(--bg-card); border-left:1px solid var(--border); z-index:400; display:grid; grid-template-rows:auto auto 1fr; transform:translateX(0); transition:transform .3s ease; box-shadow:-20px 0 60px rgba(0,0,0,.5); padding-top:var(--safe-top); padding-bottom:var(--safe-bottom); overflow:hidden; }
-.sidebar.hidden { transform:translateX(100%); box-shadow:none; }
+.sidebar { position:fixed; top:0; right:0; bottom:0; width:260px; height:100dvh; background:var(--bg-card); border-left:1px solid var(--border); z-index:400; display:grid; grid-template-rows:auto auto 1fr; transition:right .3s ease, transform .3s ease; box-shadow:-20px 0 60px rgba(0,0,0,.5); padding-top:var(--safe-top); padding-bottom:var(--safe-bottom); overflow:hidden; }
+/* Closed state slides via `right`, not `transform` — WebKit has a
+   long-standing bug where a scrollable child (.sidebar-links,
+   overflow-y:auto) inside a parent with an ACTIVE transform can become
+   completely unresponsive to touch scrolling on iOS Safari. Since the
+   open/rest state previously kept `transform:translateX(0)` applied at
+   all times (not just mid-animation), the drawer itself was always a
+   "transformed ancestor" and its own link list could never be scrolled
+   on iPhone. The swipe-to-close drag below still uses a transient
+   inline `transform` for the live-follow effect, but only while a drag
+   is actually in progress — it's cleared back to none at rest. */
+.sidebar.hidden { right:-260px; box-shadow:none; }
 .sidebar-header { display:flex; align-items:center; justify-content:space-between; padding:1rem 1.2rem; border-bottom:1px solid var(--border); }
 .sidebar-title  { font-family:var(--font-display); color:var(--gold); font-size:.95rem; letter-spacing:.15em; font-weight:700; }
 .sidebar-close  { background:transparent; border:none; color:var(--text-secondary); font-size:1.1rem; cursor:pointer; padding:4px; }
@@ -309,7 +319,7 @@ html,body {
 .sidebar-group-header:hover { background:var(--bg-raised); color:var(--text-primary); }
 .sidebar-group-arrow { font-size:.7rem; transition:transform .2s ease; }
 .sidebar-group-header.open .sidebar-group-arrow { transform:rotate(180deg); }
-.sidebar-group-body { overflow:hidden; max-height:0; transition:max-height .3s ease; display:flex; flex-direction:column; gap:4px; padding-left:.5rem; }
+.sidebar-group-body { overflow:hidden; max-height:0; flex-shrink:0; transition:max-height .3s ease; display:flex; flex-direction:column; gap:4px; padding-left:.5rem; }
 .sidebar-group-body.open { max-height:400px; }
 
 /* ── SECTION TITLE ───────────────────────── */
@@ -592,8 +602,26 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
   display:flex; flex-direction:column;
   padding-top:var(--safe-top); padding-bottom:var(--safe-bottom);
 }
+/* Mobile-only fullscreen variant — used for the day-agenda screen.
+   Below the 700px breakpoint it behaves exactly like modal-box-full
+   (edge-to-edge). At and above 700px it falls back to a normal
+   centered card so desktop users get a popup, not a full takeover. */
+@media (max-width:700px) {
+  .modal-overlay.modal-overlay-full-mobile { padding:0; align-items:stretch; justify-content:stretch; background:var(--bg-deep); backdrop-filter:none; }
+  .modal-box.modal-box-full-mobile {
+    max-width:none; width:100%; height:100dvh; max-height:100dvh;
+    border-radius:0; border:none; padding:0;
+    display:flex; flex-direction:column;
+    padding-top:var(--safe-top); padding-bottom:var(--safe-bottom);
+  }
+}
+@media (min-width:701px) {
+  .modal-box.modal-box-full-mobile { max-width:640px; max-height:82vh; padding:0; display:flex; flex-direction:column; }
+}
 @keyframes modal-in { from{opacity:0;transform:scale(.95) translateY(10px)} to{opacity:1;transform:none} }
 .modal-title   { font-family:var(--font-display); font-size:1rem; color:var(--gold); letter-spacing:.1em; margin-bottom:1.2rem; font-weight:700; }
+.modal-x-close { background:transparent; border:none; color:var(--text-secondary); font-size:1.15rem; line-height:1; cursor:pointer; padding:2px 4px; flex-shrink:0; transition:color var(--transition); }
+.modal-x-close:hover { color:var(--text-primary); }
 .modal-actions { display:flex; gap:.6rem; justify-content:flex-end; margin-top:1.2rem; flex-wrap:wrap; }
 
 /* ── TOAST ───────────────────────────────── */
@@ -653,17 +681,30 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
     overflow:hidden;
   }
   #main-header  { margin-left:var(--dsb-w); transition:margin-left .25s ease; }
-  /* Centered against the EXPANDED sidebar width always (not the current
-     collapsed/expanded state) so the content column never shifts when an
-     admin toggles the sidebar — only the sidebar's own width animates.
-     Floor is also the EXPANDED width so content can never sit underneath
-     the sidebar on a narrow viewport, even while collapsed. */
+  /* Centered on the FULL viewport width (true screen center), not on the
+     leftover space to the right of the sidebar — the old formula anchored
+     to the sidebar's expanded width, which dragged the content's visual
+     center to the right of true center. The floor still uses the sidebar's
+     CURRENT (collapsed/expanded) width so content is never allowed to sit
+     underneath it. At typical desktop widths the floor isn't reached, so
+     content also stays put when the sidebar is toggled; only on narrower
+     viewports where the two widths compete will it shift — which is
+     correct, since that's the only case where it's needed to avoid overlap.
+     Keyed off body.dsb-collapsed rather than a sibling combinator off
+     #desktop-sidebar: #desktop-sidebar now lives in #app-chrome while
+     #main-header/#main-content live in #app (separate parents, see
+     app.js _buildShell), so they're no longer DOM siblings CSS can reach
+     that way — _toggleDesktopSidebar() mirrors the collapsed state onto
+     <body> for exactly this reason. */
   #main-content {
     margin-right:auto;
-    margin-left:max(var(--dsb-w), calc((100vw + var(--dsb-w) - 1100px) / 2));
+    margin-left:max(var(--dsb-w), calc((100vw - 1100px) / 2));
     transition:none;
   }
-  #desktop-sidebar.collapsed ~ #main-header  { margin-left:var(--dsb-w-collapsed); }
+  body.dsb-collapsed #main-header  { margin-left:var(--dsb-w-collapsed); }
+  body.dsb-collapsed #main-content {
+    margin-left:max(var(--dsb-w-collapsed), calc((100vw - 1100px) / 2));
+  }
 }
 
 /* PWA standalone — same safe area rules, status bar background fill */
