@@ -30,8 +30,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="Kanos Alliance" />
-  <link rel="icon" href="/icons/K Symbol.png" type="image/png" />
-  <link rel="apple-touch-icon" sizes="180x180" href="/icons/Kanos Alliance Symbol.png.png" />
+  <link rel="icon" href="/icons/K symbol.png" type="image/png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/Kanos Alliance Symbol Black Background.png" />
   <link rel="manifest" href="manifest.json" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -92,6 +92,14 @@
 
   <!-- APP (populated by app.js after initAllianceTracker is called) -->
   <div id="app" style="display:none;"></div>
+  <!-- Persistent chrome (desktop sidebar, mobile bottom nav, mobile drawer)
+       lives OUTSIDE #app on purpose: #app is the element pull-to-refresh
+       translates to reveal the ptr-indicator behind it (see app.js). If
+       these fixed-position nav elements were descendants of a transformed
+       #app, the transform would create a new containing block for them
+       and they'd stop tracking the real viewport — dragging the bottom
+       navbar/sidebar along with the pull gesture instead of staying put. -->
+  <div id="app-chrome" style="display:none;"></div>
 
   <div id="toast"></div>
   <div id="modal-overlay" class="modal-overlay hidden"><div id="modal-box" class="modal-box"></div></div>

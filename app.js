@@ -50,6 +50,15 @@ function setTheme(theme) {
 const CLASS_OPTIONS   = ['Warrior', 'Ranger', 'Magician', 'Breaker'];
 const GUILD_OPTIONS   = ['Exalt', 'Fatale', 'Rasta', 'Lumiere', 'Cosmic', 'Luminarias'];
 const FACTION_OPTIONS = ['Lanos', 'Siras'];
+// Guild symbol images — file naming assumption: <guild-lowercased>_symbol.png
+// e.g. Exalt -> exalt_symbol.png, Fatale -> fatale_symbol.png, placed under
+// /icons/guilds/. Adjust GUILD_ICON_PATH below if the actual upload path differs.
+const GUILD_ICON_PATH = '/icons/guilds/';
+function _guildIconHtml(guild) {
+  if (!guild) return '';
+  const src = `${GUILD_ICON_PATH}${guild.toLowerCase()}_symbol.png`;
+  return `<img src="${src}" alt="${escHtml(guild)}" style="width:16px;height:16px;object-fit:contain;flex-shrink:0" onerror="this.style.display='none'">`;
+}
 function _selectOptions(list, selected='') {
   return `<option value="">— Select —</option>` +
     list.map(v => `<option value="${v}" ${v===selected?'selected':''}>${v}</option>`).join('');
@@ -331,6 +340,7 @@ window.initAllianceTracker = async function(email) {
   App.email = email;
   const loadingScreen = document.getElementById('loading-screen');
   const appEl         = document.getElementById('app');
+  const chromeEl       = document.getElementById('app-chrome');
 
   function showError(msg) {
     if (loadingScreen) loadingScreen.style.display = 'none';
@@ -369,6 +379,7 @@ window.initAllianceTracker = async function(email) {
 
     if (loadingScreen) loadingScreen.style.display = 'none';
     appEl.style.display = 'flex';
+    if (chromeEl) chromeEl.style.display = 'block';
 
     if (App.user.status === 'unregistered') { API._fetch('request_access'); _showPending(); return; }
     if (App.user.status === 'pending')      { _showPending(); return; }
@@ -383,38 +394,15 @@ window.initAllianceTracker = async function(email) {
 //  SHELL BUILDER
 // ============================================================
 function _buildShell() {
-  const app = document.getElementById('app');
+  const app    = document.getElementById('app');
+  const chrome = document.getElementById('app-chrome');
   const dsbCollapsed = localStorage.getItem('dsb_collapsed') === '1';
+  document.body.classList.toggle('dsb-collapsed', dsbCollapsed);
 
+  // Only the header + scrollable content live inside #app — this is the
+  // element pull-to-refresh slides down, so it must contain nothing that
+  // needs to stay pinned to the real viewport during that gesture.
   app.innerHTML = `
-    <aside id="desktop-sidebar" class="desktop-sidebar${dsbCollapsed ? ' collapsed' : ''}">
-      <div class="dsb-top">
-        <button class="dsb-brand" id="dsb-home-btn" data-view="home" title="Home">
-          <img src="/icons/Kanos Alliance Symbol.png" class="dsb-logo" alt="Kanos Alliance">
-          <span class="dsb-brand-text">Kanos Alliance</span>
-        </button>
-        <button class="dsb-collapse-btn" id="dsb-collapse-btn" title="${dsbCollapsed ? 'Expand' : 'Collapse'}">${dsbCollapsed ? '»' : '«'}</button>
-      </div>
-      <nav class="dsb-nav">
-        <button class="dsb-link active" data-view="home" title="Home"><span class="dsb-icon">🏠</span><span class="dsb-label">Home</span></button>
-        <button class="dsb-link" data-view="attendance" title="Attendance"><span class="dsb-icon">🗡</span><span class="dsb-label">Attendance</span></button>
-        <button class="dsb-link" data-view="my-splits" title="My Splits"><span class="dsb-icon">💰</span><span class="dsb-label">My Splits</span></button>
-        <button class="dsb-link" data-view="my-attendance" title="Attendance History"><span class="dsb-icon">📋</span><span class="dsb-label">Attendance History</span></button>
-        <button class="dsb-link" data-view="leaderboard" title="Leaderboard"><span class="dsb-icon">🏆</span><span class="dsb-label">Leaderboard</span></button>
-        <button class="dsb-link" data-view="rules" title="Rules"><span class="dsb-icon">📜</span><span class="dsb-label">Rules</span></button>
-        <button class="dsb-link" data-view="guide" title="Guide"><span class="dsb-icon">📖</span><span class="dsb-label">Guide</span></button>
-        ${App.user.isAdmin ? `<button class="dsb-link" data-view="announcements" title="Announcements"><span class="dsb-icon">📢</span><span class="dsb-label">Announcements</span></button>` : ''}
-        <button class="dsb-link" data-view="schedule" title="Schedule"><span class="dsb-icon">📅</span><span class="dsb-label">Schedule</span></button>
-        ${App.user.isAdmin ? `
-        <div class="dsb-section-label"><span>Admin Pages</span></div>
-        <button class="dsb-link" data-view="drops" title="Drops"><span class="dsb-icon">💎</span><span class="dsb-label">Drops</span></button>
-        <button class="dsb-link" data-view="inventory" title="Inventory"><span class="dsb-icon">🎒</span><span class="dsb-label">Inventory</span></button>
-        <button class="dsb-link" data-view="payouts" title="Payouts"><span class="dsb-icon">📊</span><span class="dsb-label">Payouts</span></button>
-        <button class="dsb-link" data-view="roster" title="Roster"><span class="dsb-icon">👥</span><span class="dsb-label">Roster</span></button>` : ''}
-        <button class="dsb-link" data-view="settings" title="Settings"><span class="dsb-icon">⚙️</span><span class="dsb-label">Settings</span></button>
-      </nav>
-    </aside>
-
     <header id="main-header">
       <div class="header-right">
         <span id="header-username" class="header-user"></span>
@@ -438,7 +426,40 @@ function _buildShell() {
       <div id="view-roster"      class="view"></div>
       <div id="view-settings"    class="view"></div>
       <div id="view-confirm"     class="view"></div>
-    </main>
+    </main>`;
+
+  // Persistent chrome — desktop sidebar, mobile bottom nav, mobile drawer.
+  // Lives in #app-chrome, a sibling of #app, so pull-to-refresh's
+  // transform on #app never touches these position:fixed elements.
+  chrome.innerHTML = `
+    <aside id="desktop-sidebar" class="desktop-sidebar${dsbCollapsed ? ' collapsed' : ''}">
+      <div class="dsb-top">
+        <button class="dsb-brand" id="dsb-home-btn" data-view="home" title="Home">
+          <img src="/icons/Kanos Alliance Symbol.png" class="dsb-logo" alt="Kanos Alliance">
+          <span class="dsb-brand-text">Kanos Alliance</span>
+        </button>
+        <button class="dsb-collapse-btn" id="dsb-collapse-btn" title="${dsbCollapsed ? 'Expand' : 'Collapse'}">${dsbCollapsed ? '»' : '«'}</button>
+      </div>
+      <nav class="dsb-nav">
+        <button class="dsb-link active" data-view="home" title="Home"><span class="dsb-icon">🏠</span><span class="dsb-label">Home</span></button>
+        <button class="dsb-link" data-view="attendance" title="Attendance"><span class="dsb-icon">🗡</span><span class="dsb-label">Attendance</span></button>
+        <button class="dsb-link" data-view="my-splits" title="My Splits"><span class="dsb-icon">💰</span><span class="dsb-label">My Splits</span></button>
+        <button class="dsb-link" data-view="my-attendance" title="Attendance History"><span class="dsb-icon">📋</span><span class="dsb-label">Attendance History</span></button>
+        <button class="dsb-link" data-view="leaderboard" title="Leaderboard"><span class="dsb-icon">🏆</span><span class="dsb-label">Leaderboard</span></button>
+        <button class="dsb-link" data-view="rules" title="Rules"><span class="dsb-icon">📜</span><span class="dsb-label">Rules</span></button>
+        <button class="dsb-link" data-view="guide" title="Guide"><span class="dsb-icon">📖</span><span class="dsb-label">Guide</span></button>
+        <button class="dsb-link" data-view="announcements" title="Announcements"><span class="dsb-icon">📢</span><span class="dsb-label">Announcements</span></button>
+        <button class="dsb-link" data-view="schedule" title="Schedule"><span class="dsb-icon">📅</span><span class="dsb-label">Schedule</span></button>
+        ${App.user.isAdmin ? `
+        <div class="dsb-section-label"><span>Admin Pages</span></div>
+        <button class="dsb-link" data-view="drops" title="Drops"><span class="dsb-icon">💎</span><span class="dsb-label">Drops</span></button>
+        ${App.user.isSuperAdmin ? `
+        <button class="dsb-link" data-view="inventory" title="Inventory"><span class="dsb-icon">🎒</span><span class="dsb-label">Inventory</span></button>
+        <button class="dsb-link" data-view="payouts" title="Payouts"><span class="dsb-icon">📊</span><span class="dsb-label">Payouts</span></button>
+        <button class="dsb-link" data-view="roster" title="Roster"><span class="dsb-icon">👥</span><span class="dsb-label">Roster</span></button>` : ''}` : ''}
+        <button class="dsb-link" data-view="settings" title="Settings"><span class="dsb-icon">⚙️</span><span class="dsb-label">Settings</span></button>
+      </nav>
+    </aside>
 
     <nav id="mobile-nav">
       <div class="nav-indicator" id="nav-indicator"></div>
@@ -472,7 +493,7 @@ function _buildShell() {
         <button class="sidebar-link" data-view="leaderboard">🏆 Leaderboard</button>
         <button class="sidebar-link" data-view="rules">📜 Rules</button>
         <button class="sidebar-link" data-view="guide">📖 App & Alliance Guide</button>
-        ${App.user.isAdmin ? `<button class="sidebar-link" data-view="announcements">📢 Announcements</button>` : ''}
+        <button class="sidebar-link" data-view="announcements">📢 Announcements</button>
         <button class="sidebar-link" data-view="schedule">📅 Schedule</button>
         ${App.user.isAdmin ? `
         <div class="sidebar-group-header" id="sidebar-admin-group-header">
@@ -480,9 +501,10 @@ function _buildShell() {
         </div>
         <div class="sidebar-group-body" id="sidebar-admin-group-body">
           <button class="sidebar-link" data-view="drops">💎 Drops</button>
+          ${App.user.isSuperAdmin ? `
           <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
           <button class="sidebar-link" data-view="payouts">📊 Payouts</button>
-          <button class="sidebar-link" data-view="roster">👥 Roster</button>
+          <button class="sidebar-link" data-view="roster">👥 Roster</button>` : ''}
         </div>` : ''}
         <button class="sidebar-link" data-view="settings">⚙️ Settings</button>
       </div>
@@ -558,10 +580,18 @@ function _initNav() {
   // ── PULL-TO-REFRESH ───────────────────────────────────────
   // The whole page (#app) slides down with the finger, revealing a
   // fixed banner sitting behind it — rather than just a thin bar
-  // growing on top of the content.
+  // growing on top of the content. #app now contains ONLY the header
+  // and main-content (see _buildShell) — the persistent nav chrome
+  // lives in the sibling #app-chrome — so this transform can no longer
+  // drag the bottom navbar or the mobile drawer along with it.
   let _ptrStartY = 0, _ptrDelta = 0, _ptrActive = false, _ptrIndicator = null;
-  const PTR_THRESHOLD = 76;   // px of (resisted) pull before release triggers a refresh
-  const PTR_REVEAL_MAX = 100; // px the page is allowed to slide down
+  // Raised threshold + added resistance (see RESISTANCE below) so a fast
+  // scroll-up flick at the top of a long list needs a lot more sustained
+  // finger travel to accidentally cross into "release to refresh" territory.
+  const PTR_THRESHOLD = 110;  // px of (resisted) pull before release triggers a refresh
+  const PTR_REVEAL_MAX = 140; // px the page is allowed to slide down
+  const PTR_RESISTANCE = 0.4; // lower = more resistance = more raw finger travel needed
+  const PTR_SNAP_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)'; // springy overshoot on snap-back
 
   function _getPtrIndicator() {
     if (!_ptrIndicator) {
@@ -600,13 +630,18 @@ function _initNav() {
   function _setPageSlide(px, animate) {
     const app = document.getElementById('app');
     if (!app) return;
-    app.style.transition = animate ? 'transform .25s ease' : 'none';
+    app.style.transition = animate ? `transform .35s ${PTR_SNAP_EASE}` : 'none';
     app.style.transform = px > 0 ? `translateY(${px}px)` : '';
   }
 
   document.addEventListener('touchstart', e => {
     const modalOpen = !document.getElementById('modal-overlay')?.classList.contains('hidden');
     if (modalOpen) return;
+    // Also bail while the mobile drawer (or its overlay) is open — scrolling
+    // the admin-pages dropdown inside it shouldn't be interpreted as a page
+    // pull, even as a fallback if some other gesture starts it.
+    const sidebarOpen = !document.getElementById('sidebar')?.classList.contains('hidden');
+    if (sidebarOpen) return;
     const content = document.getElementById('main-content');
     if (!content) return;
     const atTop = content.scrollTop === 0 || window.scrollY === 0;
@@ -622,7 +657,7 @@ function _initNav() {
     _ptrDelta = Math.max(0, e.touches[0].clientY - _ptrStartY);
     if (_ptrDelta < 8) return;
     const ind = _getPtrIndicator();
-    const h = Math.min(_ptrDelta * 0.55, PTR_REVEAL_MAX);
+    const h = Math.min(_ptrDelta * PTR_RESISTANCE, PTR_REVEAL_MAX);
     ind.style.height = h + 'px';
     _setPageSlide(h, false);
     const inner = document.getElementById('ptr-inner');
@@ -639,7 +674,7 @@ function _initNav() {
     if (!_ptrActive) return;
     _ptrActive = false;
     const ind = _getPtrIndicator();
-    const shown = Math.min(_ptrDelta * 0.55, PTR_REVEAL_MAX);
+    const shown = Math.min(_ptrDelta * PTR_RESISTANCE, PTR_REVEAL_MAX);
     if (shown >= PTR_THRESHOLD) {
       // Settle at a fixed "refreshing" position while the spinner spins.
       const settleH = 60;
@@ -871,18 +906,17 @@ function _homeShell(char, stats, att, events) {
             ? `<select id="home-char-select" onchange="switchChar(this.value)" style="background:transparent;border:none;outline:none;font-size:32px;font-weight:800;color:var(--text-primary);font-family:'Inter',sans-serif;cursor:pointer;padding:0;margin:0;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%226%22><path fill=%22%234a7ad4%22 d=%22M0 0l5 6 5-6z%22/></svg>');background-repeat:no-repeat;background-position:right 4px center;padding-right:20px;">${App.user.characters.map(c=>`<option value="${c.charId}" ${c.charId===App.activeCharId?'selected':''} style="background:var(--bg-deep);font-size:16px">${c.ign}</option>`).join('')}</select>`
             : `<span>${char?.ign || 'Adventurer'}</span>`}
         </div>
-        ${App.user.isAdmin ? `
         <div id="home-bell" style="width:36px;height:36px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-mid);display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;cursor:pointer;" onclick="document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));showView('announcements');">
           <span style="font-size:18px;">🔔</span>
           <span id="bell-badge" style="display:none;position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;padding:0 3px;border-radius:99px;background:var(--danger,#EF4444);color:#fff;font-size:10px;font-weight:700;align-items:center;justify-content:center;line-height:16px;text-align:center;"></span>
-        </div>` : ''}
+        </div>
       </div>
       <div style="display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--border);">
         <span style="color:var(--gold-dim);font-weight:700;">Lv.${char?.level||'—'}</span>
         <span style="color:var(--text-muted);">|</span>
         <span style="color:var(--text-secondary);">${char?.charClass ? `${_classEmoji(char.charClass)} ${char.charClass}` : '—'}</span>
         <span style="color:var(--text-muted);">|</span>
-        <span style="display:flex;align-items:center;gap:4px;color:var(--text-secondary);">🛡 ${char?.guild||char?.faction||'—'}</span>
+        <span style="display:flex;align-items:center;gap:4px;color:var(--text-secondary);">${char?.guild ? _guildIconHtml(char.guild) : '🛡'} ${char?.guild||char?.faction||'—'}</span>
       </div>
     </div>
 
@@ -1463,26 +1497,52 @@ function _classEmoji(cls) {
   return map[cls] || '';
 }
 
+let _lbFilter = 'all'; // 'all' or one of CLASS_OPTIONS
+
 function renderLeaderboard() {
   const el = document.getElementById('view-leaderboard');
   el.innerHTML = `<div class="section-title">🏆 Leaderboard</div><div class="card" style="padding:0;overflow:hidden">${Skeleton.leaderboard()}</div>`;
+  _lbFilter = 'all';
 
   API.read('get_leaderboard').then(lb => {
-    el.innerHTML = `
-      <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
-        <span>🏆 Leaderboard</span>
-        ${App.user.isAdmin ? `<button class="btn btn-secondary" style="font-size:.78rem;padding:.4rem .7rem" onclick="openPointsSearcher()">🔍 Points Searcher</button>` : ''}
-      </div>
-      <div class="card" style="padding:0;overflow:hidden">
-        ${!lb?.length
-          ? `<div class="empty-state"><span class="empty-state-icon">🏆</span>No points yet.</div>`
-          : lb.map(p => `<div class="leaderboard-row">
-              <span class="lb-rank ${p.rank===1?'top1':p.rank===2?'top2':p.rank===3?'top3':''}">${p.rank===1?'🥇':p.rank===2?'🥈':p.rank===3?'🥉':p.rank}</span>
-              <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${_classEmoji(p.charClass)} ${p.charClass||''}</div></div>
-              <div class="lb-points">${p.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
-            </div>`).join('')}
-      </div>`;
+    window._lbFull = lb || [];
+    _renderLeaderboardView();
   });
+}
+
+// Re-ranks within whatever the current filter is (1st Warrior, 1st Ranger,
+// etc. instead of just their overall rank), then redraws — cached data,
+// no refetch on filter change.
+function _renderLeaderboardView() {
+  const el = document.getElementById('view-leaderboard');
+  if (!el) return;
+  const lb = window._lbFull || [];
+  const filtered = _lbFilter === 'all' ? lb : lb.filter(p => (p.charClass||'').toLowerCase() === _lbFilter.toLowerCase());
+  const ranked = [...filtered].sort((a,b) => b.points - a.points).map((p,i) => ({ ...p, rank: i+1 })).slice(0, 20);
+
+  el.innerHTML = `
+    <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;flex-wrap:wrap">
+      <span>🏆 Leaderboard</span>
+      ${App.user.isAdmin ? `<button class="btn btn-secondary" style="font-size:.78rem;padding:.4rem .7rem" onclick="openPointsSearcher()">🔍 Points Searcher</button>` : ''}
+    </div>
+    <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.75rem">
+      <button type="button" class="btn btn-sm ${_lbFilter==='all'?'btn-primary':'btn-secondary'}" onclick="_lbSetFilter('all')">All</button>
+      ${CLASS_OPTIONS.map(cls => `<button type="button" class="btn btn-sm ${_lbFilter===cls?'btn-primary':'btn-secondary'}" onclick="_lbSetFilter('${cls}')">${_classEmoji(cls)} ${cls}</button>`).join('')}
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      ${!ranked.length
+        ? `<div class="empty-state"><span class="empty-state-icon">🏆</span>No points yet.</div>`
+        : ranked.map(p => `<div class="leaderboard-row">
+            <span class="lb-rank ${p.rank===1?'top1':p.rank===2?'top2':p.rank===3?'top3':''}">${p.rank===1?'🥇':p.rank===2?'🥈':p.rank===3?'🥉':p.rank}</span>
+            <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${_classEmoji(p.charClass)} ${p.charClass||''}</div></div>
+            <div class="lb-points">${p.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
+          </div>`).join('')}
+    </div>`;
+}
+
+function _lbSetFilter(cls) {
+  _lbFilter = cls;
+  _renderLeaderboardView();
 }
 
 // ============================================================
@@ -1500,7 +1560,10 @@ function openPointsSearcher() {
   _psRows = 0;
   _psSelected = {};
   showModal(`
-    <div class="modal-title">🔍 Points Searcher</div>
+    <div class="modal-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+      <span>🔍 Points Searcher</span>
+      <button class="modal-x-close" onclick="closeModal()" title="Close" aria-label="Close">✕</button>
+    </div>
     <div id="ps-input-section">
       <div id="ps-rows"></div>
       <button class="btn btn-secondary" style="font-size:.8rem;margin-top:.4rem" onclick="_psAddRow()">+ Add IGN</button>
@@ -1512,7 +1575,7 @@ function openPointsSearcher() {
     <div style="margin-top:1rem">
       <div class="form-label" style="margin-bottom:.4rem">Result</div>
       <div id="ps-result"><div class="empty-state" style="padding:1rem"><span class="empty-state-icon">🔍</span>Add IGNs above and hit Search.</div></div>
-    </div>`, { fullscreen: true });
+    </div>`);
 
   _psAddRow();
   API.read('get_roster').then(roster => {
@@ -1631,16 +1694,6 @@ function renderSettings() {
           <div class="settings-row-label">Theme</div>
           <div class="settings-row-desc">Switch between dark and light mode. The blue accent stays the same either way.</div>
         </div>
-        <div class="settings-theme-options">
-          <button type="button" class="theme-option-btn ${theme === 'dark' ? 'active' : ''}" onclick="setTheme('dark')">🌙 Dark</button>
-          <button type="button" class="theme-option-btn ${theme === 'light' ? 'active' : ''}" onclick="setTheme('light')">☀️ Light</button>
-        </div>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-row-label">Quick toggle</div>
-          <div class="settings-row-desc">Flip between dark and light with a single switch.</div>
-        </div>
         <label class="theme-switch">
           <input type="checkbox" id="theme-toggle-checkbox" ${theme === 'light' ? 'checked' : ''} onchange="setTheme(this.checked ? 'light' : 'dark')">
           <span class="theme-switch-track"></span>
@@ -1697,7 +1750,6 @@ function submitNickname() {
 //  BELL BADGE (unread announcement count)
 // ============================================================
 function _refreshBellBadge() {
-  if (!App.user.isAdmin) return;
   API.read('get_announcements').then(rows => {
     const badge = document.getElementById('bell-badge');
     if (!badge) return;
@@ -1708,9 +1760,9 @@ function _refreshBellBadge() {
 }
 
 // ============================================================
-//  ANNOUNCEMENTS — admin-only (readable by any admin, writable by
-//  super admins). Enforced both here (nav/render) and server-side
-//  in getAnnouncements/markAnnouncementsRead.
+//  ANNOUNCEMENTS — readable by every signed-in member, writable by
+//  any admin (super admin or plain admin). Enforced both here
+//  (nav/render) and server-side in getAnnouncements/createAnnouncement.
 // ============================================================
 function _goHomeFromAnnouncements() {
   document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b => b.classList.remove('active'));
@@ -1721,16 +1773,6 @@ function _goHomeFromAnnouncements() {
 function renderAnnouncements() {
   const el = document.getElementById('view-announcements');
 
-  // Admin-only page — the nav/bell are already hidden from non-admins,
-  // but guard the render itself in case someone lands here another way.
-  if (!App.user.isAdmin) {
-    el.innerHTML = `
-      <div class="card"><div class="empty-state">
-        <span class="empty-state-icon">🔒</span>Admins only.
-      </div></div>`;
-    return;
-  }
-
   const backBtn = `<button class="back-arrow-btn" onclick="_goHomeFromAnnouncements()" title="Back to Home" aria-label="Back to Home">←</button>`;
 
   el.innerHTML = `
@@ -1739,7 +1781,7 @@ function renderAnnouncements() {
         ${backBtn}
         <div class="section-title" style="margin-bottom:0">📢 Announcements</div>
       </div>
-      ${App.user.isSuperAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateAnnouncementModal()">+ New Announcement</button>` : ''}
+      ${App.user.isAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateAnnouncementModal()">+ New Announcement</button>` : ''}
     </div>
     ${Skeleton.spinner()}`;
 
@@ -1753,7 +1795,7 @@ function renderAnnouncements() {
           ${backBtn}
           <div class="section-title" style="margin-bottom:0">📢 Announcements</div>
         </div>
-        ${App.user.isSuperAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateAnnouncementModal()">+ New Announcement</button>` : ''}
+        ${App.user.isAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateAnnouncementModal()">+ New Announcement</button>` : ''}
       </div>
       <div style="display:flex;flex-direction:column;gap:.75rem">
         ${!rows.length
@@ -1829,7 +1871,7 @@ function renderSchedule() {
   el.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;margin-bottom:1rem">
       <div class="section-title" style="margin-bottom:0">📅 Schedule</div>
-      ${App.user.isAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateEventModal()">+ New Event</button>` : ''}
+      <button class="btn btn-primary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openCreateEventModal()">+ New Event</button>
     </div>
     <div id="schedule-calendar">${Skeleton.spinner()}</div>`;
 
@@ -1892,6 +1934,9 @@ function _renderCalendarGrid() {
       <div class="form-label" style="margin-bottom:.5rem">Upcoming</div>
       ${_renderUpcomingList(events, now)}
     </div>`;
+  // Same ticker Home uses — it queries [data-countdown] globally and
+  // self-clears when none remain, so it's safe to (re)start here too.
+  _startHomeCountdownTicker();
 }
 
 function _renderUpcomingList(events, now) {
@@ -1902,14 +1947,17 @@ function _renderUpcomingList(events, now) {
   if (!upcoming.length) return `<div class="card"><div class="empty-state"><span class="empty-state-icon">📅</span>Nothing scheduled.</div></div>`;
   return `<div style="display:flex;flex-direction:column;gap:.5rem">
     ${upcoming.map(ev => {
-      const live = now >= new Date(ev.scheduledAt).getTime() && now <= new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes)||240)*60000;
+      const spawnMs = new Date(ev.scheduledAt).getTime();
+      const live = now >= spawnMs && now <= spawnMs + (Number(ev.durationMinutes)||240)*60000;
       return `
       <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;cursor:pointer" onclick="openEventDetails('${ev.id}')">
         <div>
           <div style="font-size:.92rem;color:var(--text-primary)">${live ? '🔴 LIVE — ' : ''}${escHtml(ev.boss)}</div>
           <div style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)}</div>
         </div>
-        ${live ? `<button class="btn btn-primary" style="font-size:.78rem;padding:.35rem .7rem" onclick="event.stopPropagation();showView('attendance');document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
+        ${live
+          ? `<button class="btn btn-primary" style="font-size:.78rem;padding:.35rem .7rem" onclick="event.stopPropagation();showView('attendance');document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>`
+          : `<div style="font-size:.85rem;font-weight:700;color:var(--gold);flex-shrink:0" data-countdown="${spawnMs}">${_fmtCountdown(spawnMs - now)}</div>`}
       </div>`;
     }).join('')}
   </div>`;
@@ -1960,9 +2008,11 @@ function _isEventLive(ev, now) {
   return now >= start && now <= end;
 }
 
+// Fullscreen on mobile only — on desktop this now shows as a normal
+// centered card (see .modal-box-full-mobile in style.css).
 function openDayView(dateStr) {
   _dayViewDate = dateStr;
-  showModal(_dayViewHtml(dateStr), { fullscreen: true });
+  showModal(_dayViewHtml(dateStr), { fullscreenMobile: true });
 }
 
 function _dayViewHtml(dateStr) {
@@ -1997,7 +2047,7 @@ function _dayViewHtml(dateStr) {
       <button class="day-view-close" onclick="closeModal()">✕</button>
     </div>
     <div class="day-view-body">
-      ${App.user.isAdmin ? `<button class="btn btn-primary" style="font-size:.8rem;padding:.5rem 1rem;margin-bottom:.75rem" onclick="openCreateEventModal('${dateStr}','${dateStr}')">+ New Event</button>` : ''}
+      <button class="btn btn-primary" style="font-size:.8rem;padding:.5rem 1rem;margin-bottom:.75rem" onclick="openCreateEventModal('${dateStr}','${dateStr}')">+ New Event</button>
       ${rows || `<div class="empty-state"><span class="empty-state-icon">📅</span>No events scheduled this day.</div>`}
     </div>`;
 }
@@ -2059,7 +2109,7 @@ function openEventDetails(eventId, dayViewDate) {
       </div>
       ${ev.notes ? `<div class="evt-details-notes">${escHtml(ev.notes)}</div>` : ''}
       ${until.live && !App.user.isAdmin ? `<button class="btn btn-primary" style="margin-top:1rem;width:100%" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
-    </div>`, { fullscreen: true });
+    </div>`, { fullscreenMobile: true });
 }
 
 function _toggleEvtDetailsMenu(evt) {
@@ -2302,13 +2352,13 @@ function renderDrops() {
     ${Skeleton.table('', [20, 18, 28, 15, 12], 6)}`;
 
   API.read('get_grouped_runs').then(runs => {
+    window._runs = runs || [];
     el.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
         <div class="section-title" style="margin-bottom:0">💎 Boss Runs</div>
-        ${App.user.isAdmin ? `<button class="btn btn-secondary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openResetWindowModal()">🔄 Reset Window</button>` : ''}
+        <div id="reset-window-btn-wrap">${App.user.isAdmin ? `<button class="btn btn-secondary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openResetWindowModal()">🔄 Reset Window</button>` : ''}</div>
       </div>
       <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
-      <div id="late-linked-banner"></div>
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Timestamp</th><th>Boss</th><th>Drops</th><th>Participants</th><th>Status</th></tr></thead>
@@ -2326,51 +2376,44 @@ function renderDrops() {
           </tbody>
         </table>
       </div>`;
-    window._runs = runs || [];
-    if (App.user.isAdmin) { renderLateLinkedBanner(); }
-  });
-}
-
-// ============================================================
-//  LATE-LINKED REVIEW (admin — attendance auto-folded into an
-//  already-confirmed run's gold split after the fact)
-// ============================================================
-function renderLateLinkedBanner() {
-  const el = document.getElementById('late-linked-banner');
-  if (!el) return;
-  API.read('get_late_linked_attendance').then(rows => {
-    if (!el.isConnected) return; // navigated away before this landed
-    rows = rows || [];
-    if (!rows.length) { el.innerHTML = ''; return; }
-    el.innerHTML = `
-      <div class="collapsible-header" onclick="toggleCollapsible(this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;background:rgba(230,168,66,.08);border:1px solid rgba(230,168,66,.3);border-radius:var(--radius);padding:.7rem 1rem;margin-bottom:1rem">
-        <span style="font-size:.85rem;color:#e6a842">⏱ ${rows.length} submission${rows.length===1?'':'s'} landed after ${rows.length===1?'its':'their'} run was already confirmed — auto-included in the gold split.</span>
-        <span class="collapsible-arrow" style="font-size:.75rem;color:#e6a842">▼</span>
-      </div>
-      <div class="collapsible-body collapsed" style="max-height:0;margin-bottom:1rem">
-        <div class="table-scroll">
-          <table class="data-table">
-            <thead><tr><th>Char</th><th>Boss</th><th>Submitted</th><th>Confirmed By</th><th></th></tr></thead>
-            <tbody>${rows.map(r => `
-              <tr>
-                <td>${escHtml(r.ign)}</td>
-                <td><span class="boss-row-name">${_bossThumbHtml(r.boss)}${escHtml(r.boss)}</span></td>
-                <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.timestamp)} ${fmtTime(r.timestamp)}</td>
-                <td style="font-size:.78rem;color:var(--text-secondary)">${escHtml(r.confirmedBy||'—')}</td>
-                <td>${App.user.isSuperAdmin
-                  ? `<button class="btn btn-sm btn-danger" onclick="deleteLateLinkedEntry('${r.id}','${String(r.ign).replace(/'/g,"\\'")}')" title="Remove — not a real straggler">🗑</button>`
-                  : `<span title="Only a super admin can remove this" style="opacity:.4;font-size:.85rem">🔒</span>`}</td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>`;
+    if (App.user.isAdmin) _refreshResetWindowButton();
   });
 }
 
 // ============================================================
 //  RESET WINDOW (admin — emergency maintenance handling)
+//  Now a 3-step confirmation flow that schedules a future reset time
+//  instead of resetting immediately. See scheduleWindowReset() /
+//  executeScheduledResetIfDue() in index.ts for the backend side and
+//  its cron caveat.
 // ============================================================
+
+// Checks whether a reset is already pending and updates the button to
+// either the normal action button or a disabled "scheduled" state.
+// Also opportunistically fires the reset if its time has arrived.
+function _refreshResetWindowButton() {
+  API.read('get_window_resets').then(info => {
+    const wrap = document.getElementById('reset-window-btn-wrap');
+    if (!wrap) return;
+    if (info?.pendingResetAt) {
+      const dueMs = new Date(info.pendingResetAt).getTime();
+      if (Date.now() >= dueMs) {
+        // Our turn to actually fire it — safe to call repeatedly, only
+        // the client that happens to poll after the due time does anything.
+        API.write('execute_scheduled_reset', {}, ['get_grouped_runs', 'get_window_resets']).then(res => {
+          if (res.executed) { toast('Scheduled window reset executed.', 'success'); renderDrops(); }
+        });
+        return;
+      }
+      wrap.innerHTML = `<button class="btn btn-secondary" disabled title="A reset is already scheduled for ${fmtDate(info.pendingResetAt)} ${fmtTime(info.pendingResetAt)}" style="opacity:.5;cursor:not-allowed">🔄 Reset scheduled — ${fmtTime(info.pendingResetAt)}</button>`;
+    } else {
+      wrap.innerHTML = `<button class="btn btn-secondary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openResetWindowModal()">🔄 Reset Window</button>`;
+    }
+  }).catch(() => {});
+}
+
+let _pendingResetScheduledFor = null;
+
 function openResetWindowModal() {
   showModal(`
     <div class="modal-title">🔄 Reset Boss Window</div>
@@ -2378,21 +2421,77 @@ function openResetWindowModal() {
       Use this after an emergency maintenance/respawn. It forces the next attendance
       submissions for <strong>every boss</strong> into brand-new run windows, even if they
       land within 2 hours of the last one. Already-confirmed runs are not affected.
+      An announcement will be posted immediately telling the alliance when it'll happen.
+    </p>
+    <div class="form-group">
+      <label class="form-label">Reset at</label>
+      <input class="form-input" id="reset-window-time" type="datetime-local">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="_resetWindowStep1()">Continue</button>
+    </div>`);
+}
+
+function _resetWindowStep1() {
+  const raw = document.getElementById('reset-window-time').value;
+  if (!raw) { toast('Pick a time first.', 'error'); return; }
+  const iso = new Date(raw).toISOString();
+  if (new Date(iso).getTime() <= Date.now()) { toast('That time is already in the past.', 'error'); return; }
+  _pendingResetScheduledFor = iso;
+
+  showModal(`
+    <div class="modal-title">⚠️ Confirm (1 of 3)</div>
+    <p style="color:var(--text-secondary);font-size:.9rem;margin-bottom:1rem">
+      You're scheduling a boss window reset for <strong>${fmtDate(iso)} ${fmtTime(iso)}</strong>.
+      This affects every boss and every member. Continue?
     </p>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="reset-window-btn" onclick="submitWindowReset()">🔄 Reset Window</button>
+      <button class="btn btn-primary" onclick="_resetWindowStep2()">Continue</button>
+    </div>`);
+}
+
+function _resetWindowStep2() {
+  showModal(`
+    <div class="modal-title">⚠️ Confirm (2 of 3)</div>
+    <p style="color:var(--text-secondary);font-size:.9rem;margin-bottom:1rem">
+      Second confirmation — this cannot be undone once it fires, and an announcement
+      goes out to the whole alliance the moment you confirm the final step. Still sure?
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="_resetWindowStep3()">Continue</button>
+    </div>`);
+}
+
+function _resetWindowStep3() {
+  showModal(`
+    <div class="modal-title">🛑 Final Confirmation (3 of 3)</div>
+    <p style="color:var(--text-secondary);font-size:.9rem;margin-bottom:1rem">
+      This is the last step. Clicking below immediately posts the announcement and
+      locks in the reset for <strong>${fmtDate(_pendingResetScheduledFor)} ${fmtTime(_pendingResetScheduledFor)}</strong>.
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger" id="reset-window-final-btn" onclick="submitWindowReset()">🔄 Schedule Reset</button>
     </div>`);
 }
 
 function submitWindowReset() {
-  const btn = document.getElementById('reset-window-btn');
-  btn.disabled = true; btn.textContent = '⏳ Resetting…';
+  const btn = document.getElementById('reset-window-final-btn');
+  btn.disabled = true; btn.textContent = '⏳ Scheduling…';
 
-  API.write('reset_window', {}, ['get_grouped_runs', 'get_window_resets']).then(res => {
-    if (res.success) { toast('Window reset for all bosses', 'success'); closeModal(); renderDrops(); }
-    else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '🔄 Reset Window'; }
-  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '🔄 Reset Window'; });
+  API.write('schedule_window_reset', { scheduledFor: _pendingResetScheduledFor },
+    ['get_window_resets', 'get_announcements']).then(res => {
+    if (res.success) {
+      toast('Reset scheduled and announcement posted.', 'success');
+      closeModal(); _pendingResetScheduledFor = null;
+      renderDrops();
+    } else {
+      toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '🔄 Schedule Reset';
+    }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '🔄 Schedule Reset'; });
 }
 
 function toggleDropQty(cb) {
@@ -2560,6 +2659,13 @@ function submitRunConfirm(idx) {
 // ============================================================
 function renderInventory() {
   const el = document.getElementById('view-inventory');
+  // Super-admin-only page — nav entries are already hidden from plain
+  // admins/members, but guard the render itself in case someone lands
+  // here another way (stale bookmark, dev console, etc.).
+  if (!App.user.isSuperAdmin) {
+    el.innerHTML = `<div class="card"><div class="empty-state"><span class="empty-state-icon">🔒</span>Super admins only.</div></div>`;
+    return;
+  }
 
   // Show skeleton tiles immediately
   el.innerHTML = `<div class="section-title">🎒 Inventory</div>${Skeleton.inventory()}`;
@@ -2711,6 +2817,10 @@ let _currentMonth = null;
 
 function renderPayouts() {
   const el = document.getElementById('view-payouts');
+  if (!App.user.isSuperAdmin) {
+    el.innerHTML = `<div class="card"><div class="empty-state"><span class="empty-state-icon">🔒</span>Super admins only.</div></div>`;
+    return;
+  }
   el.innerHTML = `<div class="section-title">📊 Payouts</div>${Skeleton.spinner()}`;
 
   API.read('get_available_months').then(months => {
@@ -2800,6 +2910,17 @@ function togglePaid(cb) {
 function renderRoster() {
   const el = document.getElementById('view-roster');
 
+  // Super-admin-only page — the nav entries are already hidden from
+  // plain admins, but guard the render itself in case someone lands
+  // here another way (stale bookmark, dev console, etc.).
+  if (!App.user.isSuperAdmin) {
+    el.innerHTML = `
+      <div class="card"><div class="empty-state">
+        <span class="empty-state-icon">🔒</span>Super admins only.
+      </div></div>`;
+    return;
+  }
+
   // Skeleton cards
   el.innerHTML = `
     <div class="section-title">👥 Roster</div>
@@ -2836,7 +2957,7 @@ function rosterCard(r) {
     : `<span class="email-blurred" title="Only super admins can view member emails">${escHtml(r.email)}</span>`;
   return `<div class="card">
     <div class="card-header">
-      <div><div class="card-title">${escHtml(nameLabel)}</div><div class="card-meta">${emailHtml}</div></div>
+      <div><div class="card-title" style="cursor:pointer" onclick="openMemberCharsModal('${escHtml(r.email)}')" title="View / edit characters">${escHtml(nameLabel)}</div><div class="card-meta">${emailHtml}</div></div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         <span class="status ${r.status==='active'?'status-confirmed':'status-pending'}">${r.status}</span>
         ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
@@ -2948,6 +3069,69 @@ function submitAddChar(memberEmail) {
 }
 
 // ============================================================
+//  MEMBER CHARACTERS (super admin — click a roster member to view/edit
+//  their registered characters). If they have exactly one character,
+//  skip straight to the edit popup — the picker step would be pointless.
+// ============================================================
+function openMemberCharsModal(memberEmail) {
+  const roster = window._rosterData || [];
+  const member = roster.find(r => r.email === memberEmail);
+  const chars  = member?.characters || [];
+  if (!chars.length) { toast('No characters registered.', 'error'); return; }
+
+  if (chars.length === 1) { openEditCharacterModal(chars[0].charId); return; }
+
+  const label = member?.nickname || chars[0]?.ign || 'Member';
+  showModal(`
+    <div class="modal-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+      <span>👤 ${escHtml(label)}'s Characters</span>
+      <button class="modal-x-close" onclick="closeModal()" title="Close" aria-label="Close">✕</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:.5rem">
+      ${chars.map(c => `
+        <div class="card" style="cursor:pointer;padding:.85rem 1rem" onclick="openEditCharacterModal('${c.charId}')">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+            <div>
+              <div style="font-weight:700;color:var(--text-primary)">${_classEmoji(c.charClass)} ${escHtml(c.ign)}</div>
+              <div style="font-size:.78rem;color:var(--text-secondary)">Lv${c.level} · ${escHtml(c.guild||'—')}</div>
+            </div>
+            <span style="color:var(--text-muted)">›</span>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+}
+
+function openEditCharacterModal(charId) {
+  const roster = window._rosterData || [];
+  let char = null;
+  roster.forEach(m => (m.characters || []).forEach(c => { if (c.charId === charId) char = c; }));
+  if (!char) { toast('Character not found.', 'error'); return; }
+
+  showModal(`
+    <div class="modal-title">✎ Edit Character</div>
+    <div class="form-group"><label class="form-label">In-Game Name</label><input class="form-input" id="ec-ign" value="${escHtml(char.ign||'')}"></div>
+    <div class="form-group"><label class="form-label">Level</label><input class="form-input" id="ec-level" type="number" value="${escHtml(String(char.level||''))}"></div>
+    <div class="form-group"><label class="form-label">Guild</label><select class="form-select" id="ec-guild">${_selectOptions(GUILD_OPTIONS, char.guild||'')}</select></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitEditCharacter('${charId}')">💾 Save</button>
+    </div>`);
+}
+
+function submitEditCharacter(charId) {
+  const ign   = document.getElementById('ec-ign').value.trim();
+  const level = document.getElementById('ec-level').value.trim();
+  const guild = document.getElementById('ec-guild').value.trim();
+  if (!ign) { toast('IGN required.', 'error'); return; }
+  API.write('update_character', { charId, fields: { ign, level, guild } },
+    ['get_roster', 'get_leaderboard', 'get_grouped_runs']).then(res => {
+    if (res.success) { toast('Character updated!', 'success'); closeModal(); renderRoster(); }
+    else toast(res.error || 'Error', 'error');
+  });
+}
+
+// ============================================================
 //  ATTENDANCE HISTORY (admin — view & delete mistake submissions)
 // ============================================================
 function openAttendanceHistoryModal(charId, ign) {
@@ -2992,13 +3176,6 @@ function deleteAttendanceEntry(id, charId, ign) {
   });
 }
 
-function deleteLateLinkedEntry(id, ign) {
-  if (!confirm(`Remove ${ign}'s late submission? This also removes the points it earned and pulls them out of that run's gold split.`)) return;
-  _deleteAttendanceCore(id).then(res => {
-    if (res.success) renderLateLinkedBanner();
-  });
-}
-
 function _deleteAttendanceCore(id) {
   return API.write('delete_attendance', { id }, ['get_roster', 'get_grouped_runs', 'get_leaderboard', 'get_my_attendance', 'get_char_attendance', 'get_late_linked_attendance', 'get_inventory'])
     .then(res => {
@@ -3019,8 +3196,40 @@ function _deleteAttendanceCore(id) {
 // ============================================================
 //  SIDEBAR / MODAL / TOAST / UTILS
 // ============================================================
-function _openSidebar()  { document.getElementById('sidebar').classList.remove('hidden'); document.getElementById('sidebar-overlay').classList.remove('hidden'); document.getElementById('more-btn').classList.add('active'); }
+function _openSidebar()  {
+  document.getElementById('sidebar').classList.remove('hidden');
+  document.getElementById('sidebar-overlay').classList.remove('hidden');
+  document.getElementById('more-btn').classList.add('active');
+  _sizeSidebarLinks();
+}
 function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
+
+// The CSS grid (`grid-template-rows:auto auto 1fr` + `min-height:0` on
+// .sidebar-links) SHOULD be enough on its own to force the link list into
+// the remaining space and let it scroll — but in practice some mobile
+// browsers still let .sidebar-links grow to its full content height
+// instead of clamping to the 1fr row, which is exactly what produced the
+// "pages overflow off-screen and can't be clicked" bug. Rather than keep
+// guessing at CSS-only fixes, this measures the ACTUAL space left inside
+// the drawer after the header/user blocks and sets an explicit inline
+// max-height in px on .sidebar-links — that can't silently fail the way
+// implicit grid/flex sizing can, so the overflow-y:auto underneath it is
+// guaranteed to kick in whenever the links don't fit.
+function _sizeSidebarLinks() {
+  const sidebar = document.getElementById('sidebar');
+  const header  = sidebar?.querySelector('.sidebar-header');
+  const user    = sidebar?.querySelector('.sidebar-user');
+  const links   = sidebar?.querySelector('.sidebar-links');
+  if (!sidebar || !header || !user || !links) return;
+  const used = header.offsetHeight + user.offsetHeight;
+  links.style.maxHeight = `calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - ${used}px)`;
+}
+// Re-measure on resize/orientation change (e.g. keyboard show/hide,
+// rotating the device, or the admin-pages dropdown opening/closing while
+// the drawer is already open) so the cap stays accurate.
+window.addEventListener('resize', () => {
+  if (!document.getElementById('sidebar')?.classList.contains('hidden')) _sizeSidebarLinks();
+});
 
 // ── DESKTOP SIDEBAR — collapse to an icon rail, expanded by default ──
 function _toggleDesktopSidebar() {
@@ -3028,6 +3237,11 @@ function _toggleDesktopSidebar() {
   const btn = document.getElementById('dsb-collapse-btn');
   if (!dsb) return;
   const collapsed = dsb.classList.toggle('collapsed');
+  // #desktop-sidebar (in #app-chrome) and #main-content (in #app) are no
+  // longer DOM siblings, so CSS can't reach #main-content via a sibling
+  // combinator off #desktop-sidebar — mirror the state onto <body> instead,
+  // which both containers' CSS can key off regardless of where they live.
+  document.body.classList.toggle('dsb-collapsed', collapsed);
   if (btn) { btn.textContent = collapsed ? '»' : '«'; btn.title = collapsed ? 'Expand' : 'Collapse'; }
   localStorage.setItem('dsb_collapsed', collapsed ? '1' : '0');
 }
@@ -3237,19 +3451,29 @@ function _goToTab(name) {
 })();
 
 // opts.fullscreen: renders the modal edge-to-edge (no card, no backdrop
-// blur) for screens meant to feel like their own page — the day-agenda
-// list and event-details screen use this.
+// blur) on EVERY screen size, mobile and desktop alike. No modal should
+// use this anymore — desktop users should always get a centered card so
+// their focus stays in the middle of the screen — but the option is left
+// in place in case a genuine full-page takeover is ever needed again.
+// opts.fullscreenMobile: same edge-to-edge treatment, but only below the
+// 700px mobile breakpoint (see style.css) — above it, renders as a normal
+// centered card. The day-agenda list and event-details screen use this.
 function showModal(html, opts) {
-  const full = !!(opts && opts.fullscreen);
+  const full   = !!(opts && opts.fullscreen);
+  const fullM  = !!(opts && opts.fullscreenMobile);
   document.getElementById('modal-box').innerHTML = html;
   document.getElementById('modal-box').classList.toggle('modal-box-full', full);
   document.getElementById('modal-overlay').classList.toggle('modal-overlay-full', full);
+  document.getElementById('modal-box').classList.toggle('modal-box-full-mobile', fullM);
+  document.getElementById('modal-overlay').classList.toggle('modal-overlay-full-mobile', fullM);
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 function closeModal() {
   document.getElementById('modal-overlay').classList.add('hidden');
   document.getElementById('modal-overlay').classList.remove('modal-overlay-full');
   document.getElementById('modal-box').classList.remove('modal-box-full');
+  document.getElementById('modal-overlay').classList.remove('modal-overlay-full-mobile');
+  document.getElementById('modal-box').classList.remove('modal-box-full-mobile');
 }
 
 function toast(msg, type='') {

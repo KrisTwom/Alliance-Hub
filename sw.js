@@ -1,6 +1,10 @@
 // ── Bump this version string on every deploy to invalidate stale caches ──
 // e.g. alliance-tracker-v2, v3, or use a build hash injected at deploy time.
+<<<<<<< HEAD
 const CACHE_NAME = 'alliance-tracker-v6';
+=======
+const CACHE_NAME = 'alliance-tracker-v5';
+>>>>>>> b486dca88bcdf73591cffd21ff1911fb96173b92
 // app.js and index.html are excluded from precache — they're fetched
 // network-first so auth/logic fixes always land without a hard refresh.
 const STATIC_ASSETS = [
