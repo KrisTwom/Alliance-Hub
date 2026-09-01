@@ -2731,9 +2731,24 @@ function renderKos() {
   el.innerHTML = `<div class="section-title">☠️ KOS List</div>${Skeleton.cards('', 2)}`;
 
   API.read('get_kos').then(kos => {
-    window._kosData = kos || { guilds: [], individuals: [], offGuilds: [], offIndividuals: [] };
+    if (!kos || kos.error) {
+      el.innerHTML = `<div class="section-title">☠️ KOS List</div>
+        <div class="card"><div class="empty-state">
+          <span class="empty-state-icon">⚠️</span>
+          Could not load the KOS list${kos?.error ? `: ${escHtml(typeof kos.error === 'string' ? kos.error : JSON.stringify(kos.error))}` : ''}.
+          <br><span style="font-size:.8rem;color:var(--text-muted)">If this is a fresh deploy, make sure the kos_data migration has been run.</span>
+        </div></div>`;
+      return;
+    }
+    window._kosData = {
+      guilds: kos.guilds || [], individuals: kos.individuals || [],
+      offGuilds: kos.offGuilds || [], offIndividuals: kos.offIndividuals || [],
+      updatedAt: kos.updatedAt || null, updatedByIgn: kos.updatedByIgn || null,
+    };
     window._kosEditing = false;
     _renderKosView();
+  }).catch(() => {
+    el.innerHTML = `<div class="section-title">☠️ KOS List</div><div class="card"><div class="empty-state"><span class="empty-state-icon">⚠️</span>Network error loading the KOS list.</div></div>`;
   });
 }
 
