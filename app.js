@@ -406,7 +406,7 @@ function _buildShell() {
     <header id="main-header">
       <div class="header-right">
         <span id="header-username" class="header-user"></span>
-        <span id="header-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}">${App.user.isAdmin ? 'Admin' : 'Member'}</span>
+        <span id="header-role" class="role-badge ${_roleInfo().cls}">${_roleInfo().label}</span>
       </div>
     </header>
 
@@ -420,6 +420,7 @@ function _buildShell() {
       <div id="view-guide"       class="view"></div>
       <div id="view-announcements" class="view"></div>
       <div id="view-schedule"    class="view"></div>
+      <div id="view-kos"         class="view"></div>
       <div id="view-drops"       class="view"></div>
       <div id="view-inventory"   class="view"></div>
       <div id="view-payouts"     class="view"></div>
@@ -450,6 +451,7 @@ function _buildShell() {
         <button class="dsb-link" data-view="guide" title="Guide"><span class="dsb-icon">📖</span><span class="dsb-label">Guide</span></button>
         <button class="dsb-link" data-view="announcements" title="Announcements"><span class="dsb-icon">📢</span><span class="dsb-label">Announcements</span></button>
         <button class="dsb-link" data-view="schedule" title="Schedule"><span class="dsb-icon">📅</span><span class="dsb-label">Schedule</span></button>
+        <button class="dsb-link" data-view="kos" title="KOS List"><span class="dsb-icon">☠️</span><span class="dsb-label">KOS List</span></button>
         ${App.user.isAdmin ? `
         <div class="dsb-section-label"><span>Admin Pages</span></div>
         <button class="dsb-link" data-view="drops" title="Drops"><span class="dsb-icon">💎</span><span class="dsb-label">Drops</span></button>
@@ -485,7 +487,7 @@ function _buildShell() {
       </div>
       <div class="sidebar-user">
         <div id="sidebar-username" class="sidebar-uname"></div>
-        <div id="sidebar-role" class="role-badge ${App.user.isAdmin ? 'admin' : ''}" style="margin-top:4px">${App.user.isAdmin ? 'Admin' : 'Member'}</div>
+        <div id="sidebar-role" class="role-badge ${_roleInfo().cls}" style="margin-top:4px">${_roleInfo().label}</div>
       </div>
       <div class="sidebar-links">
         <button class="sidebar-link" data-view="my-splits">💰 My Splits</button>
@@ -495,6 +497,7 @@ function _buildShell() {
         <button class="sidebar-link" data-view="guide">📖 App & Alliance Guide</button>
         <button class="sidebar-link" data-view="announcements">📢 Announcements</button>
         <button class="sidebar-link" data-view="schedule">📅 Schedule</button>
+        <button class="sidebar-link" data-view="kos">☠️ KOS List</button>
         ${App.user.isAdmin ? `
         <div class="sidebar-group-header" id="sidebar-admin-group-header">
           <span>⚙ Admin Pages</span><span class="sidebar-group-arrow">▼</span>
@@ -781,6 +784,7 @@ function showView(name) {
     guide:             renderGuide,
     announcements:     renderAnnouncements,
     schedule:          renderSchedule,
+    kos:               renderKos,
     drops:             renderDrops,
     inventory:         renderInventory,
     payouts:           renderPayouts,
@@ -1058,6 +1062,10 @@ function renderAttendance() {
   const chars = App.user.characters || [];
   if (!char) {
     el.innerHTML = `<div class="pending-screen"><div class="pending-icon">⚠️</div><div class="pending-title">No Character</div><p class="pending-text">Ask an admin to set up your character.</p></div>`;
+    return;
+  }
+  if (App.user.isRestricted) {
+    el.innerHTML = `<div class="pending-screen"><div class="pending-icon">🚫</div><div class="pending-title">Attendance Restricted</div><p class="pending-text">Your account is currently restricted from submitting attendance.<br>Contact an admin if you believe this is a mistake.</p></div>`;
     return;
   }
   // Config is pre-loaded — this renders instantly, zero network calls
@@ -1489,6 +1497,27 @@ function renderMyAttendanceHistory() {
 }
 
 // ============================================================
+//  ROLES
+// ============================================================
+// Maps App.user's role flags to a display label + badge CSS class,
+// used anywhere a role badge is shown (header, sidebar, announcements).
+function _roleInfo(user) {
+  user = user || App.user || {};
+  if (user.isSuperAdmin)   return { label: 'Super Admin',   cls: 'super-admin' };
+  if (user.isDropsHandler) return { label: 'Drops Handler', cls: 'drops-handler' };
+  if (user.isAdmin)        return { label: 'Admin',         cls: 'admin' };
+  if (user.isRestricted)   return { label: 'Restricted',    cls: 'restricted' };
+  return { label: 'Member', cls: '' };
+}
+
+const ROLE_LABELS = {
+  super_admin:   'Super Admin',
+  drops_handler: 'Drops Handler',
+  admin:         'Admin',
+  restricted:    'Restricted',
+};
+
+// ============================================================
 //  LEADERBOARD  (standalone page)
 // ============================================================
 // Sword=Warrior, Bow=Ranger, Staff=Magician, Boxing glove=Breaker.
@@ -1759,7 +1788,7 @@ function renderSettings() {
           <div class="settings-row-label">Signed in as</div>
           <div class="settings-row-desc">${escHtml(App.user.email)}${char ? ` · Playing as ${escHtml(char.ign)}` : ''}</div>
         </div>
-        <span class="role-badge ${App.user.isAdmin ? 'admin' : ''}">${App.user.isSuperAdmin ? 'Super Admin' : (App.user.isAdmin ? 'Admin' : 'Member')}</span>
+        <span class="role-badge ${_roleInfo().cls}">${_roleInfo().label}</span>
       </div>
       <div class="settings-row">
         <div>
@@ -2561,40 +2590,43 @@ function openRunModal(idx) {
       <div id="modal-participants" style="display:flex;flex-direction:column;gap:.35rem;max-height:160px;overflow-y:auto;padding:.5rem;background:var(--bg-raised);border-radius:var(--radius);border:1px solid var(--border)">
         ${run.participants.map(p => `
           <div style="display:flex;align-items:center;gap:.5rem;font-size:.9rem">
-            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;flex:1">
-              <input type="checkbox" class="part-check" value="${p.charId}" data-ign="${p.ign}" data-email="${p.email}" checked style="accent-color:var(--gold)">
+            <label style="display:flex;align-items:center;gap:.5rem;cursor:${App.user.isDropsHandler ? 'pointer' : 'default'};flex:1">
+              <input type="checkbox" class="part-check" value="${p.charId}" data-ign="${p.ign}" data-email="${p.email}" checked ${App.user.isDropsHandler ? '' : 'disabled'} style="accent-color:var(--gold)">
               ${escHtml(p.ign)}${p.manuallyAdded ? ' <span style="font-size:.7rem;color:var(--text-muted)">(added by admin)</span>' : ''}
             </label>
-            <button type="button" class="btn btn-sm btn-danger" style="padding:.15rem .5rem" title="Remove attendee entirely (also removes points earned)" onclick="removeRunParticipant(${idx}, '${p.attendanceId}', '${String(p.ign).replace(/'/g, "\\'")}')">🗑</button>
+            ${App.user.isDropsHandler ? `<button type="button" class="btn btn-sm btn-danger" style="padding:.15rem .5rem" title="Remove attendee entirely (also removes points earned)" onclick="removeRunParticipant(${idx}, '${p.attendanceId}', '${String(p.ign).replace(/'/g, "\\'")}')">🗑</button>` : ''}
           </div>`).join('')}
       </div>
-      ${App.user.isAdmin ? `
+      ${App.user.isDropsHandler ? `
       <div style="margin-top:.5rem;position:relative">
         <input type="text" class="form-input" id="add-participant-search" placeholder="+ Add attendee (search character name)…" autocomplete="off" oninput="_filterAddParticipant(${idx})">
         <div id="add-participant-results" style="display:none;position:absolute;left:0;right:0;top:100%;margin-top:2px;background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:var(--radius);max-height:180px;overflow-y:auto;z-index:20"></div>
-      </div>` : ''}
+      </div>` : App.user.isAdmin ? `<p style="font-size:.75rem;color:var(--text-muted);margin-top:.5rem">Only a Drops Handler or Super Admin can edit attendees.</p>` : ''}
     </div>
     <div class="form-group">
       <div class="form-label">Items Dropped</div>
       <div style="display:flex;flex-direction:column;gap:.35rem">
         ${drops.map(item => {
           const saved = savedDrops.find(d => d.itemName === item);
-          return `<label style="display:flex;align-items:center;gap:.75rem;font-size:.9rem;cursor:pointer">
-            <input type="checkbox" class="drop-check" value="${item}" ${saved?'checked':''} style="accent-color:var(--gold)" onchange="toggleDropQty(this)">
+          const locked = !App.user.isDropsHandler;
+          return `<label style="display:flex;align-items:center;gap:.75rem;font-size:.9rem;cursor:${locked ? 'default' : 'pointer'}">
+            <input type="checkbox" class="drop-check" value="${item}" ${saved?'checked':''} ${locked?'disabled':''} style="accent-color:var(--gold)" onchange="toggleDropQty(this)">
             <span style="flex:1">${item}</span>
-            <input type="number" min="0" max="99" value="${saved?.qty||0}" class="form-input drop-qty" data-item="${item}" style="width:60px;padding:.3rem .5rem;font-size:.85rem" ${saved?'':'disabled style="width:60px;padding:.3rem .5rem;font-size:.85rem;opacity:.35"'}>
+            <input type="number" min="0" max="99" value="${saved?.qty||0}" class="form-input drop-qty" data-item="${item}" style="width:60px;padding:.3rem .5rem;font-size:.85rem;opacity:${(saved && !locked)?1:.35}" ${(saved && !locked)?'':'disabled'}>
           </label>`;
         }).join('')}
       </div>
     </div>
     <div class="form-group">
       <label class="form-label">Notes (internal only)</label>
-      <textarea class="form-textarea" id="modal-notes" placeholder="Optional admin notes…">${run.notes||''}</textarea>
+      <textarea class="form-textarea" id="modal-notes" placeholder="Optional admin notes…" ${App.user.isDropsHandler?'':'disabled'}>${run.notes||''}</textarea>
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       ${run.runId && !App.user.isSuperAdmin
         ? `<button class="btn btn-secondary" disabled title="Only super admins can edit a confirmed run" style="opacity:.45;cursor:not-allowed;">🔒 Locked</button>`
+        : !App.user.isDropsHandler
+        ? `<button class="btn btn-secondary" disabled title="Only a Drops Handler or Super Admin can confirm runs" style="opacity:.45;cursor:not-allowed;">🔒 Drops Handler only</button>`
         : `<button class="btn btn-primary" id="confirm-run-btn" onclick="submitRunConfirm(${idx})">${run.runId ? '💾 Save Changes' : '✓ Confirm Run'}</button>`}
     </div>`);
 }
@@ -2689,6 +2721,201 @@ function submitRunConfirm(idx) {
     if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); renderDrops(); }
     else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; }
   }).catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; });
+}
+
+// ============================================================
+//  KOS LIST  (viewable by everyone, editable by admin-or-above)
+// ============================================================
+function renderKos() {
+  const el = document.getElementById('view-kos');
+  el.innerHTML = `<div class="section-title">☠️ KOS List</div>${Skeleton.cards('', 2)}`;
+
+  API.read('get_kos').then(kos => {
+    window._kosData = kos || { guilds: [], individuals: [], offGuilds: [], offIndividuals: [] };
+    window._kosEditing = false;
+    _renderKosView();
+  });
+}
+
+function _kosChip(name, onRemove) {
+  return `<span style="display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;background:var(--bg-raised);border:1px solid var(--border);padding:4px 10px;border-radius:99px;color:var(--text-secondary)">
+    ${escHtml(name)}${onRemove ? `<span onclick="${onRemove}" style="cursor:pointer;color:var(--danger);font-weight:700" title="Remove">✕</span>` : ''}
+  </span>`;
+}
+
+function _kosIndividualCard(ind, idx, listKey, editing) {
+  const moveLabel = listKey === 'individuals' ? '→ Off-KOS' : '→ Back to KOS';
+  const moveFn    = listKey === 'individuals' ? `moveKosIndividual('individuals','offIndividuals',${idx})` : `moveKosIndividual('offIndividuals','individuals',${idx})`;
+  return `<div class="card" style="padding:.85rem 1rem;margin-bottom:.6rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;flex-wrap:wrap">
+      <strong style="color:var(--gold)">${escHtml(ind.name)}</strong>
+      ${editing ? `<div style="display:flex;gap:.4rem">
+        <button class="btn btn-sm btn-secondary" onclick="${moveFn}">${moveLabel}</button>
+        <button class="btn btn-sm btn-danger" onclick="removeKosIndividual('${listKey}',${idx})">✕ Remove</button>
+      </div>` : ''}
+    </div>
+    ${(ind.subAccounts && ind.subAccounts.length) || editing ? `
+    <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem">
+      ${(ind.subAccounts||[]).map((s,si) => _kosChip(s, editing ? `removeKosSubAccount('${listKey}',${idx},${si})` : null)).join('')}
+      ${editing ? `<input type="text" class="form-input" placeholder="+ alt IGN" style="width:110px;padding:.25rem .5rem;font-size:.78rem" onkeydown="if(event.key==='Enter'){addKosSubAccount('${listKey}',${idx},this.value);this.value='';}">` : ''}
+    </div>` : ''}
+  </div>`;
+}
+
+function _kosSection(title, guilds, individuals, listKeyGuilds, listKeyIndividuals, editing) {
+  return `
+    <div class="section-title" style="font-size:.95rem;margin-top:1.2rem">${title}</div>
+    <div class="card" style="margin-bottom:.75rem">
+      <div class="form-label" style="margin-bottom:.5rem">Guilds</div>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
+        ${guilds.length ? guilds.map((g,i) => _kosChip(g, editing ? `removeKosGuild('${listKeyGuilds}',${i})` : null)).join('') : `<span style="color:var(--text-muted);font-size:.85rem">None</span>`}
+        ${editing ? `<input type="text" class="form-input" placeholder="+ Add guild" style="width:140px;padding:.3rem .6rem;font-size:.82rem" onkeydown="if(event.key==='Enter'){addKosGuild('${listKeyGuilds}',this.value);this.value='';}">` : ''}
+      </div>
+    </div>
+    <div class="form-label" style="margin-bottom:.4rem">Individuals</div>
+    ${individuals.length ? individuals.map((ind,i) => _kosIndividualCard(ind, i, listKeyIndividuals, editing)).join('') : `<div class="card"><span style="color:var(--text-muted);font-size:.85rem">None</span></div>`}
+    ${editing ? `
+    <div style="display:flex;gap:.5rem;margin-top:.4rem">
+      <input type="text" class="form-input" id="new-${listKeyIndividuals}-name" placeholder="+ Add individual (IGN)…" style="flex:1">
+      <button class="btn btn-secondary" onclick="addKosIndividual('${listKeyIndividuals}')">+ Add</button>
+    </div>` : ''}`;
+}
+
+function _renderKosView() {
+  const el = document.getElementById('view-kos');
+  const kos = window._kosData;
+  const editing = !!window._kosEditing;
+  const data = editing ? window._kosDraft : kos;
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
+      <div class="section-title" style="margin-bottom:0">☠️ KOS List</div>
+      ${App.user.isAdmin ? (editing
+        ? `<div style="display:flex;gap:.5rem">
+             <button class="btn btn-secondary" onclick="cancelKosEdit()">Cancel</button>
+             <button class="btn btn-primary" onclick="openKosConfirm()">💾 Save Changes</button>
+           </div>`
+        : `<button class="btn btn-secondary" onclick="toggleKosEdit()">✏️ Edit</button>`) : ''}
+    </div>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin:.4rem 0 0">Guilds and individuals we keep Kill on Sight. Sub-accounts are listed under the main IGN.</p>
+    ${kos.updatedAt ? `<p style="color:var(--text-muted);font-size:.75rem;margin-top:.2rem">Last updated ${fmtDate(kos.updatedAt)} ${fmtTime(kos.updatedAt)}${kos.updatedByIgn ? ` by ${escHtml(kos.updatedByIgn)}` : ''}</p>` : ''}
+
+    ${_kosSection('⚔️ KOS', data.guilds, data.individuals, 'guilds', 'individuals', editing)}
+    ${_kosSection('✅ Off-KOS', data.offGuilds, data.offIndividuals, 'offGuilds', 'offIndividuals', editing)}
+  `;
+}
+
+function toggleKosEdit() {
+  window._kosDraft = JSON.parse(JSON.stringify(window._kosData));
+  window._kosEditing = true;
+  _renderKosView();
+}
+function cancelKosEdit() {
+  window._kosEditing = false;
+  window._kosDraft = null;
+  _renderKosView();
+}
+function addKosGuild(key, name) {
+  name = (name||'').trim();
+  if (!name) return;
+  if (window._kosDraft[key].some(g => g.toLowerCase() === name.toLowerCase())) { toast('Already on the list.', 'error'); return; }
+  window._kosDraft[key].push(name);
+  _renderKosView();
+}
+function removeKosGuild(key, idx) {
+  window._kosDraft[key].splice(idx, 1);
+  _renderKosView();
+}
+function addKosIndividual(key) {
+  const input = document.getElementById(`new-${key}-name`);
+  const name = (input?.value || '').trim();
+  if (!name) return;
+  if (window._kosDraft[key].some(i => i.name.toLowerCase() === name.toLowerCase())) { toast('Already on the list.', 'error'); return; }
+  window._kosDraft[key].push({ name, subAccounts: [] });
+  _renderKosView();
+}
+function removeKosIndividual(key, idx) {
+  window._kosDraft[key].splice(idx, 1);
+  _renderKosView();
+}
+function addKosSubAccount(key, idx, name) {
+  name = (name||'').trim();
+  if (!name) return;
+  const ind = window._kosDraft[key][idx];
+  if (ind.subAccounts.some(s => s.toLowerCase() === name.toLowerCase())) { toast('Already listed.', 'error'); return; }
+  ind.subAccounts.push(name);
+  _renderKosView();
+}
+function removeKosSubAccount(key, idx, subIdx) {
+  window._kosDraft[key][idx].subAccounts.splice(subIdx, 1);
+  _renderKosView();
+}
+function moveKosIndividual(fromKey, toKey, idx) {
+  const [ind] = window._kosDraft[fromKey].splice(idx, 1);
+  window._kosDraft[toKey].push(ind);
+  _renderKosView();
+}
+
+// Client-side mirror of the backend's diff so the confirmation modal can
+// preview exactly what announcement will be posted before committing.
+function _kosDiffLines(before, after) {
+  const lines = [];
+  const diffNames = (label, b, a) => {
+    const bs = new Set(b), as = new Set(a);
+    a.filter(n => !bs.has(n)).forEach(n => lines.push(`+ Added ${label}: ${n}`));
+    b.filter(n => !as.has(n)).forEach(n => lines.push(`− Removed ${label}: ${n}`));
+  };
+  const diffIndividuals = (label, b, a) => {
+    const bMap = new Map(b.map(i => [i.name, i]));
+    const aMap = new Map(a.map(i => [i.name, i]));
+    a.forEach(ai => {
+      const bi = bMap.get(ai.name);
+      if (!bi) { lines.push(`+ Added ${label}: ${ai.name}${ai.subAccounts.length ? ` (alts: ${ai.subAccounts.join(', ')})` : ''}`); return; }
+      const bs = new Set(bi.subAccounts), as = new Set(ai.subAccounts);
+      const addedSubs = ai.subAccounts.filter(s => !bs.has(s));
+      const removedSubs = bi.subAccounts.filter(s => !as.has(s));
+      if (addedSubs.length) lines.push(`+ Added alt(s) to ${ai.name} (${label}): ${addedSubs.join(', ')}`);
+      if (removedSubs.length) lines.push(`− Removed alt(s) from ${ai.name} (${label}): ${removedSubs.join(', ')}`);
+    });
+    b.forEach(bi => { if (!aMap.has(bi.name)) lines.push(`− Removed ${label}: ${bi.name}`); });
+  };
+  diffNames('KOS guild', before.guilds, after.guilds);
+  diffIndividuals('KOS individual', before.individuals, after.individuals);
+  diffNames('Off-KOS guild', before.offGuilds, after.offGuilds);
+  diffIndividuals('Off-KOS individual', before.offIndividuals, after.offIndividuals);
+  return lines;
+}
+
+function openKosConfirm() {
+  const lines = _kosDiffLines(window._kosData, window._kosDraft);
+  if (!lines.length) { toast('No changes to save.', 'error'); return; }
+  showModal(`
+    <div class="modal-title">Confirm KOS List Changes</div>
+    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:.75rem">This will post an announcement notifying the alliance of these changes:</p>
+    <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:var(--radius);padding:.75rem 1rem;font-size:.85rem;line-height:1.7;max-height:260px;overflow-y:auto">
+      ${lines.map(l => `<div>${escHtml(l)}</div>`).join('')}
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="_renderKosView()">Back</button>
+      <button class="btn btn-primary" id="kos-save-btn" onclick="submitKosSave()">✓ Confirm & Post Announcement</button>
+    </div>`);
+}
+
+function submitKosSave() {
+  const btn = document.getElementById('kos-save-btn');
+  btn.disabled = true; btn.textContent = '⏳ Saving…';
+  API.write('update_kos', window._kosDraft, ['get_kos', 'get_announcements']).then(res => {
+    if (res.success) {
+      toast('KOS list updated — announcement posted.', 'success');
+      closeModal();
+      window._kosEditing = false;
+      window._kosDraft = null;
+      renderKos();
+    } else {
+      toast(res.error || 'Error', 'error');
+      btn.disabled = false; btn.textContent = '✓ Confirm & Post Announcement';
+    }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '✓ Confirm & Post Announcement'; });
 }
 
 // ============================================================
@@ -2992,11 +3219,14 @@ function rosterCard(r) {
   const emailHtml = App.user.isSuperAdmin
     ? escHtml(r.email)
     : `<span class="email-blurred" title="Only super admins can view member emails">${escHtml(r.email)}</span>`;
+  const roleLabel = r.role ? (ROLE_LABELS[r.role] || r.role) : null;
+  const roleBadgeCls = { super_admin: 'super-admin', drops_handler: 'drops-handler', admin: 'admin', restricted: 'restricted' }[r.role] || '';
   return `<div class="card">
     <div class="card-header">
       <div><div class="card-title" style="cursor:pointer" onclick="openMemberCharsModal('${escHtml(r.email)}')" title="View / edit characters">${escHtml(nameLabel)}</div><div class="card-meta">${emailHtml}</div></div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         <span class="status ${r.status==='active'?'status-confirmed':'status-pending'}">${r.status}</span>
+        ${roleLabel ? `<span class="role-badge ${roleBadgeCls}" style="font-size:.7rem">${roleLabel}</span>` : ''}
         ${pts>0 ? `<span style="font-size:.8rem;color:var(--gold)">${pts} pts</span>` : ''}
       </div>
     </div>
@@ -3005,12 +3235,32 @@ function rosterCard(r) {
       const title = shared ? `Also linked to ${c.linkedEmails.length} other member(s) — click for history` : 'View attendance history';
       return `<span onclick="openAttendanceHistoryModal('${c.charId}','${(c.ign||'').replace(/'/g,"\\'")}')" style="cursor:pointer;font-size:.78rem;background:var(--bg-raised);border:1px solid var(--border);padding:2px 8px;border-radius:99px;color:var(--text-secondary)" title="${title}">${_classEmoji(c.charClass)} ${c.ign} · Lv${c.level} ${c.charClass}${shared ? ' 🔗' : ''}</span>`;
     }).join('')}</div>` : ''}
+    ${App.user.isSuperAdmin && r.role !== 'super_admin' ? `
+    <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem">
+      <label class="form-label" style="margin-bottom:0;font-size:.78rem">Role</label>
+      <select class="form-select" style="font-size:.8rem;padding:.3rem .5rem;width:auto" onchange="changeMemberRole('${escHtml(r.email)}', this.value)">
+        <option value="" ${!r.role?'selected':''}>Member</option>
+        <option value="restricted" ${r.role==='restricted'?'selected':''}>Restricted</option>
+        <option value="admin" ${r.role==='admin'?'selected':''}>Admin</option>
+        <option value="drops_handler" ${r.role==='drops_handler'?'selected':''}>Drops Handler</option>
+        <option value="super_admin" ${r.role==='super_admin'?'selected':''}>Super Admin</option>
+      </select>
+    </div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
       <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
       ${chars.length ? `<button class="btn btn-sm btn-danger" onclick="openRemoveCharModal('${r.email}')">− Remove Character</button>` : ''}
     </div>
   </div>`;
+}
+
+function changeMemberRole(memberEmail, role) {
+  const label = role ? (ROLE_LABELS[role] || role) : 'Member';
+  if (!confirm(`Set ${memberEmail}'s role to "${label}"?`)) { renderRoster(); return; }
+  API.write('set_member_role', { memberEmail, role: role || null }, ['get_roster']).then(res => {
+    if (res.success) { toast(`Role updated to ${label}.`, 'success'); renderRoster(); }
+    else { toast(res.error || 'Error', 'error'); renderRoster(); }
+  }).catch(() => { toast('Network error', 'error'); renderRoster(); });
 }
 
 function openRemoveCharModal(memberEmail) {

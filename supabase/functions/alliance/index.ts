@@ -9,8 +9,14 @@
 //  Project Settings → Edge Functions → Secrets):
 //    SUPABASE_URL            (auto-provided)
 //    SUPABASE_SERVICE_ROLE_KEY (auto-provided)
-//    ADMIN_EMAILS            comma-separated list
-//    SUPER_ADMIN_EMAILS      comma-separated list
+//    ADMIN_EMAILS            comma-separated list (bootstrap fallback)
+//    SUPER_ADMIN_EMAILS      comma-separated list (bootstrap fallback)
+//
+//  Fine-grained roles (Super Admin / Drops Handler / Admin / Restricted)
+//  are stored on roster.role and managed in-app via the Roster page
+//  (super admin only) — see the "Roles" section below. ADMIN_EMAILS/
+//  SUPER_ADMIN_EMAILS still work as a permanent bootstrap so the
+//  original admins can't lock themselves out.
 // ============================================================
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -135,9 +141,60 @@ async function updateNickname(supabase: ReturnType<typeof db>, email: string, da
   return { success: true, nickname };
 }
 
-// ── Helpers ───────────────────────────────────────────────────
-function isAdmin(email: string)      { return ADMIN_EMAILS.includes(email); }
-function isSuperAdmin(email: string) { return SUPER_ADMIN_EMAILS.includes(email); }
+// ── Roles ────────────────────────────────────────────────────
+// Four-tier hierarchy, stored on roster.role (nullable — a null role is
+// a plain Member): 'super_admin' > 'drops_handler' / 'admin' (parallel,
+// see below) > 'restricted'. ADMIN_EMAILS/SUPER_ADMIN_EMAILS remain as a
+// hardcoded bootstrap fallback (e.g. so the original admins never lock
+// themselves out if the roster row is missing/misconfigured) — the
+// roster.role column is the source of truth for anyone super admin has
+// explicitly assigned a role to.
+//
+// Permission summary:
+//   super_admin    — everything, incl. Inventory/Payouts/Roster pages
+//                    and granting/revoking roles
+//   drops_handler  — can additionally confirm runs / register drops
+//                    (on top of baseline admin-ish access below)
+//   admin          — announcements, KOS list edits, sees the Drops
+//                    page/tables/popup UI, but cannot confirm/save a run
+//   restricted     — normal member, EXCEPT cannot submit attendance
+type Role = 'super_admin' | 'drops_handler' | 'admin' | 'restricted' | null;
+
+async function getRole(supabase: ReturnType<typeof db>, email: string): Promise<Role> {
+  if (!email) return null;
+  const { data } = await supabase.from('roster').select('role').eq('email', email).maybeSingle();
+  return (data?.role as Role) || null;
+}
+
+// "Admin or above" — gates the general run-of-the-mill admin surface
+// (announcements, KOS edits, seeing the Drops page, event edit/delete,
+// roster approvals, etc). Drops Handler counts as admin-or-above too,
+// since it sits alongside/above plain Admin in capability.
+async function isAdmin(supabase: ReturnType<typeof db>, email: string): Promise<boolean> {
+  if (ADMIN_EMAILS.includes(email) || SUPER_ADMIN_EMAILS.includes(email)) return true;
+  const role = await getRole(supabase, email);
+  return role === 'admin' || role === 'drops_handler' || role === 'super_admin';
+}
+
+async function isSuperAdmin(supabase: ReturnType<typeof db>, email: string): Promise<boolean> {
+  if (SUPER_ADMIN_EMAILS.includes(email)) return true;
+  const role = await getRole(supabase, email);
+  return role === 'super_admin';
+}
+
+// Only Drops Handler and Super Admin can actually confirm a run / save
+// registered drops — plain Admin can view the Drops page but not save.
+async function isDropsHandler(supabase: ReturnType<typeof db>, email: string): Promise<boolean> {
+  if (SUPER_ADMIN_EMAILS.includes(email)) return true;
+  const role = await getRole(supabase, email);
+  return role === 'drops_handler' || role === 'super_admin';
+}
+
+// The one and only restriction Restricted carries: no attendance submission.
+async function isRestricted(supabase: ReturnType<typeof db>, email: string): Promise<boolean> {
+  const role = await getRole(supabase, email);
+  return role === 'restricted';
+}
 function ok(data: unknown)  { return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }); }
 function err(msg: string)   { return new Response(JSON.stringify({ error: msg }), { status: 200, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }); }
 function monthStr(d: Date)  { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
@@ -203,6 +260,7 @@ Deno.serve(async (req) => {
       case 'remove_character':    return ok(await removeCharacter(supabase, email, data.charId as string, data.memberEmail as string));
       case 'link_character':      return ok(await linkCharacter(supabase, email, data.memberEmail as string, data.charId as string));
       case 'get_all_characters':  return ok(await getAllCharacters(supabase, email));
+      case 'set_member_role':     return ok(await setMemberRole(supabase, email, data));
       case 'get_grouped_runs':    return ok(await getGroupedRuns(supabase, email));
       case 'confirm_run':         return ok(await confirmRun(supabase, email, data.runData as Record<string, unknown>));
       case 'get_window_resets':   return ok(await getWindowResets(supabase, email));
@@ -230,6 +288,10 @@ Deno.serve(async (req) => {
       case 'create_event':        return ok(await createEvent(supabase, email, data));
       case 'update_event':        return ok(await updateEvent(supabase, email, data));
       case 'delete_event':        return ok(await deleteEvent(supabase, email, data.eventId as string));
+
+      // ── KOS / Off-KOS list ────────────────────────────────────
+      case 'get_kos':              return ok(await getKos(supabase, email));
+      case 'update_kos':           return ok(await updateKos(supabase, email, data));
 
       default: return err('Unknown action: ' + action);
     }
@@ -293,10 +355,14 @@ async function getCurrentUser(supabase: ReturnType<typeof db>, email: string) {
     : { data: [] as Array<Record<string, unknown>>, error: null };
   if (charsErr) throw charsErr;
 
+  const role = await getRole(supabase, email);
   return {
     email,
-    isAdmin: isAdmin(email),
-    isSuperAdmin: isSuperAdmin(email),
+    isAdmin: (await isAdmin(supabase, email)),
+    isSuperAdmin: (await isSuperAdmin(supabase, email)),
+    isDropsHandler: (await isDropsHandler(supabase, email)),
+    isRestricted: (await isRestricted(supabase, email)),
+    role: SUPER_ADMIN_EMAILS.includes(email) ? 'super_admin' : (role || null),
     status: rosterRow?.status || 'unregistered',
     nickname: rosterRow?.nickname || '',
     characters: (chars || []).map(c => ({
@@ -331,7 +397,7 @@ async function getAllData(supabase: ReturnType<typeof db>, email: string) {
     myPayouts:    Object.fromEntries(myPayouts),
   };
 
-  if (isAdmin(email)) {
+  if ((await isAdmin(supabase, email))) {
     const [roster, groupedRuns, inventory, months] = await Promise.all([
       getRosterAdmin(supabase, email),
       getGroupedRuns(supabase, email),
@@ -382,7 +448,7 @@ async function requestAccessWithInfo(supabase: ReturnType<typeof db>, email: str
 //  ROSTER (admin)
 // ============================================================
 async function getRosterAdmin(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
   const { data: roster, error: re } = await supabase.from('roster').select('*');
   if (re) throw re;
@@ -401,6 +467,7 @@ async function getRosterAdmin(supabase: ReturnType<typeof db>, email: string) {
   return (roster || []).map(r => ({
     email:        r.email,
     nickname:     r.nickname || '',
+    role:         SUPER_ADMIN_EMAILS.includes(r.email) ? 'super_admin' : (r.role || null),
     status:       r.status,
     registeredAt: r.registered_at || '',
     registeredBy: r.registered_by || '',
@@ -423,8 +490,31 @@ async function getRosterAdmin(supabase: ReturnType<typeof db>, email: string) {
   }));
 }
 
+const ASSIGNABLE_ROLES = ['super_admin', 'drops_handler', 'admin', 'restricted'] as const;
+
+// Only a super admin can grant or revoke roles — this is the "unique
+// permission" that sits alongside Inventory/Payouts/Roster access.
+// Passing role: null clears it back to a plain Member.
+async function setMemberRole(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!(await isSuperAdmin(supabase, email))) return { error: 'Only a super admin can change roles.' };
+
+  const memberEmail = (data.memberEmail as string || '').toLowerCase().trim();
+  const role = (data.role as string) || null;
+  if (!memberEmail) return { error: 'memberEmail is required.' };
+  if (role !== null && !ASSIGNABLE_ROLES.includes(role as typeof ASSIGNABLE_ROLES[number])) {
+    return { error: 'Invalid role.' };
+  }
+  if (SUPER_ADMIN_EMAILS.includes(memberEmail)) {
+    return { error: 'This member is a permanent super admin and cannot be changed here.' };
+  }
+
+  const { error } = await supabase.from('roster').update({ role }).eq('email', memberEmail);
+  if (error) throw error;
+  return { success: true, memberEmail, role };
+}
+
 async function adminRegisterMember(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const memberEmail = (data.memberEmail as string || '').toLowerCase().trim();
 
   const { data: existing, error: exErr } = await supabase.from('roster').select('email').eq('email', memberEmail).maybeSingle();
@@ -440,7 +530,7 @@ async function adminRegisterMember(supabase: ReturnType<typeof db>, email: strin
 }
 
 async function adminAddCharacter(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const memberEmail = (data.memberEmail as string || '').toLowerCase().trim();
   const { data: memberRow } = await supabase.from('roster').select('status').eq('email', memberEmail).maybeSingle();
   if (!memberRow || memberRow.status !== 'active') {
@@ -472,7 +562,7 @@ async function adminAddCharacter(supabase: ReturnType<typeof db>, email: string,
 // this only grants the new member visibility + submit access via
 // character_links.
 async function linkCharacter(supabase: ReturnType<typeof db>, email: string, memberEmail: string, charId: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   memberEmail = (memberEmail || '').toLowerCase().trim();
   if (!memberEmail || !charId) return { error: 'Member email and character required.' };
 
@@ -498,7 +588,7 @@ async function linkCharacter(supabase: ReturnType<typeof db>, email: string, mem
 // Flat list of every character (id, ign, level, class, guild, primary
 // email) for the admin "link an existing character" search/picker.
 async function getAllCharacters(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const { data, error } = await supabase.from('characters').select('char_id, ign, level, char_class, guild, email');
   if (error) throw error;
   return (data || []).map(c => ({
@@ -511,7 +601,7 @@ async function getAllCharacters(supabase: ReturnType<typeof db>, email: string) 
 // same end result as the old single-owner "remove character" behavior.
 // If other members are still linked, the character survives for them.
 async function removeCharacter(supabase: ReturnType<typeof db>, email: string, charId: string, memberEmail?: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   if (!charId) return { error: 'No character ID' };
 
   if (memberEmail) {
@@ -538,14 +628,14 @@ async function isLinkedToChar(supabase: ReturnType<typeof db>, email: string, ch
 }
 
 async function declineMember(supabase: ReturnType<typeof db>, email: string, memberEmail: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const { error } = await supabase.from('roster').delete().eq('email', memberEmail);
   if (error) throw error;
   return { success: true };
 }
 
 async function updateCharacter(supabase: ReturnType<typeof db>, email: string, charId: string, fields: Record<string, string>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const update: Record<string, string> = {};
   if (fields.ign       !== undefined) update.ign        = fields.ign;
   if (fields.level     !== undefined) update.level      = fields.level;
@@ -559,7 +649,7 @@ async function updateCharacter(supabase: ReturnType<typeof db>, email: string, c
 }
 
 async function getCharDetails(supabase: ReturnType<typeof db>, email: string, charId: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
   const { data: char, error: ce } = await supabase.from('characters').select('*').eq('char_id', charId).maybeSingle();
   if (ce) throw ce;
@@ -590,6 +680,9 @@ async function getCharDetails(supabase: ReturnType<typeof db>, email: string, ch
 //  ATTENDANCE
 // ============================================================
 async function submitAttendance(supabase: ReturnType<typeof db>, email: string, charId: string, bosses: string[]) {
+  if (await isRestricted(supabase, email)) {
+    return { success: false, message: 'Your account is restricted from submitting attendance. Contact an admin if you believe this is a mistake.' };
+  }
   if (!bosses || !bosses.length) return { success: false, message: 'No bosses selected.' };
 
   const { data: char } = await supabase.from('characters').select('ign, points').eq('char_id', charId).maybeSingle();
@@ -722,7 +815,7 @@ async function getMyAttendance(supabase: ReturnType<typeof db>, email: string, c
 // recent first. Powers the "Show history for: All" option on the
 // Attendance History page so admins can audit the full log in one place.
 async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
   const { data, error } = await supabase
     .from('attendance')
@@ -739,7 +832,7 @@ async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) 
 //  RUNS
 // ============================================================
 async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
   const { data: attRows, error: ae } = await supabase
     .from('attendance')
@@ -874,7 +967,7 @@ async function _applyDueScheduledReset(supabase: ReturnType<typeof db>): Promise
 }
 
 async function resetWindow(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
   const resetAt = new Date().toISOString();
   const { error } = await supabase.from('window_resets').upsert({
@@ -886,7 +979,7 @@ async function resetWindow(supabase: ReturnType<typeof db>, email: string) {
 }
 
 async function getWindowResets(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const { data, error } = await supabase.from('window_resets')
     .select('reset_at, reset_by, pending_reset_at, pending_reset_by').eq('id', 1).maybeSingle();
   if (error) throw error;
@@ -911,7 +1004,7 @@ async function getWindowResets(supabase: ReturnType<typeof db>, email: string) {
 // nobody online, this should move to a Supabase pg_cron job / scheduled
 // Edge Function invoke instead.
 async function scheduleWindowReset(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const scheduledFor = data.scheduledFor as string;
   if (!scheduledFor || isNaN(new Date(scheduledFor).getTime())) return { error: 'A valid scheduled time is required.' };
   if (new Date(scheduledFor).getTime() <= Date.now()) return { error: 'Scheduled time must be in the future.' };
@@ -941,7 +1034,7 @@ async function scheduleWindowReset(supabase: ReturnType<typeof db>, email: strin
 // "Scheduled window reset executed" toast; it's a no-op if submitAttendance
 // already applied it first.
 async function executeScheduledResetIfDue(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const executed = await _applyDueScheduledReset(supabase);
   return { executed };
 }
@@ -950,7 +1043,7 @@ async function executeScheduledResetIfDue(supabase: ReturnType<typeof db>, email
 //  ATTENDANCE — admin cleanup of mistake submissions
 // ============================================================
 async function getAttendanceForChar(supabase: ReturnType<typeof db>, email: string, charId: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   if (!charId) return { error: 'charId required' };
 
   const { data, error } = await supabase
@@ -978,14 +1071,14 @@ async function getAttendanceForChar(supabase: ReturnType<typeof db>, email: stri
 // that specific payout already happened and isn't retroactively
 // re-split — we just flag it so the caller knows to check manually.
 async function deleteAttendance(supabase: ReturnType<typeof db>, email: string, id: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   if (!id) return { error: 'Attendance id required' };
 
   const { data: row, error: fe } = await supabase.from('attendance').select('*').eq('id', id).maybeSingle();
   if (fe) throw fe;
   if (!row) return { error: 'Attendance entry not found — it may have already been deleted.' };
 
-  if (row.run_id && !isSuperAdmin(email)) {
+  if (row.run_id && !(await isSuperAdmin(supabase, email))) {
     return { error: 'This entry is part of a confirmed run. A super admin needs to remove it.' };
   }
 
@@ -1013,7 +1106,7 @@ async function deleteAttendance(supabase: ReturnType<typeof db>, email: string, 
 // informational — these already count toward the gold split — this is
 // just visibility so an admin can catch and undo a genuine mistake.
 async function getLateLinkedAttendance(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
   const { data: rows, error } = await supabase
     .from('attendance')
@@ -1049,7 +1142,8 @@ async function getLateLinkedAttendance(supabase: ReturnType<typeof db>, email: s
 // Confirmed, also upserts run_participants directly since that run won't
 // be re-derived from attendance the way a pending run is.
 async function addRunParticipant(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
+  if (!(await isDropsHandler(supabase, email))) return { error: 'Only a Drops Handler or Super Admin can register attendance into a run.' };
 
   const boss        = data.boss as string;
   const windowStart = data.windowStart as string;
@@ -1101,7 +1195,8 @@ async function addRunParticipant(supabase: ReturnType<typeof db>, email: string,
 }
 
 async function confirmRun(supabase: ReturnType<typeof db>, email: string, runData: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
+  if (!(await isDropsHandler(supabase, email))) return { error: 'Only a Drops Handler or Super Admin can confirm a run.' };
 
   const runId    = runData.existingRunId as string | undefined;
   const isEdit   = !!runId;
@@ -1111,7 +1206,7 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
   const windowStart  = runData.windowStart as string;
   const notes    = (runData.notes as string) || '';
 
-  if (isEdit && !isSuperAdmin(email)) {
+  if (isEdit && !(await isSuperAdmin(supabase, email))) {
     return { error: 'Editing a confirmed run requires super admin permission.' };
   }
 
@@ -1237,7 +1332,7 @@ async function diffInventory(supabase: ReturnType<typeof db>, runId: string, bos
 //  INVENTORY
 // ============================================================
 async function getInventory(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
   const { data: rows, error: ie } = await supabase.from('inventory').select('*');
   if (ie) throw ie;
@@ -1276,7 +1371,7 @@ async function getInventory(supabase: ReturnType<typeof db>, email: string) {
 //  SALES
 // ============================================================
 async function markItemsSold(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
   const invIds     = data.invIds as string[];
   const goldPerItem = Number(data.goldPerItem) || 0;
@@ -1371,14 +1466,14 @@ async function getMyPayouts(supabase: ReturnType<typeof db>, email: string, char
 }
 
 async function getAvailableMonths(supabase: ReturnType<typeof db>, email: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const { data } = await supabase.from('payouts').select('month');
   const months = [...new Set((data || []).map(r => r.month).filter(Boolean))].sort().reverse();
   return months;
 }
 
 async function getPayoutsPage(supabase: ReturnType<typeof db>, email: string, month: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
   const { data: payRows }  = await supabase.from('payouts').select('*').eq('month', month);
   const { data: paidRows } = await supabase.from('paid').select('char_id, action').eq('month', month);
@@ -1421,7 +1516,7 @@ async function getPayoutsPage(supabase: ReturnType<typeof db>, email: string, mo
 }
 
 async function markCharPaid(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const { charId, month, paid } = data as { charId: string; month: string; paid: boolean };
 
   const { data: char } = await supabase.from('characters').select('email').eq('char_id', charId).maybeSingle();
@@ -1474,7 +1569,7 @@ async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) 
 }
 
 async function createAnnouncement(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Only an admin can post announcements.' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Only an admin can post announcements.' };
   const title = (data.title as string || '').trim();
   const body  = (data.body as string  || '').trim();
   if (!title || !body) return { error: 'Title and body are required.' };
@@ -1502,7 +1597,7 @@ async function _postSystemAnnouncement(supabase: ReturnType<typeof db>, title: s
 }
 
 async function deleteAnnouncement(supabase: ReturnType<typeof db>, email: string, announcementId: string) {
-  if (!isSuperAdmin(email)) return { error: 'Only a super admin can delete announcements.' };
+  if (!(await isSuperAdmin(supabase, email))) return { error: 'Only a super admin can delete announcements.' };
   if (!announcementId) return { error: 'announcementId required' };
   const { error } = await supabase.from('announcements').delete().eq('announcement_id', announcementId);
   if (error) throw error;
@@ -1511,7 +1606,7 @@ async function deleteAnnouncement(supabase: ReturnType<typeof db>, email: string
 
 async function markAnnouncementsRead(supabase: ReturnType<typeof db>, email: string, announcementIds: string[]) {
   if (!email) return { error: 'No email provided' };
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   if (!announcementIds || !announcementIds.length) return { success: true };
 
   const rows = announcementIds.map(id => ({ email, announcement_id: id }));
@@ -1565,7 +1660,7 @@ async function createEvent(supabase: ReturnType<typeof db>, email: string, data:
 }
 
 async function updateEvent(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const eventId = data.eventId as string;
   if (!eventId) return { error: 'eventId required' };
 
@@ -1583,9 +1678,138 @@ async function updateEvent(supabase: ReturnType<typeof db>, email: string, data:
 }
 
 async function deleteEvent(supabase: ReturnType<typeof db>, email: string, eventId: string) {
-  if (!isAdmin(email)) return { error: 'Unauthorized' };
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   if (!eventId) return { error: 'eventId required' };
   const { error } = await supabase.from('events').delete().eq('event_id', eventId);
   if (error) throw error;
   return { success: true };
+}
+
+// ============================================================
+//  KOS / OFF-KOS LIST
+//  Single-row table (id=1), same pattern as window_resets. Readable
+//  by every signed-in member; only admin-or-above (Admin, Drops
+//  Handler, Super Admin) can save changes. Every save posts an
+//  automatic announcement summarizing exactly what changed, who
+//  changed it, and when (via _postSystemAnnouncement, whose insert
+//  already stamps created_at — that's the timestamp shown).
+// ============================================================
+interface KosIndividual { name: string; subAccounts: string[]; }
+interface KosState {
+  guilds: string[];
+  individuals: KosIndividual[];
+  offGuilds: string[];
+  offIndividuals: KosIndividual[];
+}
+
+function _normalizeKos(raw: Record<string, unknown> | null): KosState {
+  const cleanNames = (arr: unknown): string[] =>
+    Array.isArray(arr) ? arr.map(s => String(s).trim()).filter(Boolean) : [];
+  const cleanIndividuals = (arr: unknown): KosIndividual[] =>
+    Array.isArray(arr) ? arr.map((it: any) => ({
+      name: String(it?.name || '').trim(),
+      subAccounts: Array.isArray(it?.subAccounts) ? it.subAccounts.map((s: unknown) => String(s).trim()).filter(Boolean) : [],
+    })).filter(it => it.name) : [];
+  return {
+    guilds:         cleanNames(raw?.guilds),
+    individuals:    cleanIndividuals(raw?.individuals),
+    offGuilds:      cleanNames(raw?.offGuilds ?? raw?.off_guilds),
+    offIndividuals: cleanIndividuals(raw?.offIndividuals ?? raw?.off_individuals),
+  };
+}
+
+async function getKos(supabase: ReturnType<typeof db>, email: string) {
+  if (!email) return { error: 'No email provided' };
+  const { data, error } = await supabase.from('kos_data')
+    .select('guilds, individuals, off_guilds, off_individuals, updated_at, updated_by')
+    .eq('id', 1).maybeSingle();
+  if (error) throw error;
+  const state = _normalizeKos(data ? {
+    guilds: data.guilds, individuals: data.individuals,
+    offGuilds: data.off_guilds, offIndividuals: data.off_individuals,
+  } : null);
+  const displayByEmail = data?.updated_by ? await resolveDisplayNames(supabase, [data.updated_by]) : {};
+  return {
+    ...state,
+    updatedAt: data?.updated_at || null,
+    updatedByIgn: data?.updated_by ? (displayByEmail[data.updated_by]?.display || 'Alliance Admin') : null,
+  };
+}
+
+// Diffs two name lists (guild names, or individual names) into
+// human-readable added/removed bullet lines for the auto-announcement.
+function _diffNameList(label: string, before: string[], after: string[]): string[] {
+  const beforeSet = new Set(before);
+  const afterSet  = new Set(after);
+  const added   = after.filter(n => !beforeSet.has(n));
+  const removed = before.filter(n => !afterSet.has(n));
+  const lines: string[] = [];
+  added.forEach(n   => lines.push(`+ Added ${label}: ${n}`));
+  removed.forEach(n => lines.push(`− Removed ${label}: ${n}`));
+  return lines;
+}
+
+function _diffIndividualList(label: string, before: KosIndividual[], after: KosIndividual[]): string[] {
+  const beforeMap = new Map(before.map(i => [i.name, i]));
+  const afterMap  = new Map(after.map(i => [i.name, i]));
+  const lines: string[] = [];
+  after.forEach(a => {
+    const b = beforeMap.get(a.name);
+    if (!b) {
+      lines.push(`+ Added ${label}: ${a.name}${a.subAccounts.length ? ` (alts: ${a.subAccounts.join(', ')})` : ''}`);
+    } else {
+      const bSubs = new Set(b.subAccounts);
+      const aSubs = new Set(a.subAccounts);
+      const addedSubs   = a.subAccounts.filter(s => !bSubs.has(s));
+      const removedSubs = b.subAccounts.filter(s => !aSubs.has(s));
+      if (addedSubs.length)   lines.push(`+ Added alt(s) to ${a.name} (${label}): ${addedSubs.join(', ')}`);
+      if (removedSubs.length) lines.push(`− Removed alt(s) from ${a.name} (${label}): ${removedSubs.join(', ')}`);
+    }
+  });
+  before.forEach(b => {
+    if (!afterMap.has(b.name)) lines.push(`− Removed ${label}: ${b.name}`);
+  });
+  return lines;
+}
+
+async function updateKos(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!(await isAdmin(supabase, email))) return { error: 'Only an admin can edit the KOS list.' };
+
+  const next = _normalizeKos(data);
+
+  const { data: existing, error: fe } = await supabase.from('kos_data')
+    .select('guilds, individuals, off_guilds, off_individuals')
+    .eq('id', 1).maybeSingle();
+  if (fe) throw fe;
+  const prev = _normalizeKos(existing ? {
+    guilds: existing.guilds, individuals: existing.individuals,
+    offGuilds: existing.off_guilds, offIndividuals: existing.off_individuals,
+  } : null);
+
+  const changeLines = [
+    ..._diffNameList('KOS guild', prev.guilds, next.guilds),
+    ..._diffIndividualList('KOS individual', prev.individuals, next.individuals),
+    ..._diffNameList('Off-KOS guild', prev.offGuilds, next.offGuilds),
+    ..._diffIndividualList('Off-KOS individual', prev.offIndividuals, next.offIndividuals),
+  ];
+
+  if (!changeLines.length) return { error: 'No changes detected.' };
+
+  const now = new Date().toISOString();
+  const { error } = await supabase.from('kos_data').upsert({
+    id: 1,
+    guilds: next.guilds, individuals: next.individuals,
+    off_guilds: next.offGuilds, off_individuals: next.offIndividuals,
+    updated_at: now, updated_by: email,
+  });
+  if (error) throw error;
+
+  await _postSystemAnnouncement(
+    supabase,
+    '⚔️ KOS List Updated',
+    `${changeLines.join('\n')}\n\nUpdated by ${email}.`,
+    email,
+  );
+
+  return { success: true, changeCount: changeLines.length };
 }
