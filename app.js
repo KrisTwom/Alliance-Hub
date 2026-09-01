@@ -1663,11 +1663,48 @@ function renderGuide() {
   const el = document.getElementById('view-guide');
   el.innerHTML = `
     <div class="section-title">📖 App & Alliance Guide</div>
+
     <div class="card">
-      <div class="empty-state">
-        <span class="empty-state-icon">📖</span>
-        Guide coming soon.
-      </div>
+      <div class="card-title" style="margin-bottom:.6rem">Attendance & Splits</div>
+      <p style="font-size:.9rem;line-height:1.65;color:var(--text-secondary);margin-bottom:.9rem">
+        The Kanos Alliance app is now the main hub for attendance and splits. As you attend raid bosses in game,
+        when the boss run or mini is dead/over, open the app and submit attendance for the bosses/minis you
+        attended under the character you attended with. To the person who loots the mini/boss — make sure to
+        still post loot in boss chat.
+      </p>
+      <p style="font-size:.9rem;line-height:1.65;color:var(--text-secondary)">
+        Splits will be calculated instantly upon sale of an item. When the item is sold, your split from that
+        item will be logged into your <strong style="color:var(--text-primary)">My Splits</strong> page. These
+        splits will become claimable when the month ends, when the status changes from
+        <span class="status status-pending" style="display:inline-block">ongoing</span> to
+        <span class="status status-confirmed" style="display:inline-block">unclaimed</span>.
+      </p>
+      <ul style="font-size:.85rem;color:var(--text-secondary);line-height:1.7;margin:.75rem 0 0 1.1rem">
+        <li><strong style="color:var(--text-primary)">Ongoing</strong> — month still pending</li>
+        <li><strong style="color:var(--text-primary)">Unclaimed</strong> — claimable</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-title" style="margin-bottom:.6rem">What's Next</div>
+      <p style="font-size:.9rem;line-height:1.65;color:var(--text-secondary)">
+        There are additional functions with announcements and schedules and more to come. These are in
+        development and may be used in the future.
+      </p>
+    </div>
+
+    <div class="card" style="border-color:var(--danger)">
+      <div class="card-title" style="margin-bottom:.6rem;color:var(--danger)">⏱ Attendance Rules</div>
+      <p style="font-size:.9rem;line-height:1.65;color:var(--text-secondary);margin-bottom:.75rem">
+        When a boss dies, you will have up to <strong style="color:var(--text-primary)">exactly 4 hours</strong>
+        from the second it is dead to submit attendance for that boss. After the 4 hour window, late submissions
+        will be registered as late, will not count, and late submissions will not be tolerated. Too many late
+        submissions will lead to temporary removal from attendance.
+      </p>
+      <p style="font-size:.9rem;line-height:1.65;color:var(--text-secondary)">
+        After the 4 hour window has passed, that boss is closed and attendance cannot be added — even by admins.
+        Make sure to submit your attendance on time.
+      </p>
     </div>`;
 }
 
