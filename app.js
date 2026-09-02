@@ -514,8 +514,9 @@ function _buildShell() {
     </aside>`;
 
   const char = getActiveChar();
-  document.getElementById('header-username').textContent  = char?.ign || App.user.email;
-  document.getElementById('sidebar-username').textContent = char?.ign || App.user.email;
+  const displayName = char?.ign || App.user.nickname || 'Member';
+  document.getElementById('header-username').textContent  = displayName;
+  document.getElementById('sidebar-username').textContent = displayName;
 }
 
 // ============================================================
@@ -741,8 +742,9 @@ function switchChar(charId) {
   _renderCharSwitcher('splits-char-switcher');
   _renderCharSwitcher('att-history-char-switcher');
   const char = getActiveChar();
-  document.getElementById('header-username').textContent  = char?.ign || App.user.email;
-  document.getElementById('sidebar-username').textContent = char?.ign || App.user.email;
+  const displayName = char?.ign || App.user.nickname || 'Member';
+  document.getElementById('header-username').textContent  = displayName;
+  document.getElementById('sidebar-username').textContent = displayName;
   const active = document.querySelector('.view.active');
   if (active) showView(active.id.replace('view-', ''));
 }
@@ -1561,7 +1563,7 @@ function _renderLeaderboardView() {
   if (!el) return;
   const lb = window._lbFull || [];
   const filtered = _lbFilter === 'all' ? lb : lb.filter(p => (p.charClass||'').toLowerCase() === _lbFilter.toLowerCase());
-  const ranked = [...filtered].sort((a,b) => b.points - a.points).map((p,i) => ({ ...p, rank: i+1 })).slice(0, 20);
+  const ranked = [...filtered].sort((a,b) => b.points - a.points).map((p,i) => ({ ...p, rank: i+1 }));
 
   el.innerHTML = `
     <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;flex-wrap:wrap">
@@ -1591,7 +1593,7 @@ function _lbSetFilter(cls) {
 // ============================================================
 //  POINTS SEARCHER (admin-only) — leaderboard page
 //  Lets an admin look up the point totals for an arbitrary set of
-//  IGNs (not just the top-20 shown on the public leaderboard).
+//  IGNs directly, without scrolling/filtering the public leaderboard.
 //  Data source is get_roster (already admin-gated, already returns
 //  every character with its points) flattened into one ign list.
 // ============================================================
@@ -2866,8 +2868,27 @@ function renderKos() {
   });
 }
 
-function _kosChip(name, onRemove) {
+// KOS guild logo lookup. Icon files are expected at /icons/guilds/<file>.png.
+// Keyed by a normalized (lowercase, letters-only) form of the guild name so
+// "Revolution" and "Revo" both resolve to revo_symbol.png, etc. Add more
+// aliases here as new KOS guild icons come in.
+const KOS_GUILD_ICONS = {
+  champions:  'champions_symbol.png',
+  faithless:  'faithless_symbol.png',
+  fear:       'fear_symbol.png',
+  mercy:      'mercy_symbol.png',
+  revolution: 'revo_symbol.png',
+  revo:       'revo_symbol.png',
+};
+function _kosGuildIconSrc(name) {
+  const key = (name || '').toLowerCase().replace(/[^a-z]/g, '');
+  const file = KOS_GUILD_ICONS[key];
+  return file ? `/icons/guilds/${file}` : null;
+}
+
+function _kosChip(name, onRemove, iconSrc) {
   return `<span style="display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;background:var(--bg-raised);border:1px solid var(--border);padding:4px 10px;border-radius:99px;color:var(--text-secondary)">
+    ${iconSrc ? `<img src="${iconSrc}" alt="" style="width:16px;height:16px;border-radius:50%;object-fit:cover;flex-shrink:0" onerror="this.style.display='none'">` : ''}
     ${escHtml(name)}${onRemove ? `<span onclick="${onRemove}" style="cursor:pointer;color:var(--danger);font-weight:700" title="Remove">✕</span>` : ''}
   </span>`;
 }
@@ -2875,7 +2896,7 @@ function _kosChip(name, onRemove) {
 function _kosIndividualCard(ind, idx, listKey, editing) {
   const moveLabel = listKey === 'individuals' ? '→ Off-KOS' : '→ Back to KOS';
   const moveFn    = listKey === 'individuals' ? `moveKosIndividual('individuals','offIndividuals',${idx})` : `moveKosIndividual('offIndividuals','individuals',${idx})`;
-  return `<div class="card" style="padding:.85rem 1rem;margin-bottom:.6rem">
+  return `<div class="kos-individual-card">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;flex-wrap:wrap">
       <strong style="color:var(--gold)">${escHtml(ind.name)}</strong>
       ${editing ? `<div style="display:flex;gap:.4rem">
@@ -2891,30 +2912,34 @@ function _kosIndividualCard(ind, idx, listKey, editing) {
   </div>`;
 }
 
-function _kosSection(title, guilds, individuals, listKeyGuilds, listKeyIndividuals, editing) {
+function _kosSection(title, guilds, individuals, listKeyGuilds, listKeyIndividuals, editing, glowClass) {
   return `
     <div class="section-title" style="font-size:.95rem;margin-top:1.2rem">${title}</div>
-    <div class="card" style="margin-bottom:.75rem">
-      <div class="form-label" style="margin-bottom:.5rem">Guilds</div>
-      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
-        ${guilds.length ? guilds.map((g,i) => _kosChip(g, editing ? `removeKosGuild('${listKeyGuilds}',${i})` : null)).join('') : `<span style="color:var(--text-muted);font-size:.85rem">None</span>`}
-        ${editing ? `<input type="text" class="form-input" placeholder="+ Add guild" style="width:140px;padding:.3rem .6rem;font-size:.82rem" onkeydown="if(event.key==='Enter'){addKosGuild('${listKeyGuilds}',this.value);this.value='';}">` : ''}
+    <div class="kos-glow-wrap ${glowClass}">
+      <div class="card" style="margin-bottom:0">
+        <div class="form-label" style="margin-bottom:.5rem">Guilds</div>
+        <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
+          ${guilds.length ? guilds.map((g,i) => _kosChip(g, editing ? `removeKosGuild('${listKeyGuilds}',${i})` : null, _kosGuildIconSrc(g))).join('') : `<span style="color:var(--text-muted);font-size:.85rem">None</span>`}
+          ${editing ? `<input type="text" class="form-input" placeholder="+ Add guild" style="width:140px;padding:.3rem .6rem;font-size:.82rem" onkeydown="if(event.key==='Enter'){addKosGuild('${listKeyGuilds}',this.value);this.value='';}">` : ''}
+        </div>
       </div>
     </div>
-    <details class="kos-individuals-details"${editing ? ' open' : ''}>
-      <summary class="kos-individuals-summary">
-        <span class="form-label" style="margin:0">Individuals (${individuals.length})</span>
-        <span class="kos-individuals-caret">▾</span>
-      </summary>
-      <div class="kos-individuals-body">
-        ${individuals.length ? individuals.map((ind,i) => _kosIndividualCard(ind, i, listKeyIndividuals, editing)).join('') : `<div class="card"><span style="color:var(--text-muted);font-size:.85rem">None</span></div>`}
-        ${editing ? `
-        <div style="display:flex;gap:.5rem;margin-top:.4rem">
-          <input type="text" class="form-input" id="new-${listKeyIndividuals}-name" placeholder="+ Add individual (IGN)…" style="flex:1">
-          <button class="btn btn-secondary" onclick="addKosIndividual('${listKeyIndividuals}')">+ Add</button>
-        </div>` : ''}
-      </div>
-    </details>`;
+    <div class="kos-glow-wrap ${glowClass}">
+      <details class="kos-individuals-details"${editing ? ' open' : ''}>
+        <summary class="kos-individuals-summary">
+          <span class="form-label" style="margin:0">Individuals (${individuals.length})</span>
+          <span class="kos-individuals-caret">▸</span>
+        </summary>
+        <div class="kos-individuals-body">
+          ${individuals.length ? individuals.map((ind,i) => _kosIndividualCard(ind, i, listKeyIndividuals, editing)).join('') : `<div class="card"><span style="color:var(--text-muted);font-size:.85rem">None</span></div>`}
+          ${editing ? `
+          <div style="display:flex;gap:.5rem;margin-top:.4rem">
+            <input type="text" class="form-input" id="new-${listKeyIndividuals}-name" placeholder="+ Add individual (IGN)…" style="flex:1">
+            <button class="btn btn-secondary" onclick="addKosIndividual('${listKeyIndividuals}')">+ Add</button>
+          </div>` : ''}
+        </div>
+      </details>
+    </div>`;
 }
 
 function _renderKosView() {
@@ -2936,8 +2961,8 @@ function _renderKosView() {
     <p style="color:var(--text-secondary);font-size:.85rem;margin:.4rem 0 0">Guilds and individuals we keep Kill on Sight. Sub-accounts are listed under the main IGN.</p>
     ${kos.updatedAt ? `<p style="color:var(--text-muted);font-size:.75rem;margin-top:.2rem">Last updated ${fmtDate(kos.updatedAt)} ${fmtTime(kos.updatedAt)}${kos.updatedByIgn ? ` by ${escHtml(kos.updatedByIgn)}` : ''}</p>` : ''}
 
-    ${_kosSection('⚔️ KOS', data.guilds, data.individuals, 'guilds', 'individuals', editing)}
-    ${_kosSection('✅ Off-KOS', data.offGuilds, data.offIndividuals, 'offGuilds', 'offIndividuals', editing)}
+    ${_kosSection('⚔️ KOS', data.guilds, data.individuals, 'guilds', 'individuals', editing, 'kos-glow-red')}
+    ${_kosSection('✅ Off-KOS', data.offGuilds, data.offIndividuals, 'offGuilds', 'offIndividuals', editing, 'kos-glow-green')}
   `;
 }
 

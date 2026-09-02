@@ -125,15 +125,17 @@ async function resolveDisplayNames(supabase: ReturnType<typeof db>, emails: stri
 
   const [{ data: rosterRows }, { data: charRows }] = await Promise.all([
     supabase.from('roster').select('email, nickname').in('email', uniq),
-    supabase.from('characters').select('email, ign, char_id').in('email', uniq),
+    supabase.from('characters').select('email, ign, char_id, created_at').in('email', uniq).order('created_at', { ascending: true }),
   ]);
 
   const nicknameByEmail: Record<string, string> = {};
   (rosterRows || []).forEach(r => { if (r.nickname) nicknameByEmail[r.email] = r.nickname; });
 
+  // First character *registered* (oldest created_at) — char_id can't be
+  // used for this, it's 'CHAR_' + a random UUID, so sorting by it was
+  // effectively a random pick, not the actual registration order.
   const firstIgnByEmail: Record<string, string> = {};
   (charRows || [])
-    .sort((a, b) => String(a.char_id).localeCompare(String(b.char_id)))
     .forEach(c => { if (!firstIgnByEmail[c.email]) firstIgnByEmail[c.email] = c.ign; });
 
   const out: Record<string, { nickname: string; ign: string; display: string }> = {};
@@ -364,8 +366,11 @@ async function getCurrentUser(supabase: ReturnType<typeof db>, email: string) {
   if (linkErr) throw linkErr;
   const linkedCharIds = (linkRows || []).map(r => r.char_id);
 
+  // Ordered by created_at so App.user.characters[0] on the frontend
+  // (the default active character shown in header/sidebar) is always
+  // the first character this member registered, not an arbitrary one.
   const { data: chars, error: charsErr } = linkedCharIds.length
-    ? await supabase.from('characters').select('*').in('char_id', linkedCharIds)
+    ? await supabase.from('characters').select('*').in('char_id', linkedCharIds).order('created_at', { ascending: true })
     : { data: [] as Array<Record<string, unknown>>, error: null };
   if (charsErr) throw charsErr;
 
@@ -466,7 +471,7 @@ async function getRosterAdmin(supabase: ReturnType<typeof db>, email: string) {
 
   const { data: roster, error: re } = await supabase.from('roster').select('*');
   if (re) throw re;
-  const { data: chars, error: ce } = await supabase.from('characters').select('*');
+  const { data: chars, error: ce } = await supabase.from('characters').select('*').order('created_at', { ascending: true });
   if (ce) throw ce;
   const { data: links, error: le } = await supabase.from('character_links').select('char_id, email');
   if (le) throw le;
