@@ -2871,12 +2871,11 @@ function renderKos() {
 // "Revolution" and "Revo" both resolve to revo_symbol.png, etc. Add more
 // aliases here as new KOS guild icons come in.
 const KOS_GUILD_ICONS = {
-  champions:  'champions_symbol.png',
+  champion:  'champions_symbol.png',
   faithless:  'faithless_symbol.png',
   fear:       'fear_symbol.png',
   mercy:      'mercy_symbol.png',
   revolution: 'revo_symbol.png',
-  revo:       'revo_symbol.png',
 };
 function _kosGuildIconSrc(name) {
   const key = (name || '').toLowerCase().replace(/[^a-z]/g, '');
