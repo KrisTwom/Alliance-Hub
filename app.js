@@ -2866,8 +2866,27 @@ function renderKos() {
   });
 }
 
-function _kosChip(name, onRemove) {
+// KOS guild logo lookup. Icon files are expected at /icons/guilds/<file>.png.
+// Keyed by a normalized (lowercase, letters-only) form of the guild name so
+// "Revolution" and "Revo" both resolve to revo_symbol.png, etc. Add more
+// aliases here as new KOS guild icons come in.
+const KOS_GUILD_ICONS = {
+  champions:  'champions_symbol.png',
+  faithless:  'faithless_symbol.png',
+  fear:       'fear_symbol.png',
+  mercy:      'mercy_symbol.png',
+  revolution: 'revo_symbol.png',
+  revo:       'revo_symbol.png',
+};
+function _kosGuildIconSrc(name) {
+  const key = (name || '').toLowerCase().replace(/[^a-z]/g, '');
+  const file = KOS_GUILD_ICONS[key];
+  return file ? `/icons/guilds/${file}` : null;
+}
+
+function _kosChip(name, onRemove, iconSrc) {
   return `<span style="display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;background:var(--bg-raised);border:1px solid var(--border);padding:4px 10px;border-radius:99px;color:var(--text-secondary)">
+    ${iconSrc ? `<img src="${iconSrc}" alt="" style="width:16px;height:16px;border-radius:50%;object-fit:cover;flex-shrink:0" onerror="this.style.display='none'">` : ''}
     ${escHtml(name)}${onRemove ? `<span onclick="${onRemove}" style="cursor:pointer;color:var(--danger);font-weight:700" title="Remove">✕</span>` : ''}
   </span>`;
 }
@@ -2898,7 +2917,7 @@ function _kosSection(title, guilds, individuals, listKeyGuilds, listKeyIndividua
       <div class="card" style="margin-bottom:.75rem">
         <div class="form-label" style="margin-bottom:.5rem">Guilds</div>
         <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
-          ${guilds.length ? guilds.map((g,i) => _kosChip(g, editing ? `removeKosGuild('${listKeyGuilds}',${i})` : null)).join('') : `<span style="color:var(--text-muted);font-size:.85rem">None</span>`}
+          ${guilds.length ? guilds.map((g,i) => _kosChip(g, editing ? `removeKosGuild('${listKeyGuilds}',${i})` : null, _kosGuildIconSrc(g))).join('') : `<span style="color:var(--text-muted);font-size:.85rem">None</span>`}
           ${editing ? `<input type="text" class="form-input" placeholder="+ Add guild" style="width:140px;padding:.3rem .6rem;font-size:.82rem" onkeydown="if(event.key==='Enter'){addKosGuild('${listKeyGuilds}',this.value);this.value='';}">` : ''}
         </div>
       </div>
