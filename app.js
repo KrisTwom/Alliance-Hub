@@ -2871,11 +2871,12 @@ function renderKos() {
 // "Revolution" and "Revo" both resolve to revo_symbol.png, etc. Add more
 // aliases here as new KOS guild icons come in.
 const KOS_GUILD_ICONS = {
-  champion:  'champions_symbol.png',
+  champions:  'champions_symbol.png',
   faithless:  'faithless_symbol.png',
   fear:       'fear_symbol.png',
   mercy:      'mercy_symbol.png',
   revolution: 'revo_symbol.png',
+  revo:       'revo_symbol.png',
 };
 function _kosGuildIconSrc(name) {
   const key = (name || '').toLowerCase().replace(/[^a-z]/g, '');
@@ -2913,13 +2914,15 @@ function _kosSection(title, guilds, individuals, listKeyGuilds, listKeyIndividua
   return `
     <div class="section-title" style="font-size:.95rem;margin-top:1.2rem">${title}</div>
     <div class="kos-glow-wrap ${glowClass}">
-      <div class="card" style="margin-bottom:.75rem">
+      <div class="card" style="margin-bottom:0">
         <div class="form-label" style="margin-bottom:.5rem">Guilds</div>
         <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
           ${guilds.length ? guilds.map((g,i) => _kosChip(g, editing ? `removeKosGuild('${listKeyGuilds}',${i})` : null, _kosGuildIconSrc(g))).join('') : `<span style="color:var(--text-muted);font-size:.85rem">None</span>`}
           ${editing ? `<input type="text" class="form-input" placeholder="+ Add guild" style="width:140px;padding:.3rem .6rem;font-size:.82rem" onkeydown="if(event.key==='Enter'){addKosGuild('${listKeyGuilds}',this.value);this.value='';}">` : ''}
         </div>
       </div>
+    </div>
+    <div class="kos-glow-wrap ${glowClass}">
       <details class="kos-individuals-details"${editing ? ' open' : ''}>
         <summary class="kos-individuals-summary">
           <span class="form-label" style="margin:0">Individuals (${individuals.length})</span>

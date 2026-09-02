@@ -374,13 +374,16 @@ html,body {
 .card-title  { font-family:var(--font-display); font-size:.95rem; color:var(--text-primary); letter-spacing:.05em; font-weight:600; }
 .card-meta   { font-size:.8rem; color:var(--text-secondary); margin-top:.2rem; }
 
-/* ── KOS SECTION GLOW (wraps the guilds card + individuals block) ── */
-.kos-glow-wrap { border-radius:22px; }
+/* ── KOS SECTION GLOW (each wraps one shape — guilds card, or the
+   individuals dropdown — separately, so the two glows stay visually
+   distinct instead of one shadow bridging the gap between them) ── */
+.kos-glow-wrap { border-radius:22px; margin-bottom:.75rem; }
+.kos-glow-wrap:last-child { margin-bottom:1rem; }
 .kos-glow-wrap.kos-glow-red  { box-shadow:0 0 32px 2px var(--danger-glow); }
 .kos-glow-wrap.kos-glow-green { box-shadow:0 0 32px 2px var(--success-glow); }
 
 /* ── COLLAPSIBLE (KOS individuals, etc.) ──── */
-.kos-individuals-details { margin-bottom:1rem; }
+.kos-individuals-details { margin-bottom:0; }
 .kos-individuals-summary {
   display:flex; align-items:center; justify-content:space-between;
   cursor:pointer; list-style:none; padding:.7rem 1rem;
