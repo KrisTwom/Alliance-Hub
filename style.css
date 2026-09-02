@@ -27,6 +27,8 @@
   /* STATUS */
   --danger: #EF4444;
   --success: #22C55E;
+  --danger-glow: rgba(239,68,68,.14);
+  --success-glow: rgba(34,197,94,.13);
 
   /* TYPOGRAPHY */
   --font-display: 'Inter', sans-serif;
@@ -92,6 +94,8 @@ html[data-theme="light"] {
 
   --danger: #DC2626;
   --success: #15803D;
+  --danger-glow: rgba(220,38,38,.12);
+  --success-glow: rgba(21,128,61,.12);
 
   --header-bg: rgba(255,255,255,.85);
   --skel-a: #E7ECF5;
@@ -370,8 +374,16 @@ html,body {
 .card-title  { font-family:var(--font-display); font-size:.95rem; color:var(--text-primary); letter-spacing:.05em; font-weight:600; }
 .card-meta   { font-size:.8rem; color:var(--text-secondary); margin-top:.2rem; }
 
+/* ── KOS SECTION GLOW (each wraps one shape — guilds card, or the
+   individuals dropdown — separately, so the two glows stay visually
+   distinct instead of one shadow bridging the gap between them) ── */
+.kos-glow-wrap { border-radius:22px; margin-bottom:.75rem; }
+.kos-glow-wrap:last-child { margin-bottom:1rem; }
+.kos-glow-wrap.kos-glow-red  { box-shadow:0 0 32px 2px var(--danger-glow); }
+.kos-glow-wrap.kos-glow-green { box-shadow:0 0 32px 2px var(--success-glow); }
+
 /* ── COLLAPSIBLE (KOS individuals, etc.) ──── */
-.kos-individuals-details { margin-bottom:1rem; }
+.kos-individuals-details { margin-bottom:0; }
 .kos-individuals-summary {
   display:flex; align-items:center; justify-content:space-between;
   cursor:pointer; list-style:none; padding:.7rem 1rem;
@@ -380,10 +392,28 @@ html,body {
 }
 .kos-individuals-summary::-webkit-details-marker { display:none; }
 .kos-individuals-summary:hover { border-color:var(--border-mid); }
-.kos-individuals-caret { color:var(--text-secondary); font-size:.85rem; transition:transform .2s; }
+.kos-individuals-caret { display:inline-block; color:var(--gold); font-size:.8rem; transition:transform .2s; transform:rotate(0deg); }
 .kos-individuals-details[open] > .kos-individuals-summary { border-radius:16px 16px 0 0; border-bottom-color:transparent; }
-.kos-individuals-details[open] .kos-individuals-caret { transform:rotate(180deg); }
+.kos-individuals-details[open] .kos-individuals-caret { transform:rotate(90deg); }
+/* When expanded, give the body its own bottom-rounded, bordered shell so it
+   visually reads as one continuous rounded container with the summary above
+   it, instead of the summary's corners just getting chopped off. */
 .kos-individuals-body { padding-top:.6rem; }
+.kos-individuals-details[open] .kos-individuals-body {
+  background:var(--bg-card); border:1px solid var(--border); border-top:none;
+  border-radius:0 0 16px 16px; padding:.75rem .85rem .85rem;
+}
+
+/* ── KOS INDIVIDUAL (character) CARD ────────
+   Deliberately smaller/lighter than .card so the nesting reads clearly:
+   Individuals (container) > Characters (this) > Subs (chips). ── */
+.kos-individual-card {
+  background:var(--bg-raised); border:1px solid var(--border);
+  border-radius:12px; padding:.6rem .75rem; margin-bottom:.5rem;
+  box-shadow:none;
+}
+.kos-individual-card:last-child { margin-bottom:0; }
+.kos-individual-card:hover { transform:none; border-color:var(--border-mid); }
 
 /* ── SCROLLABLE TABLE ────────────────────── */
 .table-scroll { width:100%; overflow-x:auto; border-radius:var(--radius-lg); border:1px solid var(--border); -webkit-overflow-scrolling:touch; }
