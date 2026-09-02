@@ -370,6 +370,21 @@ html,body {
 .card-title  { font-family:var(--font-display); font-size:.95rem; color:var(--text-primary); letter-spacing:.05em; font-weight:600; }
 .card-meta   { font-size:.8rem; color:var(--text-secondary); margin-top:.2rem; }
 
+/* ── COLLAPSIBLE (KOS individuals, etc.) ──── */
+.kos-individuals-details { margin-bottom:1rem; }
+.kos-individuals-summary {
+  display:flex; align-items:center; justify-content:space-between;
+  cursor:pointer; list-style:none; padding:.7rem 1rem;
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:16px; user-select:none; transition:.2s;
+}
+.kos-individuals-summary::-webkit-details-marker { display:none; }
+.kos-individuals-summary:hover { border-color:var(--border-mid); }
+.kos-individuals-caret { color:var(--text-secondary); font-size:.85rem; transition:transform .2s; }
+.kos-individuals-details[open] > .kos-individuals-summary { border-radius:16px 16px 0 0; border-bottom-color:transparent; }
+.kos-individuals-details[open] .kos-individuals-caret { transform:rotate(180deg); }
+.kos-individuals-body { padding-top:.6rem; }
+
 /* ── SCROLLABLE TABLE ────────────────────── */
 .table-scroll { width:100%; overflow-x:auto; border-radius:var(--radius-lg); border:1px solid var(--border); -webkit-overflow-scrolling:touch; }
 .data-table   { width:100%; border-collapse:collapse; font-size:.88rem; min-width:500px; }

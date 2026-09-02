@@ -577,7 +577,7 @@ function _initNav() {
   }
 
   document.getElementById('modal-overlay')?.addEventListener('click', e => {
-    if (e.target.id === 'modal-overlay') closeModal();
+    if (e.target.id === 'modal-overlay' && e.target.dataset.forceAck !== '1') closeModal();
   });
 
   // ── PULL-TO-REFRESH ───────────────────────────────────────
@@ -836,8 +836,8 @@ function renderHome() {
     const pays       = paysRes?.payouts || [];
     const totalGold  = pays.reduce((s, p) => s + (Number(p.goldShare)||0), 0);
     const charPoints = char?.points || 0;
-    window._events = events || [];
-    el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, charPoints }, att || [], events || []);
+    events = _setEvents(events);
+    el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, charPoints }, att || [], events);
     _sizeSelectToContent(document.getElementById('home-char-select'));
     _startHomeCountdownTicker();
   });
@@ -1003,9 +1003,9 @@ function _homeShell(char, stats, att, events) {
           <div style="font-size:24px;margin-bottom:8px;">🏆</div>
           <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Leaderboard</div>
         </div>
-        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('rules')">
-          <div style="font-size:24px;margin-bottom:8px;">📜</div>
-          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">Rules</div>
+        <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('kos')">
+          <div style="font-size:24px;margin-bottom:8px;">☠️</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);line-height:1.3;">KOS List</div>
         </div>
         <div style="background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:14px;padding:14px 8px;text-align:center;cursor:pointer;" onclick="showView('guide')">
           <div style="font-size:24px;margin-bottom:8px;">📖</div>
@@ -1194,15 +1194,29 @@ function submitAttendance() {
   API.write('submit_attendance', { charId: char.charId, bosses: selected },
     ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs', 'get_late_linked_attendance']
   ).then(res => {
-    closeModal();
     if (res.success) {
+      closeModal();
       const c = App.user.characters.find(c => c.charId === char.charId);
       if (c) c.points = (c.points||0) + res.pointsEarned;
       _showConfirmation(selected, res.pointsEarned, res.ign, res.skippedMessage);
     } else {
-      toast(res.message||'Error', 'error');
+      closeModal();
+      _showBlockedModal(res.message || 'Error');
     }
   }).catch(() => { closeModal(); toast('Network error', 'error'); });
+}
+
+// Forced-read replacement for a toast when attendance submission is
+// blocked (e.g. the same-boss-twice-in-one-window duplicate check) —
+// centered, and can only be dismissed via the button below so the
+// member actually reads why it didn't count.
+function _showBlockedModal(message) {
+  showModal(`
+    <div class="modal-title">⚠️ Attendance Not Recorded</div>
+    <p style="color:var(--text-secondary);font-size:.9rem;line-height:1.6;margin:.5rem 0 1.25rem">${escHtml(message)}</p>
+    <div class="modal-actions">
+      <button class="btn btn-primary" style="width:100%" onclick="closeModal()">OK, Got It</button>
+    </div>`, { forceAck: true });
 }
 
 // ============================================================
@@ -1942,7 +1956,7 @@ function renderSchedule() {
     <div id="schedule-calendar">${Skeleton.spinner()}</div>`;
 
   API.read('get_events').then(events => {
-    window._events = events || [];
+    _setEvents(events);
     _renderCalendarGrid();
   });
 }
@@ -2035,9 +2049,10 @@ function _scheduleShiftMonth(delta) {
 }
 
 // timezone select: converts a date+time input into a UTC ISO string.
-// "eastern_fixed" is always UTC-5 regardless of date — some games (like
-// this alliance's Siege) run on a fixed server clock that ignores DST,
-// so a plain "US Eastern" zone would silently drift an hour off half the year.
+// Event creation/editing is local-time-only now (see openCreateEventModal/
+// openEventModal) — the "utc"/"eastern_fixed" branches are dead code kept
+// only because _composeScheduledAtIso is a tiny pure helper and nothing
+// is served by deleting them; nothing in the UI can select those anymore.
 function _composeScheduledAtIso(dateStr, timeStr, tz) {
   if (!dateStr || !timeStr) return null;
   if (tz === 'utc')            return new Date(`${dateStr}T${timeStr}:00Z`).toISOString();
@@ -2049,6 +2064,77 @@ function _allBossNames() {
   const names = [];
   (App.config.bossCategories || []).forEach(c => c.bosses.forEach(b => names.push(b.name)));
   return names;
+}
+
+// Boss/Mini options for the event-creation UI specifically (NOT the same
+// list as _allBossNames(), which still feeds the Attendance page, Drops
+// page, etc.). Siege and Library Boss are now permanent recurring events
+// (see RECURRING_EVENTS below) so they're no longer manually creatable —
+// they'd just create confusing duplicate calendar entries. Maintenance is
+// added here only — it's a pure calendar/downtime marker, never an
+// attendance/points boss, so it's deliberately excluded from
+// _allBossNames()/BOSS_CATEGORIES on the backend.
+function _eventBossOptions() {
+  return _allBossNames().filter(b => b !== 'Siege' && b !== 'Library Boss').concat(['Maintenance']);
+}
+
+// ── PERMANENT RECURRING EVENTS ──────────────────────────────────
+// Library Boss and Siege happen on a fixed schedule that never changes,
+// specified directly in UTC so they're never affected by daylight saving.
+// Rather than requiring an admin to create/re-create real `events` rows
+// for these forever, we synthesize them client-side (see _setEvents)
+// and merge them into whatever the server returns. They're not real DB
+// rows: they have no event_id on the server, can't be edited or deleted,
+// and always display as created by "System" (see openEventDetails).
+const RECURRING_EVENTS = [
+  { boss: 'Library Boss', hourUTC: 2,  minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
+  { boss: 'Library Boss', hourUTC: 14, minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [0] },  // Sunday
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [2] },  // Tuesday
+];
+
+// Generates every recurring occurrence whose spawn time falls within
+// [rangeStartMs, rangeEndMs], padded a day on each side so nothing at the
+// edge of the range gets clipped by timezone rounding.
+function _generateRecurringEvents(rangeStartMs, rangeEndMs) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const out = [];
+  const startDayMs = Math.floor(rangeStartMs / DAY) * DAY - DAY;
+  const endDayMs   = Math.ceil(rangeEndMs / DAY) * DAY + DAY;
+  for (let dayMs = startDayMs; dayMs <= endDayMs; dayMs += DAY) {
+    const d = new Date(dayMs);
+    const dowUTC = d.getUTCDay(); // 0=Sun..6=Sat
+    RECURRING_EVENTS.forEach(r => {
+      if (r.daysOfWeekUTC && !r.daysOfWeekUTC.includes(dowUTC)) return;
+      const occMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), r.hourUTC, r.minuteUTC, 0);
+      if (occMs < rangeStartMs - DAY || occMs > rangeEndMs + DAY) return;
+      out.push({
+        id: `RECUR_${r.boss.replace(/\s+/g, '')}_${occMs}`,
+        boss: r.boss,
+        scheduledAt: new Date(occMs).toISOString(),
+        durationMinutes: r.durationMinutes,
+        notes: '',
+        source: 'recurring',
+        createdBy: 'System',
+        createdAt: null,
+        isRecurring: true,
+      });
+    });
+  }
+  return out;
+}
+
+// Single choke point for setting window._events — always merges in the
+// permanent recurring occurrences (±365 days from now) alongside whatever
+// real event rows the server returned. Returns the merged array too, so
+// callers that pass `events` straight into a render function can just
+// reassign it: `events = _setEvents(events);`
+function _setEvents(rawEvents) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const merged = [...(rawEvents || []), ..._generateRecurringEvents(now - 365 * DAY, now + 365 * DAY)];
+  window._events = merged;
+  return merged;
 }
 
 // ── DAY VIEW — fullscreen single-day agenda list ──────────────
@@ -2149,21 +2235,21 @@ function openEventDetails(eventId, dayViewDate) {
     <div class="evt-details-header">
       <button class="evt-details-back" onclick="${back}">‹</button>
       <div class="evt-details-header-title">Details</div>
-      ${App.user.isAdmin ? `
+      ${App.user.isAdmin && !ev.isRecurring ? `
         <div class="evt-details-menu-wrap">
           <button class="evt-details-menu-btn" onclick="_toggleEvtDetailsMenu(event)">⋯</button>
           <div class="evt-details-menu" id="evt-details-menu">
             <button class="evt-details-menu-item" onclick="openEventModal('${ev.id}','${dayViewDate||''}')">✏️ Edit</button>
             <button class="evt-details-menu-item danger" onclick="deleteEvent('${ev.id}','${dayViewDate||''}')">🗑 Delete</button>
           </div>
-        </div>` : `<div style="width:40px"></div>`}
+        </div>` : (ev.isRecurring ? `<span title="Permanent recurring event — can't be edited or deleted" style="font-size:1.1rem;width:40px;text-align:center">🔁</span>` : `<div style="width:40px"></div>`)}
     </div>
     <div class="evt-details-body">
       <div class="evt-details-creator">
         <div class="evt-details-avatar">${escHtml(initial)}</div>
         <div>
           <div class="evt-details-creator-name">${escHtml(ev.createdBy || 'Unknown')}${ev.source === 'discord_bot' ? ' · Discord bot' : ''}</div>
-          <div class="evt-details-creator-meta">${fmtDate(ev.createdAt)} ${fmtTime(ev.createdAt)}</div>
+          <div class="evt-details-creator-meta">${ev.isRecurring ? 'Repeats automatically — permanent schedule' : `${fmtDate(ev.createdAt)} ${fmtTime(ev.createdAt)}`}</div>
         </div>
       </div>
       <div class="evt-details-reminder${until.live ? ' live' : ''}">
@@ -2193,7 +2279,7 @@ document.addEventListener('click', e => {
 // returnDate: if set, Cancel/Save return to that day's day-view instead
 // of closing the modal outright (i.e. we were opened from inside it).
 function openCreateEventModal(prefillDate, returnDate) {
-  const bosses = _allBossNames();
+  const bosses = _eventBossOptions();
   const d = prefillDate ? new Date(prefillDate + 'T00:00:00') : new Date();
   const dateVal = prefillDate || `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const back = returnDate ? `openDayView('${returnDate}')` : 'closeModal()';
@@ -2206,24 +2292,21 @@ function openCreateEventModal(prefillDate, returnDate) {
         ${bosses.map(b => `<option value="${escHtml(b)}">${escHtml(b)}</option>`).join('')}
       </select>
     </div>
+    <div class="form-group">
+      <label class="form-label">Date</label>
+      <input type="date" class="form-input" id="evt-date" value="${dateVal}">
+    </div>
     <div style="display:flex;gap:.75rem">
       <div class="form-group" style="flex:1">
-        <label class="form-label">Date</label>
-        <input type="date" class="form-input" id="evt-date" value="${dateVal}">
-      </div>
-      <div class="form-group" style="flex:1">
-        <label class="form-label">Time</label>
+        <label class="form-label" id="evt-time-label">Time</label>
         <input type="time" class="form-input" id="evt-time" value="20:00">
       </div>
+      <div class="form-group" id="evt-end-time-group" style="flex:1;display:none">
+        <label class="form-label">End Time</label>
+        <input type="time" class="form-input" id="evt-end-time" value="21:00">
+      </div>
     </div>
-    <div class="form-group">
-      <label class="form-label">Timezone</label>
-      <select class="form-input" id="evt-tz">
-        <option value="local">My local time (browser)</option>
-        <option value="eastern_fixed">US Eastern — fixed, no DST (e.g. Siege)</option>
-        <option value="utc">UTC</option>
-      </select>
-    </div>
+    <p style="font-size:.75rem;color:var(--text-muted);margin:-.5rem 0 .75rem">Times use your device's local time zone.</p>
     <div class="form-group">
       <label class="form-label">Notes (optional)</label>
       <textarea class="form-textarea" id="evt-notes" placeholder="Anything admins/members should know…"></textarea>
@@ -2235,33 +2318,62 @@ function openCreateEventModal(prefillDate, returnDate) {
   _evtBossChanged();
 }
 
-// Duration is no longer admin-editable — it's derived from the boss's
-// category: Raid Bosses = 5min, Mini Bosses = 2min, Library Bosses = 3min.
-// The backend re-derives this independently too (see BOSS_DURATION_MINUTES
-// in index.ts), so this is just for any frontend logic that reads it
-// before the round-trip (e.g. optimistic UI) — the server value always wins.
+// Duration is admin-editable only for MANUAL_DURATION_BOSSES (currently
+// just Maintenance — see submitCreateEvent/submitEditEvent). For every
+// other boss it's derived from category: Raid Bosses = 5min, Mini
+// Bosses = 2min, Library Bosses = 5min. The backend re-derives this
+// independently too (see resolveEventDuration()/BOSS_DURATION_MINUTES
+// in index.ts) and always wins for anything but Maintenance — this is
+// just for frontend logic that reads it before the round-trip.
+const MANUAL_DURATION_BOSSES = ['Maintenance'];
 function _durationForBoss(boss) {
-  const DEFAULT_BY_CATEGORY = { 'Raid Bosses': 5, 'Mini Bosses': 2, 'Library Bosses': 3 };
+  const DEFAULT_BY_CATEGORY = { 'Raid Bosses': 5, 'Mini Bosses': 2, 'Library Bosses': 5 };
   for (const cat of (App.config?.bossCategories || [])) {
     if (cat.bosses.some(b => b.name === boss)) return DEFAULT_BY_CATEGORY[cat.category] || 5;
   }
   return 5;
 }
 
+// Toggles the End Time field on/off depending on whether Maintenance is
+// selected — it's the only event type with an admin-set start AND end
+// time instead of a fixed category duration. Handles both the Create
+// and Edit modals (whichever ids are present in the DOM right now).
 function _evtBossChanged() {
-  // No-op now that the duration field is gone — kept as a hook in case
-  // future per-boss UI (e.g. a "fight length" preview) needs it.
+  const bossSel   = document.getElementById('evt-boss') || document.getElementById('evt-edit-boss');
+  const endGroup  = document.getElementById('evt-end-time-group') || document.getElementById('evt-edit-end-time-group');
+  const timeLabel = document.getElementById('evt-time-label') || document.getElementById('evt-edit-time-label');
+  if (!bossSel) return;
+  const isManual = MANUAL_DURATION_BOSSES.includes(bossSel.value);
+  if (endGroup)  endGroup.style.display = isManual ? '' : 'none';
+  if (timeLabel) timeLabel.textContent  = isManual ? 'Start Time' : 'Time';
+}
+
+// For Maintenance (the only MANUAL_DURATION_BOSSES entry), duration is
+// computed from Start/End time instead of the fixed per-category value.
+// If End Time is earlier than Start Time, assumes it crosses midnight.
+function _resolveDurationFromForm(boss, dateStr, startTimeStr, endTimeId) {
+  if (!MANUAL_DURATION_BOSSES.includes(boss)) return { durationMinutes: _durationForBoss(boss) };
+  const endTimeStr = document.getElementById(endTimeId).value;
+  if (!endTimeStr) return { error: 'End time is required for Maintenance.' };
+  const startAt = _composeScheduledAtIso(dateStr, startTimeStr, 'local');
+  const endAt   = _composeScheduledAtIso(dateStr, endTimeStr, 'local');
+  let diffMin = Math.round((new Date(endAt) - new Date(startAt)) / 60000);
+  if (diffMin <= 0) diffMin += 24 * 60; // crossed midnight
+  if (diffMin <= 0) return { error: 'End time must be after start time.' };
+  return { durationMinutes: diffMin };
 }
 
 function submitCreateEvent(returnDate) {
   const boss = document.getElementById('evt-boss').value;
   const dateStr = document.getElementById('evt-date').value;
   const timeStr = document.getElementById('evt-time').value;
-  const tz = document.getElementById('evt-tz').value;
-  const durationMinutes = _durationForBoss(boss);
   const notes = document.getElementById('evt-notes').value.trim();
-  const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, tz);
+  const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, 'local');
   if (!scheduledAt) { toast('Date and time are required.', 'error'); return; }
+
+  const dur = _resolveDurationFromForm(boss, dateStr, timeStr, 'evt-end-time');
+  if (dur.error) { toast(dur.error, 'error'); return; }
+  const durationMinutes = dur.durationMinutes;
 
   const btn = document.getElementById('evt-submit-btn');
   btn.disabled = true; btn.textContent = 'Creating…';
@@ -2270,7 +2382,7 @@ function submitCreateEvent(returnDate) {
     if (res.success) {
       toast('Event created.', 'success');
       API.read('get_events').then(events => {
-        window._events = events || [];
+        _setEvents(events);
         _renderCalendarGrid();
         if (returnDate) openDayView(returnDate); else closeModal();
       });
@@ -2289,39 +2401,38 @@ function openEventModal(eventId, dayViewDate) {
   if (!ev) return;
   const back = `openEventDetails('${eventId}','${dayViewDate||''}')`;
 
-  if (!App.user.isAdmin) { openEventDetails(eventId, dayViewDate); return; }
+  if (!App.user.isAdmin || ev.isRecurring) { openEventDetails(eventId, dayViewDate); return; }
 
-  const bosses = _allBossNames();
+  const bosses = _eventBossOptions();
   const start = new Date(ev.scheduledAt);
   const dateVal = `${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,'0')}-${String(start.getDate()).padStart(2,'0')}`;
   const timeVal = `${String(start.getHours()).padStart(2,'0')}:${String(start.getMinutes()).padStart(2,'0')}`;
+  const end = new Date(start.getTime() + (Number(ev.durationMinutes) || 60) * 60000);
+  const endTimeVal = `${String(end.getHours()).padStart(2,'0')}:${String(end.getMinutes()).padStart(2,'0')}`;
 
   showModal(`
     <div class="modal-title">✏️ Edit Event</div>
     <div class="form-group">
       <label class="form-label">Boss / Mini</label>
-      <select class="form-input" id="evt-edit-boss">
+      <select class="form-input" id="evt-edit-boss" onchange="_evtBossChanged()">
         ${bosses.map(b => `<option value="${escHtml(b)}" ${b===ev.boss?'selected':''}>${escHtml(b)}</option>`).join('')}
       </select>
     </div>
+    <div class="form-group">
+      <label class="form-label">Date</label>
+      <input type="date" class="form-input" id="evt-edit-date" value="${dateVal}">
+    </div>
     <div style="display:flex;gap:.75rem">
       <div class="form-group" style="flex:1">
-        <label class="form-label">Date</label>
-        <input type="date" class="form-input" id="evt-edit-date" value="${dateVal}">
-      </div>
-      <div class="form-group" style="flex:1">
-        <label class="form-label">Time</label>
+        <label class="form-label" id="evt-edit-time-label">Time</label>
         <input type="time" class="form-input" id="evt-edit-time" value="${timeVal}">
       </div>
+      <div class="form-group" id="evt-edit-end-time-group" style="flex:1;display:none">
+        <label class="form-label">End Time</label>
+        <input type="time" class="form-input" id="evt-edit-end-time" value="${endTimeVal}">
+      </div>
     </div>
-    <div class="form-group">
-      <label class="form-label">Timezone</label>
-      <select class="form-input" id="evt-edit-tz">
-        <option value="local">My local time (browser)</option>
-        <option value="eastern_fixed">US Eastern — fixed, no DST (e.g. Siege)</option>
-        <option value="utc">UTC</option>
-      </select>
-    </div>
+    <p style="font-size:.75rem;color:var(--text-muted);margin:-.5rem 0 .75rem">Times use your device's local time zone.</p>
     <div class="form-group">
       <label class="form-label">Notes (optional)</label>
       <textarea class="form-textarea" id="evt-edit-notes" placeholder="Anything admins/members should know…">${escHtml(ev.notes || '')}</textarea>
@@ -2332,17 +2443,20 @@ function openEventModal(eventId, dayViewDate) {
       <button class="btn btn-secondary" onclick="${back}">Back</button>
       <button class="btn btn-primary" id="evt-edit-submit-btn" onclick="submitEditEvent('${ev.id}','${dayViewDate||''}')">💾 Save</button>
     </div>`);
+  _evtBossChanged();
 }
 
 function submitEditEvent(eventId, dayViewDate) {
   const boss = document.getElementById('evt-edit-boss').value;
   const dateStr = document.getElementById('evt-edit-date').value;
   const timeStr = document.getElementById('evt-edit-time').value;
-  const tz = document.getElementById('evt-edit-tz').value;
-  const durationMinutes = _durationForBoss(boss);
   const notes = document.getElementById('evt-edit-notes').value.trim();
-  const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, tz);
+  const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, 'local');
   if (!scheduledAt) { toast('Date and time are required.', 'error'); return; }
+
+  const dur = _resolveDurationFromForm(boss, dateStr, timeStr, 'evt-edit-end-time');
+  if (dur.error) { toast(dur.error, 'error'); return; }
+  const durationMinutes = dur.durationMinutes;
 
   const btn = document.getElementById('evt-edit-submit-btn');
   btn.disabled = true; btn.textContent = 'Saving…';
@@ -2351,7 +2465,7 @@ function submitEditEvent(eventId, dayViewDate) {
     if (res.success) {
       toast('Event updated.', 'success');
       API.read('get_events').then(events => {
-        window._events = events || [];
+        _setEvents(events);
         _renderCalendarGrid();
         if (dayViewDate) openDayView(dayViewDate); else closeModal();
       });
@@ -2365,7 +2479,7 @@ function deleteEvent(eventId, dayViewDate) {
     if (res.success) {
       toast('Event deleted.', 'success');
       API.read('get_events').then(events => {
-        window._events = events || [];
+        _setEvents(events);
         _renderCalendarGrid();
         if (dayViewDate) openDayView(dayViewDate); else closeModal();
       });
@@ -2787,13 +2901,20 @@ function _kosSection(title, guilds, individuals, listKeyGuilds, listKeyIndividua
         ${editing ? `<input type="text" class="form-input" placeholder="+ Add guild" style="width:140px;padding:.3rem .6rem;font-size:.82rem" onkeydown="if(event.key==='Enter'){addKosGuild('${listKeyGuilds}',this.value);this.value='';}">` : ''}
       </div>
     </div>
-    <div class="form-label" style="margin-bottom:.4rem">Individuals</div>
-    ${individuals.length ? individuals.map((ind,i) => _kosIndividualCard(ind, i, listKeyIndividuals, editing)).join('') : `<div class="card"><span style="color:var(--text-muted);font-size:.85rem">None</span></div>`}
-    ${editing ? `
-    <div style="display:flex;gap:.5rem;margin-top:.4rem">
-      <input type="text" class="form-input" id="new-${listKeyIndividuals}-name" placeholder="+ Add individual (IGN)…" style="flex:1">
-      <button class="btn btn-secondary" onclick="addKosIndividual('${listKeyIndividuals}')">+ Add</button>
-    </div>` : ''}`;
+    <details class="kos-individuals-details"${editing ? ' open' : ''}>
+      <summary class="kos-individuals-summary">
+        <span class="form-label" style="margin:0">Individuals (${individuals.length})</span>
+        <span class="kos-individuals-caret">▾</span>
+      </summary>
+      <div class="kos-individuals-body">
+        ${individuals.length ? individuals.map((ind,i) => _kosIndividualCard(ind, i, listKeyIndividuals, editing)).join('') : `<div class="card"><span style="color:var(--text-muted);font-size:.85rem">None</span></div>`}
+        ${editing ? `
+        <div style="display:flex;gap:.5rem;margin-top:.4rem">
+          <input type="text" class="form-input" id="new-${listKeyIndividuals}-name" placeholder="+ Add individual (IGN)…" style="flex:1">
+          <button class="btn btn-secondary" onclick="addKosIndividual('${listKeyIndividuals}')">+ Add</button>
+        </div>` : ''}
+      </div>
+    </details>`;
 }
 
 function _renderKosView() {
@@ -3848,14 +3969,20 @@ function _goToTab(name) {
 // opts.fullscreenMobile: same edge-to-edge treatment, but only below the
 // 700px mobile breakpoint (see style.css) — above it, renders as a normal
 // centered card. The day-agenda list and event-details screen use this.
+// opts.forceAck: disables click-outside-the-overlay-to-close, so the
+// modal can only be dismissed via an explicit button in its own markup —
+// use for anything the user MUST read before continuing (e.g. the
+// duplicate-attendance block in submitAttendance()).
 function showModal(html, opts) {
-  const full   = !!(opts && opts.fullscreen);
-  const fullM  = !!(opts && opts.fullscreenMobile);
+  const full     = !!(opts && opts.fullscreen);
+  const fullM    = !!(opts && opts.fullscreenMobile);
+  const forceAck = !!(opts && opts.forceAck);
   document.getElementById('modal-box').innerHTML = html;
   document.getElementById('modal-box').classList.toggle('modal-box-full', full);
   document.getElementById('modal-overlay').classList.toggle('modal-overlay-full', full);
   document.getElementById('modal-box').classList.toggle('modal-box-full-mobile', fullM);
   document.getElementById('modal-overlay').classList.toggle('modal-overlay-full-mobile', fullM);
+  document.getElementById('modal-overlay').dataset.forceAck = forceAck ? '1' : '';
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 function closeModal() {
@@ -3864,6 +3991,7 @@ function closeModal() {
   document.getElementById('modal-box').classList.remove('modal-box-full');
   document.getElementById('modal-overlay').classList.remove('modal-overlay-full-mobile');
   document.getElementById('modal-box').classList.remove('modal-box-full-mobile');
+  document.getElementById('modal-overlay').dataset.forceAck = '';
 }
 
 function toast(msg, type='') {

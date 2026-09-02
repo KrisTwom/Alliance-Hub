@@ -89,7 +89,7 @@ BOSS_CATEGORIES.forEach(cat => cat.bosses.forEach(b => { BOSS_POINTS[b.name] = b
 // Mini Bosses = 2min, Library Bosses = 3min. Computed server-side so a
 // tampered or stale client payload can never override it.
 const CATEGORY_DURATION_MINUTES: Record<string, number> = {
-  'Raid Bosses': 5, 'Mini Bosses': 2, 'Library Bosses': 3,
+  'Raid Bosses': 5, 'Mini Bosses': 2, 'Library Bosses': 5,
 };
 const BOSS_DURATION_MINUTES: Record<string, number> = {};
 BOSS_CATEGORIES.forEach(cat => cat.bosses.forEach(b => {
@@ -97,6 +97,20 @@ BOSS_CATEGORIES.forEach(cat => cat.bosses.forEach(b => {
 }));
 function durationForBoss(boss: string): number {
   return BOSS_DURATION_MINUTES[boss] ?? 5;
+}
+
+// Bosses/events whose duration is manually set by the admin (start +
+// end time) instead of being derived from a fixed boss category —
+// currently just Maintenance windows, which vary in length every time.
+// Everything else keeps ignoring client-sent duration (see durationForBoss).
+const MANUAL_DURATION_BOSSES = new Set(['Maintenance']);
+function resolveEventDuration(boss: string, clientDuration: unknown): number {
+  if (MANUAL_DURATION_BOSSES.has(boss)) {
+    const n = Number(clientDuration);
+    if (Number.isFinite(n) && n > 0 && n <= 1440) return Math.round(n);
+    return 60; // sane fallback if the client sends something bogus
+  }
+  return durationForBoss(boss);
 }
 
 // ── Nickname / display-name resolution ─────────────────────────
@@ -1018,11 +1032,11 @@ async function scheduleWindowReset(supabase: ReturnType<typeof db>, email: strin
   if (error) throw error;
 
   const when = new Date(scheduledFor).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+  const initiatorDisplay = (await resolveDisplayNames(supabase, [email]))[email]?.display || 'an admin';
   await _postSystemAnnouncement(
     supabase,
     '🔄 Boss Window Reset Scheduled',
-    `The submission window will reset at ${when}. Initiated by ${email}.`,
-    email,
+    `The submission window will reset at ${when}. Initiated by ${initiatorDisplay}.`,
   );
 
   return { success: true, scheduledFor };
@@ -1556,13 +1570,16 @@ async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) 
   const readSet = new Set((reads || []).map(r => r.announcement_id));
 
   // Resolve each poster's email to "Nickname (IGN)" — the frontend
-  // never sees the raw email, only this display string.
-  const posterEmails = [...new Set((rows || []).map(r => r.created_by))] as string[];
+  // never sees the raw email, only this display string. 'system' is a
+  // reserved sentinel (never a real email) used by _postSystemAnnouncement
+  // for automated posts — those always display as "System" and are never
+  // looked up against roster/characters.
+  const posterEmails = [...new Set((rows || []).map(r => r.created_by).filter((e: string) => e !== 'system'))] as string[];
   const displayByEmail = await resolveDisplayNames(supabase, posterEmails);
 
   return (rows || []).map(r => ({
     id: r.announcement_id, title: r.title, body: r.body,
-    createdByIgn: displayByEmail[r.created_by]?.display || 'Alliance Admin',
+    createdByIgn: r.created_by === 'system' ? 'System' : (displayByEmail[r.created_by]?.display || 'Alliance Admin'),
     createdAt: r.created_at,
     read: readSet.has(r.announcement_id),
   }));
@@ -1583,14 +1600,17 @@ async function createAnnouncement(supabase: ReturnType<typeof db>, email: string
 }
 
 // Internal system post — bypasses the isAdmin check above since it's
-// triggered by an automated action (e.g. a scheduled window reset),
-// not a manually-authored announcement. createdBy still records the
-// admin who took the underlying action, so it displays exactly like a
-// normal announcement (resolved to their nickname/IGN by getAnnouncements).
-async function _postSystemAnnouncement(supabase: ReturnType<typeof db>, title: string, body: string, createdBy: string) {
+// triggered by an automated action (e.g. a scheduled window reset, a
+// KOS list edit), not a manually-authored announcement. Always
+// attributed to the 'system' sentinel (never a raw email) so it always
+// displays as "System" in getAnnouncements — if the caller wants to
+// name the admin who triggered it, they should resolve that admin's
+// display name themselves and fold it into the body text, never the
+// raw email (emails are never shown to non-super-admins anywhere).
+async function _postSystemAnnouncement(supabase: ReturnType<typeof db>, title: string, body: string) {
   const id = 'ANN_' + crypto.randomUUID();
   const { error } = await supabase.from('announcements').insert({
-    announcement_id: id, title, body, created_by: createdBy,
+    announcement_id: id, title, body, created_by: 'system',
   });
   if (error) throw error;
   return { success: true, id };
@@ -1645,7 +1665,7 @@ async function createEvent(supabase: ReturnType<typeof db>, email: string, data:
   if (!email) return { error: 'No email provided' };
   const boss = (data.boss as string || '').trim();
   const scheduledAt = data.scheduledAt as string;
-  const durationMinutes = durationForBoss(boss);
+  const durationMinutes = resolveEventDuration(boss, data.durationMinutes);
   const notes = (data.notes as string) || '';
   if (!boss || !scheduledAt) return { error: 'boss and scheduledAt are required.' };
   if (isNaN(new Date(scheduledAt).getTime())) return { error: 'Invalid scheduledAt.' };
@@ -1667,9 +1687,10 @@ async function updateEvent(supabase: ReturnType<typeof db>, email: string, data:
   const fields: Record<string, unknown> = {};
   if (data.boss !== undefined) fields.boss = (data.boss as string).trim();
   if (data.scheduledAt !== undefined) fields.scheduled_at = data.scheduledAt;
-  // Duration always tracks the (possibly-updated) boss, never the client's
-  // number — see durationForBoss().
-  if (data.boss !== undefined) fields.duration_minutes = durationForBoss(fields.boss as string);
+  // Duration tracks the (possibly-updated) boss, never a raw client
+  // number — except for MANUAL_DURATION_BOSSES (Maintenance), where the
+  // admin's start/end time IS the source of truth — see resolveEventDuration().
+  if (data.boss !== undefined) fields.duration_minutes = resolveEventDuration(fields.boss as string, data.durationMinutes);
   if (data.notes !== undefined) fields.notes = data.notes;
 
   const { error } = await supabase.from('events').update(fields).eq('event_id', eventId);
@@ -1804,11 +1825,11 @@ async function updateKos(supabase: ReturnType<typeof db>, email: string, data: R
   });
   if (error) throw error;
 
+  const initiatorDisplay = (await resolveDisplayNames(supabase, [email]))[email]?.display || 'an admin';
   await _postSystemAnnouncement(
     supabase,
     '⚔️ KOS List Updated',
-    `${changeLines.join('\n')}\n\nUpdated by ${email}.`,
-    email,
+    `${changeLines.join('\n')}\n\nUpdated by ${initiatorDisplay}.`,
   );
 
   return { success: true, changeCount: changeLines.length };
