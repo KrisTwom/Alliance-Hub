@@ -1582,8 +1582,16 @@ async function getAnnouncements(supabase: ReturnType<typeof db>, email: string) 
   const posterEmails = [...new Set((rows || []).map(r => r.created_by).filter((e: string) => e !== 'system'))] as string[];
   const displayByEmail = await resolveDisplayNames(supabase, posterEmails);
 
+  // Safety net: strip any raw email address that ended up baked into a
+  // stored title/body — e.g. older announcements saved before the
+  // "resolve display name before insert" fix. Going forward nothing new
+  // should embed an email, but this scrubs any that already exist in the
+  // DB without needing a manual data-fix migration.
+  const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  const scrub = (s: string) => (s || '').replace(EMAIL_RE, '[redacted]');
+
   return (rows || []).map(r => ({
-    id: r.announcement_id, title: r.title, body: r.body,
+    id: r.announcement_id, title: scrub(r.title), body: scrub(r.body),
     createdByIgn: r.created_by === 'system' ? 'System' : (displayByEmail[r.created_by]?.display || 'Alliance Admin'),
     createdAt: r.created_at,
     read: readSet.has(r.announcement_id),
