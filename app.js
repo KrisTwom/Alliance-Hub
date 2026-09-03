@@ -379,7 +379,12 @@ window.initAllianceTracker = async function(email) {
 
     if (loadingScreen) loadingScreen.style.display = 'none';
     appEl.style.display = 'flex';
-    if (chromeEl) chromeEl.style.display = 'block';
+
+    // Nav chrome (desktop sidebar, mobile bottom nav, drawer) only ever
+    // shows for approved members. Unregistered/pending users never see
+    // it rendered in the first place — showView() below is a second,
+    // independent gate so this isn't the only thing stopping them.
+    if (chromeEl) chromeEl.style.display = _isApproved() ? 'block' : 'none';
 
     if (App.user.status === 'unregistered') { API._fetch('request_access'); _showPending(); return; }
     if (App.user.status === 'pending')      { _showPending(); return; }
@@ -771,7 +776,15 @@ function _sizeSelectToContent(selectEl) {
 // ============================================================
 //  VIEW ROUTER
 // ============================================================
+// True only for approved ('active') members. Unregistered/pending
+// accounts must never reach a real view, regardless of how showView()
+// gets called (nav click, deep link, stale handler, console, etc).
+function _isApproved() {
+  return App.user?.status === 'active';
+}
+
 function showView(name) {
+  if (!_isApproved()) { _showPending(); return; }
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name)?.classList.add('active');
   document.querySelectorAll('.dsb-link').forEach(b => b.classList.toggle('active', b.dataset.view === name));
