@@ -3470,11 +3470,23 @@ function rosterCard(r) {
       </select>
     </div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-      ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
+      ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button><button class="btn btn-sm btn-danger" onclick="declineMemberRequest('${r.email}')">✕ Decline</button>` : ''}
       <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
       ${chars.length ? `<button class="btn btn-sm btn-danger" onclick="openRemoveCharModal('${r.email}')">− Remove Character</button>` : ''}
     </div>
   </div>`;
+}
+
+// Declining isn't permanent — decline_member deletes the roster row
+// entirely, so the member reverts to "no row" (shown as status
+// 'unregistered'). Signing in again re-triggers request_access, which
+// inserts a fresh 'pending' row, same as any brand-new request.
+function declineMemberRequest(memberEmail) {
+  if (!confirm(`Decline ${memberEmail}'s request?\n\nThis isn't permanent — they can re-request just by signing in again.`)) return;
+  API.write('decline_member', { memberEmail }, ['get_roster']).then(res => {
+    if (res.success) { toast('Request declined.', 'success'); renderRoster(); }
+    else { toast(res.error || 'Error', 'error'); renderRoster(); }
+  }).catch(() => { toast('Network error', 'error'); renderRoster(); });
 }
 
 function changeMemberRole(memberEmail, role) {
