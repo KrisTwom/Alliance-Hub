@@ -783,8 +783,57 @@ function _isApproved() {
   return App.user?.status === 'active';
 }
 
-function showView(name) {
+// ============================================================
+//  ANDROID BACK BUTTON / HISTORY INTEGRATION
+// ============================================================
+// Installed as a standalone PWA, Android's system/gesture back button
+// closes the app entirely the moment there's no browser history left to
+// pop — and since this SPA never called pushState, that was true on
+// literally every screen. Fix: treat view changes, an open modal, and
+// the open mobile drawer as history "layers". Back pops the top layer
+// (close modal → close drawer → previous view) instead of exiting.
+// Back on the Home view with nothing else open still exits the app —
+// that's normal Android behavior, same as any native app's root screen.
+let _histView = 'home';
+
+function _pushViewHistory(name) {
+  history.pushState({ layer: 'view', view: name }, '');
+}
+
+window.addEventListener('popstate', (e) => {
+  const state = e.state;
+
+  // A forceAck modal (e.g. the duplicate-attendance block) must only be
+  // dismissed via its own explicit button — swallow the back press and
+  // restore the entry instead of letting it close the modal.
+  const overlay = document.getElementById('modal-overlay');
+  if (overlay && !overlay.classList.contains('hidden')) {
+    if (overlay.dataset.forceAck === '1') {
+      history.pushState(state, '');
+      return;
+    }
+    closeModal();
+    return;
+  }
+  if (!document.getElementById('sidebar')?.classList.contains('hidden')) {
+    _closeSidebar();
+    return;
+  }
+
+  const targetView = state?.view || 'home';
+  showView(targetView, /* fromPopState */ true);
+});
+
+function showView(name, fromPopState) {
   if (!_isApproved()) { _showPending(); return; }
+  // The app never touches the URL, so by default there's nothing on the
+  // browser history stack for Android's back button to pop — the very
+  // first back press exits the installed PWA outright, from anywhere.
+  // Push one history entry per real view change (skip same-view calls
+  // and calls we're already handling as a result of a back press) so
+  // back steps to the previous view instead of leaving the app.
+  if (!fromPopState && name !== _histView) _pushViewHistory(name);
+  _histView = name;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name)?.classList.add('active');
   document.querySelectorAll('.dsb-link').forEach(b => b.classList.toggle('active', b.dataset.view === name));
@@ -3750,8 +3799,20 @@ function _openSidebar()  {
   document.getElementById('sidebar-overlay').classList.remove('hidden');
   document.getElementById('more-btn').classList.add('active');
   _sizeSidebarLinks();
+  history.pushState({ layer: 'drawer', view: _histView }, '');
 }
-function _closeSidebar() { document.getElementById('sidebar').classList.add('hidden');    document.getElementById('sidebar-overlay').classList.add('hidden');    document.getElementById('more-btn').classList.remove('active'); }
+function _closeSidebar() {
+  document.getElementById('sidebar').classList.add('hidden');
+  document.getElementById('sidebar-overlay').classList.add('hidden');
+  document.getElementById('more-btn').classList.remove('active');
+  // Deliberately doesn't call history.back() here — this can be reached
+  // from a click that immediately does something else (e.g. showView()),
+  // and back() + pushState() in the same tick race unpredictably across
+  // browsers. The popstate handler checks live DOM state, not the layer
+  // an entry claims, so a leftover drawer-layer entry is harmless: by
+  // the time it's popped the drawer's already closed and it just falls
+  // through to re-showing the current view.
+}
 
 // The CSS grid (`grid-template-rows:auto auto 1fr` + `min-height:0` on
 // .sidebar-links) SHOULD be enough on its own to force the link list into
@@ -4015,6 +4076,7 @@ function showModal(html, opts) {
   const full     = !!(opts && opts.fullscreen);
   const fullM    = !!(opts && opts.fullscreenMobile);
   const forceAck = !!(opts && opts.forceAck);
+  const wasHidden = document.getElementById('modal-overlay').classList.contains('hidden');
   document.getElementById('modal-box').innerHTML = html;
   document.getElementById('modal-box').classList.toggle('modal-box-full', full);
   document.getElementById('modal-overlay').classList.toggle('modal-overlay-full', full);
@@ -4022,6 +4084,10 @@ function showModal(html, opts) {
   document.getElementById('modal-overlay').classList.toggle('modal-overlay-full-mobile', fullM);
   document.getElementById('modal-overlay').dataset.forceAck = forceAck ? '1' : '';
   document.getElementById('modal-overlay').classList.remove('hidden');
+  // Only push a history layer on the closed→open transition — swapping
+  // one modal's content for another (picker-on-top-of-editor, etc.)
+  // reuses the same overlay and shouldn't stack extra back-presses.
+  if (wasHidden) history.pushState({ layer: 'modal', view: _histView }, '');
 }
 function closeModal() {
   document.getElementById('modal-overlay').classList.add('hidden');
@@ -4030,6 +4096,8 @@ function closeModal() {
   document.getElementById('modal-overlay').classList.remove('modal-overlay-full-mobile');
   document.getElementById('modal-box').classList.remove('modal-box-full-mobile');
   document.getElementById('modal-overlay').dataset.forceAck = '';
+  // Deliberately doesn't call history.back() here — see _closeSidebar's
+  // comment. A leftover modal-layer entry is harmless for the same reason.
 }
 
 function toast(msg, type='') {
