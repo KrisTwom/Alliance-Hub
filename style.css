@@ -783,35 +783,30 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
      that way — _toggleDesktopSidebar() mirrors the collapsed state onto
      <body> for exactly this reason. */
   #main-content {
-    /* width:100% (from the base rule above) combined with an explicit
-       margin-left here is what was cutting off content on narrower desktop
-       widths: with width fixed at 100% of the containing block and
-       margin-left also fixed, margin-right:auto has nothing left to
-       absorb once margin-left + width already exceeds the viewport, so
-       the box overflows to the right by margin-left's amount and gets
-       silently clipped by html,body{overflow-x:hidden}. Overriding to
-       width:auto lets the browser solve width from the container width
-       minus margin-left minus margin-right (auto->0), so the content box
-       always fits — this fixes the cut-off submit button on Attendance
-       and any other page's right-edge content at in-between desktop
-       widths, not just that one button. */
-    /* Centered on the space to the RIGHT of the sidebar, not on the full
-       viewport. The old formula (max(dsb-w, (100vw-1100)/2)) centered on
-       the true viewport center, which — at common laptop widths where
-       (100vw-1100)/2 is *less* than the sidebar width — left margin-left
-       pinned to the sidebar width while margin-right shrank to fill the
-       rest, so the card visibly hugged the right edge (the "squished
-       right side" on the Leaderboard/etc). Basing the gap on
-       (100vw - dsb-w) instead keeps it equal on both sides of the visible
-       content area regardless of viewport width. */
-    width:auto;
-    margin-right:auto;
+    /* #main-content is a flex item (child of #app, which is
+       display:flex; flex-direction:column) — NOT a plain block box.
+       That matters here: flex items resolve auto margins completely
+       differently from normal block layout. As soon as one cross-axis
+       margin is 'auto', flex "stretch" sizing is disabled and the box
+       shrinks to fit its own content instead of filling the available
+       width, and the auto margin then grabs 100% of whatever's left
+       over. That's what caused content on Schedule/etc. to collapse
+       into a narrow column hugging the sidebar with a huge empty gap
+       on the right — a previous version of this rule used
+       width:auto + margin-right:auto, which triggers exactly that.
+       Fix: give width AND both margins fully explicit values (no
+       'auto' anywhere), so there's no ambiguous auto-margin/stretch
+       resolution left for the flex algorithm to get wrong. */
+    width:min(calc(100vw - var(--dsb-w)), 1100px);
     margin-left:calc(var(--dsb-w) + max(0px, (100vw - var(--dsb-w) - 1100px) / 2));
+    margin-right:max(0px, (100vw - var(--dsb-w) - 1100px) / 2);
     transition:none;
   }
   body.dsb-collapsed #main-header  { margin-left:var(--dsb-w-collapsed); }
   body.dsb-collapsed #main-content {
+    width:min(calc(100vw - var(--dsb-w-collapsed)), 1100px);
     margin-left:calc(var(--dsb-w-collapsed) + max(0px, (100vw - var(--dsb-w-collapsed) - 1100px) / 2));
+    margin-right:max(0px, (100vw - var(--dsb-w-collapsed) - 1100px) / 2);
   }
 }
 
