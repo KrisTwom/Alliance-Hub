@@ -351,7 +351,20 @@ Deno.serve(async (req) => {
       default: return err('Unknown action: ' + action);
     }
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
+    // Supabase/Postgrest errors are plain objects with a `.message` (not
+    // `instanceof Error`), so the old `String(e)` fallback rendered them
+    // as the literal text "[object Object]" — that's what showed up in
+    // the character profile popup (and anywhere else a query threw).
+    // Fall back to the object's own `.message`/`.error_description` before
+    // giving up and stringifying it.
+    let message: string;
+    if (e instanceof Error) {
+      message = e.message;
+    } else if (e && typeof e === 'object' && 'message' in e && typeof (e as { message?: unknown }).message === 'string') {
+      message = (e as { message: string }).message;
+    } else {
+      try { message = JSON.stringify(e); } catch { message = String(e); }
+    }
     return err(message);
   }
 });
@@ -2019,17 +2032,49 @@ async function _pushAnnouncement(supabase: ReturnType<typeof db>, title: string,
   await _sendPushToEmails(supabase, targetEmails, { title: '📢 ' + title, body, tag: 'announcement' });
 }
 
+// ── PERMANENT RECURRING EVENTS (Library Boss / Siege) ──────────────────
+// Mirrors RECURRING_EVENTS in app.js exactly — these two bosses run on a
+// fixed UTC schedule and are synthesized client-side for the calendar
+// (never written to the `events` table, so they never showed up in the
+// notifyTick query above). Keep this list in sync with app.js's copy.
+const RECURRING_EVENTS: { boss: string; hourUTC: number; minuteUTC: number; daysOfWeekUTC: number[] | null }[] = [
+  { boss: 'Library Boss', hourUTC: 2,  minuteUTC: 0,  daysOfWeekUTC: null }, // every day
+  { boss: 'Library Boss', hourUTC: 14, minuteUTC: 0,  daysOfWeekUTC: null }, // every day
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, daysOfWeekUTC: [0] },  // Sunday
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, daysOfWeekUTC: [2] },  // Tuesday
+];
+
+// Recurring occurrences whose scheduled time falls within
+// [windowStartMs, windowEndMs]. Each occurrence gets a deterministic id
+// (same scheme app.js uses for its client-side calendar entries) so it
+// can be deduped against `recurring_notifications` across ticks.
+function _recurringOccurrencesInWindow(windowStartMs: number, windowEndMs: number) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const out: { id: string; boss: string }[] = [];
+  const startDayMs = Math.floor(windowStartMs / DAY) * DAY - DAY;
+  const endDayMs   = Math.ceil(windowEndMs / DAY) * DAY + DAY;
+  for (let dayMs = startDayMs; dayMs <= endDayMs; dayMs += DAY) {
+    const d = new Date(dayMs);
+    const dowUTC = d.getUTCDay();
+    RECURRING_EVENTS.forEach(r => {
+      if (r.daysOfWeekUTC && !r.daysOfWeekUTC.includes(dowUTC)) return;
+      const occMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), r.hourUTC, r.minuteUTC, 0);
+      if (occMs < windowStartMs || occMs > windowEndMs) return;
+      out.push({ id: `RECUR_${r.boss.replace(/\s+/g, '')}_${occMs}`, boss: r.boss });
+    });
+  }
+  return out;
+}
+
 // Called every ~1 minute by a pg_cron job hitting this function with
 // action=notify_tick and the shared secret header — see migration notes.
 // Finds events starting in ~10 minutes that haven't been notified yet,
-// and pushes to whoever has that specific boss/mini enabled.
-//
-// LIMITATION: this only covers real events stored in the `events` table.
-// The client-generated recurring events (Library Boss/Siege — see
-// RECURRING_EVENTS in app.js) exist only in the browser and were never
-// written to this table, so they can't be push-notified from here without
-// also generating their occurrences server-side. Flagged to Kris — real
-// scheduled events get notified; the two synthetic recurring ones don't yet.
+// and pushes to whoever has that specific boss/mini enabled. Also checks
+// the fixed Library Boss/Siege schedule (see RECURRING_EVENTS above) —
+// those have no `events` row to flag notified_10min on, so they're
+// deduped against the `recurring_notifications` table instead (requires
+// migration: create table recurring_notifications (occurrence_id text
+// primary key, created_at timestamptz not null default now())).
 async function notifyTick(supabase: ReturnType<typeof db>) {
   const now = Date.now();
   const windowStart = new Date(now + 9 * 60 * 1000).toISOString();
@@ -2042,7 +2087,9 @@ async function notifyTick(supabase: ReturnType<typeof db>) {
     .lte('scheduled_at', windowEnd)
     .eq('notified_10min', false);
 
-  if (!events || !events.length) return { checked: 0, notified: 0 };
+  const recurring = _recurringOccurrencesInWindow(now + 9 * 60 * 1000, now + 11 * 60 * 1000);
+
+  if ((!events || !events.length) && !recurring.length) return { checked: 0, notified: 0 };
 
   const { data: prefRows } = await supabase.from('notification_prefs').select('email, boss_prefs, mini_prefs');
   const { data: allRoster } = await supabase.from('roster').select('email').eq('status', 'active');
@@ -2050,16 +2097,19 @@ async function notifyTick(supabase: ReturnType<typeof db>) {
   const prefByEmail: Record<string, { boss_prefs?: Record<string, boolean>; mini_prefs?: Record<string, boolean> }> = {};
   (prefRows || []).forEach(r => { prefByEmail[r.email] = r; });
 
-  let notified = 0;
-  for (const evt of events) {
-    const group = notifGroupForBoss(evt.boss);
-    const targetEmails = rosterEmails.filter(email => {
+  const targetsFor = (boss: string) => {
+    const group = notifGroupForBoss(boss);
+    return rosterEmails.filter(email => {
       const prefs = prefByEmail[email];
       const groupMap = group === 'mini' ? prefs?.mini_prefs : prefs?.boss_prefs;
       // Unset = default ON, same convention as announcements.
-      return groupMap?.[evt.boss] !== false;
+      return groupMap?.[boss] !== false;
     });
-    await _sendPushToEmails(supabase, targetEmails, {
+  };
+
+  let notified = 0;
+  for (const evt of events || []) {
+    await _sendPushToEmails(supabase, targetsFor(evt.boss), {
       title: `⚔ ${evt.boss} starting soon`,
       body: `${evt.boss} starts in about 10 minutes.`,
       tag: 'event-' + evt.event_id,
@@ -2067,7 +2117,34 @@ async function notifyTick(supabase: ReturnType<typeof db>) {
     await supabase.from('events').update({ notified_10min: true }).eq('event_id', evt.event_id);
     notified++;
   }
-  return { checked: events.length, notified };
+
+  if (recurring.length) {
+    const { data: already } = await supabase
+      .from('recurring_notifications')
+      .select('occurrence_id')
+      .in('occurrence_id', recurring.map(r => r.id));
+    const alreadySet = new Set((already || []).map(r => r.occurrence_id));
+
+    for (const occ of recurring) {
+      if (alreadySet.has(occ.id)) continue;
+      await _sendPushToEmails(supabase, targetsFor(occ.boss), {
+        title: `⚔ ${occ.boss} starting soon`,
+        body: `${occ.boss} starts in about 10 minutes.`,
+        tag: 'event-' + occ.id,
+      });
+      await supabase.from('recurring_notifications').insert({ occurrence_id: occ.id });
+      notified++;
+    }
+
+    // Housekeeping — forget occurrences from more than a couple days ago
+    // so this table doesn't grow forever. Best-effort; a failure here
+    // doesn't affect notification delivery.
+    await supabase.from('recurring_notifications')
+      .delete()
+      .lt('created_at', new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString());
+  }
+
+  return { checked: (events ? events.length : 0) + recurring.length, notified };
 }
 
 // ============================================================

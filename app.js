@@ -1961,6 +1961,7 @@ function openBossNotifPage(group) {
   const prefMap = group === 'mini' ? (_notifPrefs.miniPrefs || {}) : (_notifPrefs.bossPrefs || {});
 
   showModal(`
+    <div class="boss-notif-page">
     <div class="modal-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
       <span>${title}</span>
       <button class="modal-x-close" onclick="closeModal()" title="Close" aria-label="Close">✕</button>
@@ -1972,14 +1973,15 @@ function openBossNotifPage(group) {
         return `
         <div class="settings-row" style="padding:.6rem .8rem">
           <div class="settings-row-label" style="margin:0">${name}</div>
-          <label class="theme-switch">
+          <label class="plain-switch">
             <input type="checkbox" ${on ? 'checked' : ''} onchange="_setBossNotifPref('${group}','${name.replace(/'/g, "\\'")}', this.checked)">
-            <span class="theme-switch-track"></span>
+            <span class="plain-switch-track"></span>
           </label>
         </div>`;
       }).join('')}
     </div>
-    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`,
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>
+    </div>`,
     { fullscreenMobile: true }
   );
 }
@@ -2042,9 +2044,9 @@ function renderSettings() {
           <div class="settings-row-label">Announcement Notifications</div>
           <div class="settings-row-desc">Notify me the moment a new announcement is posted.</div>
         </div>
-        <label class="theme-switch">
+        <label class="notif-switch">
           <input type="checkbox" id="notif-announcements-checkbox" onchange="toggleAnnouncementNotif(this.checked)">
-          <span class="theme-switch-track"></span>
+          <span class="notif-switch-track"></span>
         </label>
       </div>
       <div class="settings-row" style="cursor:pointer" onclick="openBossNotifPage('boss')">
@@ -3781,7 +3783,8 @@ function rosterCard(r) {
       </select>
     </div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-      ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
+      ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>
+      <button class="btn btn-sm btn-danger" onclick="declineMemberRequest('${escHtml(r.email)}')">✕ Decline</button>` : ''}
       <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
       ${chars.length ? `<button class="btn btn-sm btn-danger" onclick="openRemoveCharModal('${r.email}')">− Remove Character</button>` : ''}
     </div>
@@ -3793,6 +3796,18 @@ function changeMemberRole(memberEmail, role) {
   if (!confirm(`Set ${memberEmail}'s role to "${label}"?`)) { renderRoster(); return; }
   API.write('set_member_role', { memberEmail, role: role || null }, ['get_roster']).then(res => {
     if (res.success) { toast(`Role updated to ${label}.`, 'success'); renderRoster(); }
+    else { toast(res.error || 'Error', 'error'); renderRoster(); }
+  }).catch(() => { toast('Network error', 'error'); renderRoster(); });
+}
+
+// Declining a pending request removes their roster row entirely (not a
+// permanent ban) — if they sign in again, the app treats them as brand
+// new and automatically re-files a pending request, same as any
+// first-time sign-in. See requestAccess/getCurrentUser on the backend.
+function declineMemberRequest(memberEmail) {
+  if (!confirm(`Decline ${memberEmail}'s request to join? They can request again by signing in.`)) return;
+  API.write('decline_member', { memberEmail }, ['get_roster']).then(res => {
+    if (res.success) { toast('Request declined.', 'success'); renderRoster(); }
     else { toast(res.error || 'Error', 'error'); renderRoster(); }
   }).catch(() => { toast('Network error', 'error'); renderRoster(); });
 }

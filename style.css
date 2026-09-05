@@ -47,11 +47,14 @@
   --safe-right: env(safe-area-inset-right, 0px);
 
   /* Capped bottom-nav clearance: on notched iPhones the raw safe-bottom
-     inset (~34px) is more buffer than the bar actually needs above the
-     home-indicator gesture zone. Capping it keeps the bar closer to how
-     it looks on Android/desktop while still avoiding the gesture area.
-     Tune the 16px value up/down if it looks off on a real device. */
-  --nav-safe-clearance: min(env(safe-area-inset-bottom, 0px), 16px);
+     inset (~34px) is more buffer than the bar strictly needs, but 16px
+     was cutting it too close — taps near the bottom edge of the nav
+     buttons were landing in iOS's home-indicator swipe-up zone instead
+     of the button. Raised to 24px, which keeps the bar noticeably
+     slimmer than the full 34px inset while giving the gesture zone
+     enough room that it stops stealing taps. Tune further if it still
+     looks/feels off on a real device. */
+  --nav-safe-clearance: min(env(safe-area-inset-bottom, 0px), 24px);
 
   /* SURFACE-DEPENDENT EXTRAS (redefined per-theme below) */
   --header-bg: rgba(5,5,5,.85);
@@ -600,14 +603,52 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
   position:absolute; cursor:pointer; inset:0; background:var(--bg-hover);
   border:1px solid var(--border-mid); border-radius:99px; transition:all var(--transition);
 }
+/* Unchecked = dark mode -> moon. Checked = light mode -> sun. (Previously
+   swapped: dark showed the sun and light showed the moon.) */
 .theme-switch-track::before {
-  content:'☀️'; position:absolute; height:24px; width:24px; left:2px; top:2px;
+  content:'🌙'; position:absolute; height:24px; width:24px; left:2px; top:2px;
   background:var(--bg-card); border-radius:50%; transition:all var(--transition);
   display:flex; align-items:center; justify-content:center; font-size:13px;
   box-shadow:0 2px 6px var(--shadow-color);
 }
 .theme-switch input:checked + .theme-switch-track { background:var(--gold-glow); border-color:var(--gold-dim); }
-.theme-switch input:checked + .theme-switch-track::before { transform:translateX(22px); content:'🌙'; }
+.theme-switch input:checked + .theme-switch-track::before { transform:translateX(22px); content:'☀️'; }
+
+/* ── NOTIFICATION TOGGLE (bell) — used for the Announcement Notifications
+   row in Settings. Same mechanics as .theme-switch but always shows a
+   bell (no sun/moon), just recolored on/off. ── */
+.notif-switch { position:relative; display:inline-block; width:52px; height:30px; flex-shrink:0; }
+.notif-switch input { opacity:0; width:0; height:0; }
+.notif-switch-track {
+  position:absolute; cursor:pointer; inset:0; background:var(--bg-hover);
+  border:1px solid var(--border-mid); border-radius:99px; transition:all var(--transition);
+}
+.notif-switch-track::before {
+  content:'🔔'; position:absolute; height:24px; width:24px; left:2px; top:2px;
+  background:var(--bg-card); border-radius:50%; transition:all var(--transition);
+  display:flex; align-items:center; justify-content:center; font-size:13px;
+  filter:grayscale(1) opacity(.6);
+  box-shadow:0 2px 6px var(--shadow-color);
+}
+.notif-switch input:checked + .notif-switch-track { background:var(--gold-glow); border-color:var(--gold-dim); }
+.notif-switch input:checked + .notif-switch-track::before { transform:translateX(22px); filter:none; }
+
+/* ── PLAIN TOGGLE (solid color, no icon) — used for the per-boss/mini
+   rows in the Boss/Mini Notifications pages: a plain filled knob, solid
+   blue when on, grayed out when off, instead of the sun/moon emoji. ── */
+.plain-switch { position:relative; display:inline-block; width:44px; height:26px; flex-shrink:0; }
+.plain-switch input { opacity:0; width:0; height:0; }
+.plain-switch-track {
+  position:absolute; cursor:pointer; inset:0; background:var(--bg-hover);
+  border:1px solid var(--border-mid); border-radius:99px; transition:all var(--transition);
+}
+.plain-switch-track::before {
+  content:''; position:absolute; height:18px; width:18px; left:3px; top:3px;
+  background:var(--text-muted); border-radius:50%; transition:all var(--transition);
+  box-shadow:0 2px 6px var(--shadow-color);
+}
+.plain-switch input:checked + .plain-switch-track { background:var(--gold-glow); border-color:var(--gold-dim); }
+.plain-switch input:checked + .plain-switch-track::before { transform:translateX(18px); background:#4D8DFF; }
 .settings-theme-options { display:flex; gap:.5rem; }
 .theme-option-btn {
   background:var(--bg-raised); border:1px solid var(--border-mid); color:var(--text-secondary);
@@ -669,6 +710,14 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
 .modal-x-close:hover { color:var(--text-primary); }
 .modal-actions { display:flex; gap:.6rem; justify-content:flex-end; margin-top:1.2rem; flex-wrap:wrap; }
 
+/* ── BOSS/MINI NOTIFICATIONS PAGE ─────────────────────────────
+   Rendered inside .modal-box-full-mobile, which is padding:0 by design
+   (edge-to-edge like the day view) — but unlike the day view this modal
+   never had its own padded wrapper, so on mobile the title/rows sat
+   flush against the screen edges with no breathing room. This restores
+   normal spacing without touching the fullscreen mechanics. */
+.boss-notif-page { padding:1.1rem 1.2rem 1.5rem; overflow-y:auto; flex:1; min-height:0; -webkit-overflow-scrolling:touch; }
+
 /* ── TOAST ───────────────────────────────── */
 #toast { position:fixed; bottom:calc(var(--mob-nav-h) + var(--nav-safe-clearance) + 1rem); left:50%; transform:translateX(-50%) translateY(80px); background:var(--bg-card); border:1px solid var(--border-mid); color:var(--text-primary); font-size:.9rem; padding:.7rem 1.4rem; border-radius:99px; box-shadow:0 8px 32px rgba(0,0,0,.8); z-index:9998; transition:transform .3s ease,opacity .3s ease; opacity:0; white-space:nowrap; }
 #toast.show    { transform:translateX(-50%) translateY(0); opacity:1; }
@@ -726,17 +775,9 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
     overflow:hidden;
   }
   #main-header  { margin-left:var(--dsb-w); transition:margin-left .25s ease; }
-  /* Centered on the FULL viewport width (true screen center), not on the
-     leftover space to the right of the sidebar — the old formula anchored
-     to the sidebar's expanded width, which dragged the content's visual
-     center to the right of true center. The floor still uses the sidebar's
-     CURRENT (collapsed/expanded) width so content is never allowed to sit
-     underneath it. At typical desktop widths the floor isn't reached, so
-     content also stays put when the sidebar is toggled; only on narrower
-     viewports where the two widths compete will it shift — which is
-     correct, since that's the only case where it's needed to avoid overlap.
-     Keyed off body.dsb-collapsed rather than a sibling combinator off
-     #desktop-sidebar: #desktop-sidebar now lives in #app-chrome while
+  /* Centered on the space to the right of the sidebar (see #main-content
+     below). Keyed off body.dsb-collapsed rather than a sibling combinator
+     off #desktop-sidebar: #desktop-sidebar now lives in #app-chrome while
      #main-header/#main-content live in #app (separate parents, see
      app.js _buildShell), so they're no longer DOM siblings CSS can reach
      that way — _toggleDesktopSidebar() mirrors the collapsed state onto
@@ -754,14 +795,23 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
        always fits — this fixes the cut-off submit button on Attendance
        and any other page's right-edge content at in-between desktop
        widths, not just that one button. */
+    /* Centered on the space to the RIGHT of the sidebar, not on the full
+       viewport. The old formula (max(dsb-w, (100vw-1100)/2)) centered on
+       the true viewport center, which — at common laptop widths where
+       (100vw-1100)/2 is *less* than the sidebar width — left margin-left
+       pinned to the sidebar width while margin-right shrank to fill the
+       rest, so the card visibly hugged the right edge (the "squished
+       right side" on the Leaderboard/etc). Basing the gap on
+       (100vw - dsb-w) instead keeps it equal on both sides of the visible
+       content area regardless of viewport width. */
     width:auto;
     margin-right:auto;
-    margin-left:max(var(--dsb-w), calc((100vw - 1100px) / 2));
+    margin-left:calc(var(--dsb-w) + max(0px, (100vw - var(--dsb-w) - 1100px) / 2));
     transition:none;
   }
   body.dsb-collapsed #main-header  { margin-left:var(--dsb-w-collapsed); }
   body.dsb-collapsed #main-content {
-    margin-left:max(var(--dsb-w-collapsed), calc((100vw - 1100px) / 2));
+    margin-left:calc(var(--dsb-w-collapsed) + max(0px, (100vw - var(--dsb-w-collapsed) - 1100px) / 2));
   }
 }
 
