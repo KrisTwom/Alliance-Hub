@@ -46,18 +46,12 @@
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
 
-  /* Bottom-nav clearance above the safe area. This used to be capped
-     at min(inset, 16px) to keep the bar visually closer to Android/
-     desktop — but on notched iPhones the OS reserves roughly the full
-     safe-area-inset-bottom band (~34px) for the swipe-up-to-home
-     gesture, and it can steal touch-starts from anything rendered
-     inside that band. Capping the clearance to 16px let the actual
-     .mob-nav-btn tap targets (height:100% of #mobile-nav, right down
-     to its bottom edge) sit inside that ~18px gap, so taps near the
-     bottom of the bar were sometimes swallowed as gesture starts
-     instead of registering as clicks. Using the uncapped inset moves
-     the real button row fully above the gesture band. */
-  --nav-safe-clearance: env(safe-area-inset-bottom, 0px);
+  /* Capped bottom-nav clearance: on notched iPhones the raw safe-bottom
+     inset (~34px) is more buffer than the bar actually needs above the
+     home-indicator gesture zone. Capping it keeps the bar closer to how
+     it looks on Android/desktop while still avoiding the gesture area.
+     Tune the 16px value up/down if it looks off on a real device. */
+  --nav-safe-clearance: min(env(safe-area-inset-bottom, 0px), 16px);
 
   /* SURFACE-DEPENDENT EXTRAS (redefined per-theme below) */
   --header-bg: rgba(5,5,5,.85);
@@ -748,6 +742,19 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
      that way — _toggleDesktopSidebar() mirrors the collapsed state onto
      <body> for exactly this reason. */
   #main-content {
+    /* width:100% (from the base rule above) combined with an explicit
+       margin-left here is what was cutting off content on narrower desktop
+       widths: with width fixed at 100% of the containing block and
+       margin-left also fixed, margin-right:auto has nothing left to
+       absorb once margin-left + width already exceeds the viewport, so
+       the box overflows to the right by margin-left's amount and gets
+       silently clipped by html,body{overflow-x:hidden}. Overriding to
+       width:auto lets the browser solve width from the container width
+       minus margin-left minus margin-right (auto->0), so the content box
+       always fits — this fixes the cut-off submit button on Attendance
+       and any other page's right-edge content at in-between desktop
+       widths, not just that one button. */
+    width:auto;
     margin-right:auto;
     margin-left:max(var(--dsb-w), calc((100vw - 1100px) / 2));
     transition:none;

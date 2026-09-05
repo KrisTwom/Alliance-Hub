@@ -18,6 +18,34 @@ self.addEventListener('install', event => {
   self.skipWaiting();
 });
 
+// Push: show the OS notification. Payload is the JSON string built by
+// _sendPushToEmails on the backend ({ title, body, tag }).
+self.addEventListener('push', event => {
+  let payload = { title: 'Kanos Alliance', body: '' };
+  try { if (event.data) payload = { ...payload, ...event.data.json() }; } catch (e) {}
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      tag: payload.tag,
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+    })
+  );
+});
+
+// Clicking the notification focuses an existing tab if one's open,
+// otherwise opens a new one.
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientsArr => {
+      const existing = clientsArr.find(c => 'focus' in c);
+      if (existing) return existing.focus();
+      return self.clients.openWindow('/');
+    })
+  );
+});
+
 // Activate: clean up old caches
 self.addEventListener('activate', event => {
   event.waitUntil(

@@ -3,6 +3,20 @@
 // ============================================================
 const SUPABASE_FUNCTION_URL = 'https://yhwzlqgwamzvktzdkpbs.supabase.co/functions/v1/alliance';
 
+// ── Web Push (event/announcement notifications) ────────────────
+// PASTE THE PUBLIC KEY HERE after generating a VAPID keypair
+// (see setup notes) — this must be the public half of the same pair
+// whose private half is set as VAPID_PRIVATE_KEY in the Edge Function's
+// secrets. Subscribing is a no-op (with a toast) until this is filled in.
+const VAPID_PUBLIC_KEY = 'BO6glj3vHRFybkFNzKKmXNsjhefgmnxo70gZL6IblXJqSOqj_rd_64DYouwqUnm6Jk09u8EqYJiJwRMKWftvWUg';
+
+function _urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
 // ── Block iOS Safari's native pinch-zoom gesture ─────────────
 // Backs up the viewport meta tag + touch-action CSS so the app
 // can't be pinch-zoomed on any mobile browser.
@@ -428,6 +442,7 @@ function _buildShell() {
       <div id="view-kos"         class="view"></div>
       <div id="view-drops"       class="view"></div>
       <div id="view-inventory"   class="view"></div>
+      <div id="view-drop-history" class="view"></div>
       <div id="view-payouts"     class="view"></div>
       <div id="view-roster"      class="view"></div>
       <div id="view-settings"    class="view"></div>
@@ -462,6 +477,7 @@ function _buildShell() {
         <button class="dsb-link" data-view="drops" title="Drops"><span class="dsb-icon">💎</span><span class="dsb-label">Drops</span></button>
         ${App.user.isSuperAdmin ? `
         <button class="dsb-link" data-view="inventory" title="Inventory"><span class="dsb-icon">🎒</span><span class="dsb-label">Inventory</span></button>
+        <button class="dsb-link" data-view="drop-history" title="Drop History"><span class="dsb-icon">📜</span><span class="dsb-label">Drop History</span></button>
         <button class="dsb-link" data-view="payouts" title="Payouts"><span class="dsb-icon">📊</span><span class="dsb-label">Payouts</span></button>
         <button class="dsb-link" data-view="roster" title="Roster"><span class="dsb-icon">👥</span><span class="dsb-label">Roster</span></button>` : ''}` : ''}
         <button class="dsb-link" data-view="settings" title="Settings"><span class="dsb-icon">⚙️</span><span class="dsb-label">Settings</span></button>
@@ -511,6 +527,7 @@ function _buildShell() {
           <button class="sidebar-link" data-view="drops">💎 Drops</button>
           ${App.user.isSuperAdmin ? `
           <button class="sidebar-link" data-view="inventory">🎒 Inventory</button>
+          <button class="sidebar-link" data-view="drop-history">📜 Drop History</button>
           <button class="sidebar-link" data-view="payouts">📊 Payouts</button>
           <button class="sidebar-link" data-view="roster">👥 Roster</button>` : ''}
         </div>` : ''}
@@ -851,6 +868,7 @@ function showView(name, fromPopState) {
     kos:               renderKos,
     drops:             renderDrops,
     inventory:         renderInventory,
+    'drop-history':    renderDropHistory,
     payouts:           renderPayouts,
     roster:            renderRoster,
     settings:          renderSettings,
@@ -1639,7 +1657,7 @@ function _renderLeaderboardView() {
     <div class="card" style="padding:0;overflow:hidden">
       ${!ranked.length
         ? `<div class="empty-state"><span class="empty-state-icon">🏆</span>No points yet.</div>`
-        : ranked.map(p => `<div class="leaderboard-row">
+        : ranked.map(p => `<div class="leaderboard-row" style="cursor:pointer" onclick="openCharProfile('${p.charId}')">
             <span class="lb-rank ${p.rank===1?'top1':p.rank===2?'top2':p.rank===3?'top3':''}">${p.rank===1?'🥇':p.rank===2?'🥈':p.rank===3?'🥉':p.rank}</span>
             <div style="flex:1;min-width:0"><div class="lb-name">${p.ign}</div><div class="lb-class">${_classEmoji(p.charClass)} ${p.charClass||''}</div></div>
             <div class="lb-points">${p.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
@@ -1650,6 +1668,59 @@ function _renderLeaderboardView() {
 function _lbSetFilter(cls) {
   _lbFilter = cls;
   _renderLeaderboardView();
+}
+
+// ============================================================
+//  CHARACTER PROFILE POPUP (leaderboard — click any character)
+// ============================================================
+function openCharProfile(charId) {
+  showModal(`
+    <div class="modal-title">🪪 Character Profile</div>
+    <div id="char-profile-body">${Skeleton.spinner()}</div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+
+  API.read('get_char_profile', { charId }).then(p => {
+    const box = document.getElementById('char-profile-body');
+    if (!box) return; // modal closed before response landed
+    if (p.error) { box.innerHTML = `<div class="empty-state"><span class="empty-state-icon">⚠️</span>${escHtml(p.error)}</div>`; return; }
+
+    box.innerHTML = `
+      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem">
+        <span style="font-size:1.8rem">${_classEmoji(p.charClass)}</span>
+        <div>
+          <div style="font-family:var(--font-display);font-size:1.2rem;color:var(--gold)">${escHtml(p.ign)}</div>
+          <div style="font-size:.82rem;color:var(--text-secondary)">${escHtml(p.charClass||'—')} · ${escHtml(p.guild||'—')} · Lvl ${escHtml(String(p.level||'—'))}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.25rem">
+        <div class="stat-chip" style="flex:1;min-width:120px">
+          <div class="stat-chip-label">Current Points</div>
+          <div class="stat-chip-value">${p.points.toLocaleString()}</div>
+        </div>
+        <div class="stat-chip" style="flex:1;min-width:120px">
+          <div class="stat-chip-label">Lifetime Points</div>
+          <div class="stat-chip-value">${p.lifetimePoints.toLocaleString()}</div>
+        </div>
+      </div>
+      <div style="font-size:.8rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary);margin-bottom:.5rem">Point Deductions</div>
+      ${!p.deductions.length
+        ? `<div class="empty-state" style="padding:1rem"><span class="empty-state-icon">✅</span>No deductions on record.</div>`
+        : `<div class="table-scroll" style="max-height:220px;overflow-y:auto">
+            <table class="data-table">
+              <thead><tr><th>Item</th><th>Points</th><th>Date</th></tr></thead>
+              <tbody>${p.deductions.map(d => `
+                <tr>
+                  <td>${escHtml(d.itemName||'—')}</td>
+                  <td style="color:var(--danger)">−${d.amount}</td>
+                  <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(d.createdAt)}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>`}`;
+  }).catch(() => {
+    const box = document.getElementById('char-profile-body');
+    if (box) box.innerHTML = `<div class="empty-state"><span class="empty-state-icon">⚠️</span>Network error.</div>`;
+  });
 }
 
 // ============================================================
@@ -1816,6 +1887,120 @@ function renderGuide() {
 }
 
 // ============================================================
+//  PUSH NOTIFICATIONS
+//  Browser permission + subscription are requested lazily, the first
+//  time a member turns any notification category on — not on every
+//  app load — so we're not nagging everyone with a permission prompt
+//  before they've opted into anything.
+// ============================================================
+async function _ensurePushSubscribed() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    toast('Push notifications aren\'t supported in this browser.', 'error');
+    return false;
+  }
+  if (VAPID_PUBLIC_KEY === 'REPLACE_WITH_YOUR_VAPID_PUBLIC_KEY') {
+    toast('Push notifications aren\'t set up yet — ask an admin to finish setup.', 'error');
+    return false;
+  }
+  let permission = Notification.permission;
+  if (permission === 'default') permission = await Notification.requestPermission();
+  if (permission !== 'granted') {
+    toast('Notifications are blocked for this site in your browser settings.', 'error');
+    return false;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: _urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    await API.write('save_push_subscription', { subscription: sub.toJSON() });
+    return true;
+  } catch (e) {
+    toast('Could not enable push notifications.', 'error');
+    return false;
+  }
+}
+
+let _notifPrefs = { announcements: true, bossPrefs: {}, miniPrefs: {} };
+
+function _loadNotifPrefs() {
+  return API.read('get_notification_prefs').then(p => {
+    _notifPrefs = p && !p.error ? p : { announcements: true, bossPrefs: {}, miniPrefs: {} };
+    return _notifPrefs;
+  });
+}
+
+function toggleAnnouncementNotif(checked) {
+  const cb = document.getElementById('notif-announcements-checkbox');
+  if (checked) {
+    _ensurePushSubscribed().then(ok => {
+      if (!ok) { if (cb) cb.checked = false; return; }
+      _notifPrefs.announcements = true;
+      API.write('update_notification_prefs', { announcements: true });
+    });
+  } else {
+    _notifPrefs.announcements = false;
+    API.write('update_notification_prefs', { announcements: false });
+  }
+}
+
+// group is 'boss' or 'mini'. Opens a fullscreen (mobile) list of every
+// boss in that group with its own toggle, defaulting to on.
+function openBossNotifPage(group) {
+  const title = group === 'mini' ? '🗡️ Mini Notifications' : '⚔️ Boss Notifications';
+  const category = group === 'mini' ? 'Mini Bosses' : null;
+  const bosses = [];
+  App.config.bossCategories.forEach(cat => {
+    const isMini = cat.category === 'Mini Bosses';
+    if (group === 'mini' ? isMini : !isMini) cat.bosses.forEach(b => bosses.push(b.name));
+  });
+  const prefMap = group === 'mini' ? (_notifPrefs.miniPrefs || {}) : (_notifPrefs.bossPrefs || {});
+
+  showModal(`
+    <div class="modal-title" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+      <span>${title}</span>
+      <button class="modal-x-close" onclick="closeModal()" title="Close" aria-label="Close">✕</button>
+    </div>
+    <p style="font-size:.8rem;color:var(--text-secondary);margin-bottom:1rem">You'll get a notification 10 minutes before a scheduled event for any boss/mini toggled on below.</p>
+    <div style="display:flex;flex-direction:column;gap:.5rem">
+      ${bosses.map(name => {
+        const on = prefMap[name] !== false;
+        return `
+        <div class="settings-row" style="padding:.6rem .8rem">
+          <div class="settings-row-label" style="margin:0">${name}</div>
+          <label class="theme-switch">
+            <input type="checkbox" ${on ? 'checked' : ''} onchange="_setBossNotifPref('${group}','${name.replace(/'/g, "\\'")}', this.checked)">
+            <span class="theme-switch-track"></span>
+          </label>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`,
+    { fullscreenMobile: true }
+  );
+}
+
+function _setBossNotifPref(group, bossName, checked) {
+  const apply = () => {
+    const key = group === 'mini' ? 'miniPrefs' : 'bossPrefs';
+    _notifPrefs[key] = { ..._notifPrefs[key], [bossName]: checked };
+    API.write('update_notification_prefs', { [key]: _notifPrefs[key] });
+  };
+  if (checked) {
+    _ensurePushSubscribed().then(ok => { if (ok) apply(); else _renderNotifModalCheckboxUnchecked(); });
+  } else {
+    apply();
+  }
+}
+// Best-effort revert of a checkbox the user just flipped on if push setup
+// failed — re-opening the relevant page is simplest since it re-reads state.
+function _renderNotifModalCheckboxUnchecked() { /* no-op: next open reflects true saved state */ }
+
+// ============================================================
 //  SETTINGS
 // ============================================================
 function renderSettings() {
@@ -1842,6 +2027,39 @@ function renderSettings() {
           <input type="checkbox" id="theme-toggle-checkbox" ${theme === 'light' ? 'checked' : ''} onchange="setTheme(this.checked ? 'light' : 'dark')">
           <span class="theme-switch-track"></span>
         </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Notifications</div>
+          <div class="card-meta">Get a push notification 10 minutes before an event starts, or the moment an announcement is posted.</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Announcement Notifications</div>
+          <div class="settings-row-desc">Notify me the moment a new announcement is posted.</div>
+        </div>
+        <label class="theme-switch">
+          <input type="checkbox" id="notif-announcements-checkbox" onchange="toggleAnnouncementNotif(this.checked)">
+          <span class="theme-switch-track"></span>
+        </label>
+      </div>
+      <div class="settings-row" style="cursor:pointer" onclick="openBossNotifPage('boss')">
+        <div>
+          <div class="settings-row-label">Boss Notifications</div>
+          <div class="settings-row-desc">Choose which raid/library bosses notify you.</div>
+        </div>
+        <span style="color:var(--text-secondary);font-size:1.1rem">›</span>
+      </div>
+      <div class="settings-row" style="cursor:pointer" onclick="openBossNotifPage('mini')">
+        <div>
+          <div class="settings-row-label">Mini Notifications</div>
+          <div class="settings-row-desc">Choose which mini bosses notify you.</div>
+        </div>
+        <span style="color:var(--text-secondary);font-size:1.1rem">›</span>
       </div>
     </div>
 
@@ -1876,6 +2094,11 @@ function renderSettings() {
         <button class="btn btn-secondary" onclick="window.signOut()">Sign Out</button>
       </div>
     </div>`;
+
+  _loadNotifPrefs().then(prefs => {
+    const cb = document.getElementById('notif-announcements-checkbox');
+    if (cb) cb.checked = prefs.announcements !== false;
+  });
 }
 
 function submitNickname() {
@@ -2801,9 +3024,7 @@ function openRunModal(idx) {
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      ${run.runId && !App.user.isSuperAdmin
-        ? `<button class="btn btn-secondary" disabled title="Only super admins can edit a confirmed run" style="opacity:.45;cursor:not-allowed;">🔒 Locked</button>`
-        : !App.user.isDropsHandler
+      ${!App.user.isDropsHandler
         ? `<button class="btn btn-secondary" disabled title="Only a Drops Handler or Super Admin can confirm runs" style="opacity:.45;cursor:not-allowed;">🔒 Drops Handler only</button>`
         : `<button class="btn btn-primary" id="confirm-run-btn" onclick="submitRunConfirm(${idx})">${run.runId ? '💾 Save Changes' : '✓ Confirm Run'}</button>`}
     </div>`);
@@ -3225,6 +3446,7 @@ function renderInventory() {
 
 function openItemModal(boss, itemName) {
   const data = window._inventoryData?.[boss]?.[itemName]; if (!data) return;
+  _sellWinnerCharId = '';
   const modalSprite = getItemSprite(itemName);
   const modalIcon = modalSprite
     ? `<img src="${modalSprite}" alt="${escHtml(itemName)}" style="width:28px;height:28px;object-fit:contain;vertical-align:-6px;margin-right:.4rem" onerror="this.remove()">`
@@ -3241,7 +3463,16 @@ function openItemModal(boss, itemName) {
         <input class="form-input" id="item-gold-display" type="text" placeholder="e.g. 10,000" oninput="formatGoldInput(this)" inputmode="numeric">
         <input type="hidden" id="item-gold">
       </div>
-      <div class="form-group" style="margin:0;flex:1;min-width:120px"><label class="form-label">Winner (optional)</label><input class="form-input" id="item-winner" placeholder="IGN or —"></div>
+      <div class="form-group" style="margin:0;flex:1;min-width:120px;position:relative">
+        <label class="form-label">Winner (optional)</label>
+        <input class="form-input" id="item-winner" placeholder="Search IGN…" autocomplete="off" oninput="_sellOnWinnerType(this.value)">
+        <div id="item-winner-suggest" class="ps-suggest hidden"></div>
+      </div>
+    </div>
+    <div id="sell-deduct-row" class="form-group hidden" style="margin-bottom:1rem">
+      <label class="form-label">Points to Deduct from <span id="sell-deduct-ign" style="color:var(--gold)"></span></label>
+      <input class="form-input" id="item-deduct-points" type="number" min="0" step="1" placeholder="e.g. 5" inputmode="numeric" style="max-width:160px">
+      <div style="font-size:.75rem;color:var(--text-muted);margin-top:.3rem">Required since a character was selected — enter 0 if no points should be deducted for this win.</div>
     </div>
     <div style="font-size:.8rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary);margin-bottom:.5rem">Drop History — select rows to sell</div>
     <div class="table-scroll" style="max-height:280px;overflow-y:auto">
@@ -3271,6 +3502,39 @@ function formatGoldInput(input) {
   document.getElementById('item-gold').value = isNaN(num) ? '' : num;
 }
 
+// ── Winner IGN autocomplete (Inventory sell modal) — same pattern as
+// the Leaderboard's Points Searcher. Typing invalidates a prior
+// selection; selecting shows the "points to deduct" field, required
+// once a character is actually chosen (per-item free-text winners with
+// no linked character skip the deduction entirely, same as before).
+let _sellWinnerCharId = '';
+
+function _sellOnWinnerType(val) {
+  _sellWinnerCharId = '';
+  document.getElementById('sell-deduct-row').classList.add('hidden');
+  const box = document.getElementById('item-winner-suggest');
+  const q = val.trim().toLowerCase();
+  if (!q) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  _allCharactersFlat().then(flat => {
+    const matches = flat.filter(c => c.ign.toLowerCase().includes(q)).slice(0, 8);
+    if (!matches.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+    box.innerHTML = matches.map(c =>
+      `<div class="ps-suggest-item" onclick='_sellSelectWinner(${JSON.stringify(c).replace(/'/g, "&#39;")})'>${escHtml(c.ign)}</div>`
+    ).join('');
+    box.classList.remove('hidden');
+  });
+}
+
+function _sellSelectWinner(char) {
+  _sellWinnerCharId = char.charId;
+  document.getElementById('item-winner').value = char.ign;
+  const box = document.getElementById('item-winner-suggest');
+  box.classList.add('hidden'); box.innerHTML = '';
+  document.getElementById('sell-deduct-ign').textContent = char.ign;
+  document.getElementById('sell-deduct-row').classList.remove('hidden');
+  document.getElementById('item-deduct-points').value = '';
+}
+
 function toggleHistoryRow(tr) {
   if (tr.dataset.status !== 'Available') return;
   const cb = tr.querySelector('.hist-check'); cb.checked = !cb.checked; tr.classList.toggle('selected', cb.checked);
@@ -3282,10 +3546,21 @@ function sellSelectedItems() {
   const gold = Number(document.getElementById('item-gold').value);
   if (!gold || gold <= 0) { toast('Enter a valid gold amount.', 'error'); return; }
   const winner = document.getElementById('item-winner').value.trim();
+
+  let deductPoints;
+  if (_sellWinnerCharId) {
+    const raw = document.getElementById('item-deduct-points').value;
+    if (raw === '' || isNaN(Number(raw)) || Number(raw) < 0) {
+      toast('Enter the points to deduct (0 if none) for the selected character.', 'error');
+      return;
+    }
+    deductPoints = Math.round(Number(raw));
+  }
+
   const btn = document.getElementById('sell-btn'); btn.disabled=true; btn.textContent='Processing…';
 
-  API.write('mark_items_sold', { invIds, goldPerItem: gold, winner },
-    ['get_inventory', 'get_my_payouts', 'get_available_months', 'get_payouts_page']
+  API.write('mark_items_sold', { invIds, goldPerItem: gold, winner, winnerCharId: _sellWinnerCharId, deductPoints },
+    ['get_inventory', 'get_my_payouts', 'get_available_months', 'get_payouts_page', 'get_drop_history', 'get_char_profile']
   ).then(res => {
     if (res.success) {
       const msg = res.payoutsCount === 0
@@ -3295,6 +3570,42 @@ function sellSelectedItems() {
       closeModal(); renderInventory();
     } else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='💰 Mark Selected Sold'; }
   }).catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='💰 Mark Selected Sold'; });
+}
+
+// ============================================================
+//  DROP HISTORY  (Super-admin only) — one row per bulk "Mark Selected
+//  Sold" action, however many stacks/units that action covered.
+// ============================================================
+function renderDropHistory() {
+  const el = document.getElementById('view-drop-history');
+  if (!App.user.isSuperAdmin) {
+    el.innerHTML = `<div class="card"><div class="empty-state"><span class="empty-state-icon">🔒</span>Super admins only.</div></div>`;
+    return;
+  }
+  el.innerHTML = `<div class="section-title">📜 Drop History</div>${Skeleton.table('', [22,14,10,14,16,14,10], 8)}`;
+
+  API.read('get_drop_history').then(rows => {
+    rows = rows || [];
+    el.innerHTML = `<div class="section-title">📜 Drop History</div>` +
+      (!rows.length
+        ? `<div class="card"><div class="empty-state"><span class="empty-state-icon">📜</span>No sales recorded yet.</div></div>`
+        : `<div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>Item</th><th>Boss</th><th>Qty Sold</th><th>Gold Total</th><th>Winner</th><th>Points Deducted</th><th>Sold At</th></tr></thead>
+              <tbody>${rows.map(r => `
+                <tr>
+                  <td>${escHtml(r.itemName)}</td>
+                  <td>${escHtml(r.boss)}</td>
+                  <td style="color:var(--gold)">${r.qty}</td>
+                  <td><span class="gold-amount">${Number(r.totalGold).toLocaleString()}</span></td>
+                  <td style="color:var(--text-secondary)">${r.winner ? escHtml(r.winner) : '—'}</td>
+                  <td style="color:${r.pointsDeducted ? 'var(--danger)' : 'var(--text-muted)'}">${r.pointsDeducted ? '−'+r.pointsDeducted : '—'}</td>
+                  <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.soldAt)} ${fmtTime(r.soldAt)}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>`);
+  });
 }
 
 // ============================================================
@@ -3470,23 +3781,11 @@ function rosterCard(r) {
       </select>
     </div>` : ''}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-      ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button><button class="btn btn-sm btn-danger" onclick="declineMemberRequest('${r.email}')">✕ Decline</button>` : ''}
+      ${r.status==='pending' ? `<button class="btn btn-sm btn-primary" onclick="openRegisterMemberModal('${r.email}')">✓ Approve & Set Up</button>` : ''}
       <button class="btn btn-sm btn-secondary" onclick="openAddCharModal('${r.email}')">+ Add Character</button>
       ${chars.length ? `<button class="btn btn-sm btn-danger" onclick="openRemoveCharModal('${r.email}')">− Remove Character</button>` : ''}
     </div>
   </div>`;
-}
-
-// Declining isn't permanent — decline_member deletes the roster row
-// entirely, so the member reverts to "no row" (shown as status
-// 'unregistered'). Signing in again re-triggers request_access, which
-// inserts a fresh 'pending' row, same as any brand-new request.
-function declineMemberRequest(memberEmail) {
-  if (!confirm(`Decline ${memberEmail}'s request?\n\nThis isn't permanent — they can re-request just by signing in again.`)) return;
-  API.write('decline_member', { memberEmail }, ['get_roster']).then(res => {
-    if (res.success) { toast('Request declined.', 'success'); renderRoster(); }
-    else { toast(res.error || 'Error', 'error'); renderRoster(); }
-  }).catch(() => { toast('Network error', 'error'); renderRoster(); });
 }
 
 function changeMemberRole(memberEmail, role) {
