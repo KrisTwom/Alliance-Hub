@@ -408,9 +408,12 @@ async function getCharProfile(supabase: ReturnType<typeof db>, email: string, ch
   if (ce) throw ce;
   if (!char) return { error: 'Character not found' };
 
+  // NOTE: the primary key on this table is `deduction_id`, not `id` (see
+  // the insert in sellItem() below) — selecting `id` here throws
+  // "column point_deductions.id does not exist".
   const { data: deductionRows, error: de } = await supabase
     .from('point_deductions')
-    .select('id, amount, item_name, created_at')
+    .select('deduction_id, amount, item_name, created_at')
     .eq('char_id', charId)
     .order('created_at', { ascending: false });
   if (de) throw de;
@@ -420,7 +423,7 @@ async function getCharProfile(supabase: ReturnType<typeof db>, email: string, ch
     points: Number(char.points) || 0,
     lifetimePoints: Number(char.lifetime_points) || Number(char.points) || 0,
     deductions: (deductionRows || []).map(d => ({
-      id: d.id, amount: Number(d.amount) || 0, itemName: d.item_name || '', createdAt: d.created_at,
+      id: d.deduction_id, amount: Number(d.amount) || 0, itemName: d.item_name || '', createdAt: d.created_at,
     })),
   };
 }
@@ -943,9 +946,22 @@ async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) 
 async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
+  // IMPORTANT: this query used to have no date bound and no explicit
+  // .range()/.limit(). Supabase/PostgREST caps unbounded selects at 1000
+  // rows by default, and since we sort ascending by ts, that cap silently
+  // keeps the OLDEST 1000 rows and drops everything newer once the table
+  // passes ~1000 total attendance rows — which is why recent boss kills
+  // (e.g. today's Actaemon/Billiard runs) stopped appearing on the Drops
+  // page while older runs kept showing fine. Bounding to a recent window
+  // both fixes that and keeps this from re-scanning the whole table's
+  // history on every load. Confirmed runs older than this are already
+  // persisted in `runs` and don't need to be re-derived from raw
+  // attendance, so 30 days is generous headroom, not a hard requirement.
+  const groupedRunsCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const { data: attRows, error: ae } = await supabase
     .from('attendance')
     .select('id, ts, char_id, ign, email, boss, manually_added')
+    .gte('ts', groupedRunsCutoff)
     .order('ts', { ascending: true });
   if (ae) throw ae;
 
