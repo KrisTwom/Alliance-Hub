@@ -20,7 +20,6 @@
 // ============================================================
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import webpush from 'npm:web-push@3.6.7';
 
 // ── Config (mirrors GAS CONFIG) ───────────────────────────────
 const ADMIN_EMAILS = (Deno.env.get('ADMIN_EMAILS') || 'retisoverminetwom@gmail.com,hopesanddreams2294@gmail.com,huggableimo@gmail.com').split(',').map(e => e.trim()).filter(Boolean);
@@ -1834,10 +1833,6 @@ async function markAnnouncementsRead(supabase: ReturnType<typeof db>, email: str
 //  job (see migration/setup notes) since this is a stateless Edge
 //  Function with no background timer of its own.
 // ============================================================
-if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
-  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-}
-
 async function savePushSubscription(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
   if (!email) return { error: 'No email provided' };
   const sub = data.subscription as { endpoint: string; keys: { p256dh: string; auth: string } } | undefined;
@@ -1883,6 +1878,110 @@ async function updateNotificationPrefs(supabase: ReturnType<typeof db>, email: s
   return { success: true };
 }
 
+// ── Native Web Push (RFC 8291 encryption + RFC 8292 VAPID), built with
+// only Deno's built-in Web Crypto — no npm/third-party package at all.
+// This exists specifically to avoid the earlier outage where a
+// top-level `import ... from 'npm:web-push'` crashed the ENTIRE
+// function's boot (every action, not just push) because that package
+// doesn't run cleanly in this Deno runtime. There is no npm dependency
+// left anywhere in this file.
+function _b64urlToBytes(b64url: string): Uint8Array {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(b64url.length + (4 - b64url.length % 4) % 4, '=');
+  const bin = atob(b64);
+  return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+function _bytesToB64url(bytes: Uint8Array): string {
+  let bin = '';
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function _concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  parts.forEach(p => { out.set(p, offset); offset += p.length; });
+  return out;
+}
+// TS's DOM lib in this checker environment types Uint8Array as generic
+// over its buffer, which BufferSource-typed WebCrypto/fetch params don't
+// accept without a cast — purely a type-level mismatch (Deno's own
+// runtime types this fine); this keeps every call site unambiguous.
+function _bs(u: Uint8Array): BufferSource { return u as unknown as BufferSource; }
+
+async function _vapidPrivateKey(): Promise<CryptoKey> {
+  // web-push's "generate-vapid-keys" (and every VAPID generator following
+  // the same convention) outputs the private key as a raw 32-byte EC
+  // scalar, base64url-encoded — not PKCS8/JWK. WebCrypto can't import a
+  // raw private scalar directly, so we rebuild a JWK from it: x/y come
+  // from the public key's uncompressed point, d is the private scalar.
+  const pub = _b64urlToBytes(VAPID_PUBLIC_KEY); // 65 bytes: 0x04 || X(32) || Y(32)
+  const x = pub.slice(1, 33), y = pub.slice(33, 65);
+  const jwk: JsonWebKey = {
+    kty: 'EC', crv: 'P-256', ext: true,
+    x: _bytesToB64url(x), y: _bytesToB64url(y), d: VAPID_PRIVATE_KEY,
+  };
+  return await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+}
+
+async function _vapidAuthHeader(endpoint: string): Promise<string> {
+  const aud = new URL(endpoint).origin;
+  const header = { typ: 'JWT', alg: 'ES256' };
+  const payload = { aud, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: VAPID_SUBJECT };
+  const signingInput = `${_bytesToB64url(new TextEncoder().encode(JSON.stringify(header)))}.${_bytesToB64url(new TextEncoder().encode(JSON.stringify(payload)))}`;
+  const key = await _vapidPrivateKey();
+  // WebCrypto's ECDSA sign() returns the raw (r||s) format JWS requires
+  // directly — no DER conversion needed.
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(signingInput)));
+  return `vapid t=${signingInput}.${_bytesToB64url(sig)}, k=${VAPID_PUBLIC_KEY}`;
+}
+
+// Encrypts `payload` per RFC 8291 (aes128gcm content-coding) for one
+// subscription, and POSTs it to the push service. Throws a
+// { statusCode } object on a non-2xx response so the caller can prune
+// dead subscriptions (404/410) without treating every failure as dead.
+async function _sendWebPush(sub: { endpoint: string; p256dh: string; auth: string }, payload: unknown) {
+  const uaPublicRaw = _b64urlToBytes(sub.p256dh);   // 65 bytes
+  const authSecret  = _b64urlToBytes(sub.auth);      // 16 bytes
+
+  const serverKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const asPublicRaw = new Uint8Array(await crypto.subtle.exportKey('raw', serverKeyPair.publicKey));
+  const uaPublicKey = await crypto.subtle.importKey('raw', _bs(uaPublicRaw), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const ecdhSecret = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: uaPublicKey }, serverKeyPair.privateKey, 256));
+
+  const keyInfo = _concatBytes(new TextEncoder().encode('WebPush: info\0'), uaPublicRaw, asPublicRaw);
+  const ikmKey = await crypto.subtle.importKey('raw', _bs(ecdhSecret), 'HKDF', false, ['deriveBits']);
+  const ikm = new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: _bs(authSecret), info: _bs(keyInfo) }, ikmKey, 256));
+
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cekKey = await crypto.subtle.importKey('raw', _bs(ikm), 'HKDF', false, ['deriveBits']);
+  const cek   = new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: _bs(salt), info: _bs(new TextEncoder().encode('Content-Encoding: aes128gcm\0')) }, cekKey, 128));
+  const nonce = new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: _bs(salt), info: _bs(new TextEncoder().encode('Content-Encoding: nonce\0')) }, cekKey, 96));
+
+  const plaintext = _concatBytes(new TextEncoder().encode(JSON.stringify(payload)), new Uint8Array([2])); // delimiter byte for a single/last record
+  const cekCryptoKey = await crypto.subtle.importKey('raw', _bs(cek), 'AES-GCM', false, ['encrypt']);
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: _bs(nonce), tagLength: 128 }, cekCryptoKey, _bs(plaintext)));
+
+  const recordSizeBytes = new Uint8Array(4);
+  new DataView(recordSizeBytes.buffer).setUint32(0, 4096, false);
+  const header = _concatBytes(salt, recordSizeBytes, new Uint8Array([asPublicRaw.length]), asPublicRaw);
+  const body = _concatBytes(header, ciphertext);
+
+  const res = await fetch(sub.endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Encoding': 'aes128gcm',
+      'Content-Type': 'application/octet-stream',
+      'TTL': '86400',
+      'Authorization': await _vapidAuthHeader(sub.endpoint),
+    },
+    body: _bs(body) as BodyInit,
+  });
+  if (!res.ok) {
+    const err: { statusCode?: number } = { statusCode: res.status };
+    throw err;
+  }
+}
+
 // Sends one push payload to every subscription belonging to `emails`,
 // pruning subscriptions the push service reports as dead/expired (410
 // Gone / 404) so the table doesn't accumulate stale entries forever.
@@ -1892,14 +1991,10 @@ async function _sendPushToEmails(supabase: ReturnType<typeof db>, emails: string
   if (!uniq.length) return;
 
   const { data: subs } = await supabase.from('push_subscriptions').select('*').in('email', uniq);
-  const payloadStr = JSON.stringify(payload);
 
   await Promise.all((subs || []).map(async (s) => {
     try {
-      await webpush.sendNotification(
-        { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
-        payloadStr
-      );
+      await _sendWebPush({ endpoint: s.endpoint, p256dh: s.p256dh, auth: s.auth }, payload);
     } catch (e: unknown) {
       const statusCode = (e as { statusCode?: number })?.statusCode;
       if (statusCode === 404 || statusCode === 410) {
