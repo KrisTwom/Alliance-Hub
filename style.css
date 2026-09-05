@@ -775,13 +775,17 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
     overflow:hidden;
   }
   #main-header  { margin-left:var(--dsb-w); transition:margin-left .25s ease; }
-  /* Centered on the space to the right of the sidebar (see #main-content
-     below). Keyed off body.dsb-collapsed rather than a sibling combinator
-     off #desktop-sidebar: #desktop-sidebar now lives in #app-chrome while
-     #main-header/#main-content live in #app (separate parents, see
-     app.js _buildShell), so they're no longer DOM siblings CSS can reach
-     that way — _toggleDesktopSidebar() mirrors the collapsed state onto
-     <body> for exactly this reason. */
+  /* Centered on the FULL viewport width and deliberately does NOT read
+     the collapsed/expanded sidebar width for its centering math (see
+     #main-content below) — so, unlike #main-header (which does slide
+     with the sidebar), the content column never shifts when the
+     sidebar is toggled. Keyed off body.dsb-collapsed rather than a
+     sibling combinator off #desktop-sidebar: #desktop-sidebar now
+     lives in #app-chrome while #main-header/#main-content live in
+     #app (separate parents, see app.js _buildShell), so they're no
+     longer DOM siblings CSS can reach that way —
+     _toggleDesktopSidebar() mirrors the collapsed state onto <body>
+     for exactly this reason. */
   #main-content {
     /* #main-content is a flex item (child of #app, which is
        display:flex; flex-direction:column) — NOT a plain block box.
@@ -796,18 +800,24 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
        width:auto + margin-right:auto, which triggers exactly that.
        Fix: give width AND both margins fully explicit values (no
        'auto' anywhere), so there's no ambiguous auto-margin/stretch
-       resolution left for the flex algorithm to get wrong. */
-    width:min(calc(100vw - var(--dsb-w)), 1100px);
-    margin-left:calc(var(--dsb-w) + max(0px, (100vw - var(--dsb-w) - 1100px) / 2));
-    margin-right:max(0px, (100vw - var(--dsb-w) - 1100px) / 2);
+       resolution left for the flex algorithm to get wrong.
+
+       Centering math: gap is purely a function of viewport width, not
+       the sidebar, so it's identical whether the sidebar is expanded
+       or collapsed — that's what keeps the content column from
+       shifting on toggle. margin-left still floors at the sidebar's
+       EXPANDED width (not whichever width is current) so the floor
+       itself can't change between states either; on the rare narrow
+       desktop viewport where the floor actually kicks in, this leaves
+       a little extra unused space next to a collapsed sidebar rather
+       than letting the content jump sideways when toggled. */
+    --kt-gap: max(0px, (100vw - 1100px) / 2);
+    margin-left:max(var(--dsb-w), var(--kt-gap));
+    margin-right:var(--kt-gap);
+    width:calc(100vw - max(var(--dsb-w), var(--kt-gap)) - var(--kt-gap));
     transition:none;
   }
-  body.dsb-collapsed #main-header  { margin-left:var(--dsb-w-collapsed); }
-  body.dsb-collapsed #main-content {
-    width:min(calc(100vw - var(--dsb-w-collapsed)), 1100px);
-    margin-left:calc(var(--dsb-w-collapsed) + max(0px, (100vw - var(--dsb-w-collapsed) - 1100px) / 2));
-    margin-right:max(0px, (100vw - var(--dsb-w-collapsed) - 1100px) / 2);
-  }
+  body.dsb-collapsed #main-header { margin-left:var(--dsb-w-collapsed); }
 }
 
 /* PWA standalone — same safe area rules, status bar background fill */
