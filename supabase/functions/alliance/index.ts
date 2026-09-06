@@ -929,12 +929,27 @@ async function getMyAttendance(supabase: ReturnType<typeof db>, email: string, c
 async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) {
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
-  const { data, error } = await supabase
-    .from('attendance')
-    .select('id, ts, boss, points, run_id, char_id, ign, email')
-    .order('ts', { ascending: false });
-  if (error) throw error;
-  return (data || []).map(r => ({
+  // Same class of bug as getGroupedRuns used to have (see the comment
+  // there): an unbounded .select() with no .range() gets silently capped
+  // at 1000 rows by PostgREST. Here that showed up as the Attendance
+  // History "Total Submissions" stat chip (which just does att.length on
+  // the frontend) freezing at 1000 once the table passed that size,
+  // rather than dropping any particular rows — the whole result set was
+  // truncated. Paginate through in pages of PAGE_SIZE until a short page
+  // comes back.
+  const PAGE_SIZE = 1000;
+  const rows: Array<{ id: string; ts: string; boss: string; points: number; run_id: string; char_id: string; ign: string; email: string }> = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('attendance')
+      .select('id, ts, boss, points, run_id, char_id, ign, email')
+      .order('ts', { ascending: false })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+  return rows.map(r => ({
     id: r.id, timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id,
     charId: r.char_id, ign: r.ign, email: r.email,
   }));
@@ -1001,16 +1016,27 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   Object.keys(bossGroups).forEach(boss => {
     const entries = bossGroups[boss].sort((a, b) => a.ts - b.ts);
     let windowStart: number | null = null;
+    let lastTs: number | null = null;
     let windowEntries: typeof entries = [];
     entries.forEach(e => {
       // A reset forces a break if it falls strictly between the current
-      // window's start and this entry — regardless of the 2h threshold.
+      // window's start and this entry — regardless of the 4h threshold.
       const crossesReset = globalResetMs != null && windowStart !== null && windowStart < globalResetMs && e.ts >= globalResetMs;
-      if (windowStart === null) { windowStart = e.ts; windowEntries = [e]; }
-      else if (!crossesReset && e.ts - windowStart! <= GROUP_WINDOW_MS) { windowEntries.push(e); }
+      if (windowStart === null) { windowStart = e.ts; lastTs = e.ts; windowEntries = [e]; }
+      // Gap check anchors to the LAST entry folded into this window, not
+      // the window's original start. Anchoring to windowStart made this a
+      // fixed 4h bucket from the first kill, so any boss that respawns
+      // faster than 4h would have its second (genuinely separate) kill
+      // silently absorbed into the first run instead of starting a new
+      // one — while a kill landing >4h after the *first* kill (but soon
+      // after the second) would split off on its own. Anchoring to the
+      // most recent entry makes this a real rolling gap: a new run only
+      // starts once GROUP_WINDOW_MS has actually elapsed since the last
+      // recorded kill of that boss.
+      else if (!crossesReset && e.ts - lastTs! <= GROUP_WINDOW_MS) { windowEntries.push(e); lastTs = e.ts; }
       else {
         runs.push(buildRun(boss, windowStart!, windowEntries));
-        windowStart = e.ts; windowEntries = [e];
+        windowStart = e.ts; lastTs = e.ts; windowEntries = [e];
       }
     });
     if (windowEntries.length > 0) runs.push(buildRun(boss, windowStart!, windowEntries));
