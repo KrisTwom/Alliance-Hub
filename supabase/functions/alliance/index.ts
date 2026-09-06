@@ -885,18 +885,40 @@ async function linkLateSubmissions(supabase: ReturnType<typeof db>, charId: stri
   const bosses = [...new Set(rows.map(r => r.boss))];
   const { data: confirmedRuns } = await supabase
     .from('runs')
-    .select('run_id, boss, window_start, window_end')
+    .select('run_id, boss, window_start')
     .eq('status', 'Confirmed')
     .in('boss', bosses);
   if (!confirmedRuns || !confirmedRuns.length) return;
 
+  // A confirmed run's stored window_end is a fixed windowStart+4h, set
+  // once at confirm time and never moved. Matching new submissions
+  // against that fixed end meant a confirmed run stayed "open" to
+  // absorb new attendance for the full 4h regardless of when the boss
+  // was actually killed again — so a genuinely new kill 1-2h after
+  // confirmation (same-day fast respawn) got silently merged into the
+  // old confirmed run instead of ever reaching getGroupedRuns to become
+  // its own run. Fix: use a rolling cutoff — GROUP_WINDOW_MS after the
+  // LATEST attendance timestamp actually linked to that run so far —
+  // same rolling-gap principle as the getGroupedRuns fix, just applied
+  // post-confirmation.
+  const runIds = confirmedRuns.map(r => r.run_id);
+  const { data: linkedRows } = runIds.length
+    ? await supabase.from('attendance').select('run_id, ts').in('run_id', runIds)
+    : { data: [] as Array<{ run_id: string; ts: string }> };
+  const lastTsByRun: Record<string, number> = {};
+  (linkedRows || []).forEach(r => {
+    const t = new Date(r.ts).getTime();
+    if (!lastTsByRun[r.run_id] || t > lastTsByRun[r.run_id]) lastTsByRun[r.run_id] = t;
+  });
+
   for (const row of rows) {
     const ts = new Date(row.ts).getTime();
-    const match = confirmedRuns.find(r =>
-      r.boss === row.boss &&
-      ts >= new Date(r.window_start).getTime() &&
-      ts <= new Date(r.window_end).getTime()
-    );
+    const match = confirmedRuns.find(r => {
+      if (r.boss !== row.boss) return false;
+      const startMs = new Date(r.window_start).getTime();
+      const lastMs  = lastTsByRun[r.run_id] ?? startMs;
+      return ts >= startMs && ts - lastMs <= GROUP_WINDOW_MS;
+    });
     if (!match) continue;
 
     await supabase.from('attendance').update({ run_id: match.run_id, late_linked: true }).eq('id', row.id);
