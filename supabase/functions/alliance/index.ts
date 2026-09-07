@@ -990,17 +990,29 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   // passes ~1000 total attendance rows — which is why recent boss kills
   // (e.g. today's Actaemon/Billiard runs) stopped appearing on the Drops
   // page while older runs kept showing fine. Bounding to a recent window
-  // both fixes that and keeps this from re-scanning the whole table's
-  // history on every load. Confirmed runs older than this are already
-  // persisted in `runs` and don't need to be re-derived from raw
-  // attendance, so 30 days is generous headroom, not a hard requirement.
+  // helps keep this from re-scanning the whole table's history on every
+  // load, but it does NOT by itself dodge the 1000-row cap: once the
+  // alliance's submission volume passes ~1000 rows within the 30-day
+  // window itself (which happens quickly once the alliance is active —
+  // see the identical cap bug already found in getAllAttendance), the
+  // cap kicks back in and silently drops the newest rows again — which
+  // is exactly what was still happening here. Paginating with .range()
+  // is the actual fix; the date bound is just an optimization on top of
+  // it, not a substitute for it.
   const groupedRunsCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const { data: attRows, error: ae } = await supabase
-    .from('attendance')
-    .select('id, ts, char_id, ign, email, boss, manually_added')
-    .gte('ts', groupedRunsCutoff)
-    .order('ts', { ascending: true });
-  if (ae) throw ae;
+  const PAGE_SIZE = 1000;
+  const attRows: Array<{ id: string; ts: string; char_id: string; ign: string; email: string; boss: string; manually_added: boolean; run_id: string }> = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error: ae } = await supabase
+      .from('attendance')
+      .select('id, ts, char_id, ign, email, boss, manually_added, run_id')
+      .gte('ts', groupedRunsCutoff)
+      .order('ts', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (ae) throw ae;
+    attRows.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
 
   const { data: savedRuns } = await supabase.from('runs').select('*');
 
@@ -1028,13 +1040,13 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   const globalResetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
 
   // Group attendance into run windows (mirrors GAS logic)
-  const bossGroups: Record<string, Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean }>> = {};
+  const bossGroups: Record<string, Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string }>> = {};
   (attRows || []).forEach(r => {
     if (!bossGroups[r.boss]) bossGroups[r.boss] = [];
-    bossGroups[r.boss].push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id, ign: r.ign, email: r.email, manuallyAdded: !!r.manually_added });
+    bossGroups[r.boss].push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id, ign: r.ign, email: r.email, manuallyAdded: !!r.manually_added, runId: r.run_id || '' });
   });
 
-  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> }> = [];
+  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; linkedRunId: string; participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> }> = [];
   Object.keys(bossGroups).forEach(boss => {
     const entries = bossGroups[boss].sort((a, b) => a.ts - b.ts);
     let windowStart: number | null = null;
@@ -1076,9 +1088,16 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   (attRows || []).forEach(r => { charInfo[r.char_id] = { charId: r.char_id, ign: r.ign, email: r.email, attendanceId: r.id, manuallyAdded: !!r.manually_added }; });
 
   return runs.map(run => {
-    const saved = (savedRuns || []).find(r =>
-      r.boss === run.boss && Math.abs(new Date(r.window_start).getTime() - run.windowStart) < 60000
-    );
+    // Prefer the run_id actually stamped on this window's attendance rows
+    // (ground truth, immune to windowStart drift). Only fall back to the
+    // old boss+windowStart proximity match for rows that predate run_id
+    // being reliably set (or a window with zero linked rows, e.g. a purely
+    // manually-added run whose insert didn't carry a runId yet).
+    const saved = run.linkedRunId
+      ? (savedRuns || []).find(r => r.run_id === run.linkedRunId)
+      : (savedRuns || []).find(r =>
+          r.boss === run.boss && Math.abs(new Date(r.window_start).getTime() - run.windowStart) < 60000
+        );
     const confirmedParticipants = saved ? (participantsByRun[saved.run_id] || []).map(id => charInfo[id]).filter(Boolean) : null;
     const participants = confirmedParticipants || run.participants;
     return {
@@ -1097,11 +1116,30 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   });
 }
 
-function buildRun(boss: string, windowStart: number, entries: Array<{ id: string; charId: string; ign: string; email: string; manuallyAdded: boolean }>) {
+function buildRun(boss: string, windowStart: number, entries: Array<{ id: string; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string }>) {
   const seen = new Set<string>();
   const participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> = [];
   entries.forEach(e => { if (!seen.has(e.charId)) { seen.add(e.charId); participants.push({ charId: e.charId, ign: e.ign, email: e.email, attendanceId: e.id, manuallyAdded: e.manuallyAdded }); } });
-  return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, participants };
+
+  // Which confirmed run (if any) this window is actually linked to — read
+  // directly off the attendance rows' own run_id rather than re-derived
+  // from timing. Previously getGroupedRuns() matched a saved run to this
+  // window by comparing windowStart values within a 60s tolerance, which
+  // silently breaks (run appears to have 0/wrong participants, or drops
+  // out of the confirmed list entirely) whenever the live regroup's
+  // computed windowStart drifts from the value frozen in runs.window_start
+  // at confirm time — e.g. after a late-linked submission reshuffles which
+  // entry anchors the window. attendance.run_id is the ground truth written
+  // by confirmRun/linkAttendanceToRun and never needs to be recomputed, so
+  // take a majority vote of the non-empty run_ids actually present on this
+  // window's rows instead of guessing from timestamps.
+  const runIdCounts: Record<string, number> = {};
+  entries.forEach(e => { if (e.runId) runIdCounts[e.runId] = (runIdCounts[e.runId] || 0) + 1; });
+  let linkedRunId = '';
+  let bestCount = 0;
+  Object.keys(runIdCounts).forEach(id => { if (runIdCounts[id] > bestCount) { bestCount = runIdCounts[id]; linkedRunId = id; } });
+
+  return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, linkedRunId, participants };
 }
 
 // ============================================================
