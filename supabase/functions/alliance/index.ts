@@ -27,6 +27,19 @@ const SUPER_ADMIN_EMAILS = (Deno.env.get('SUPER_ADMIN_EMAILS') || 'retisovermine
 
 const GROUP_WINDOW_MS = 4 * 60 * 60 * 1000;
 
+// ── Web Push config (see push_subscriptions/notification_prefs below) ──
+// VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY: generate once with
+//   npx web-push generate-vapid-keys
+// and store both as Supabase Edge Function secrets. VAPID_SUBJECT should
+// be a mailto: address (any real inbox — used by push services to
+// contact you if they need to, never shown to members).
+// CRON_SECRET: any random string — shared between this function and the
+// pg_cron job so notify_tick can't be called by a random outsider.
+const VAPID_PUBLIC_KEY  = Deno.env.get('VAPID_PUBLIC_KEY')  || '';
+const VAPID_PRIVATE_KEY = Deno.env.get('VAPID_PRIVATE_KEY') || '';
+const VAPID_SUBJECT      = Deno.env.get('VAPID_SUBJECT')      || 'mailto:admin@example.com';
+const CRON_SECRET         = Deno.env.get('CRON_SECRET')         || '';
+
 const BOSS_CATEGORIES = [
   {
     category: 'Raid Bosses', emoji: '⚔️',
@@ -83,6 +96,17 @@ const BOSS_DROPS: Record<string, string[]> = {
 // ── Boss point lookup ─────────────────────────────────────────
 const BOSS_POINTS: Record<string, number> = {};
 BOSS_CATEGORIES.forEach(cat => cat.bosses.forEach(b => { BOSS_POINTS[b.name] = b.points; }));
+
+// ── Notification grouping — which settings-page toggle a boss falls
+// under. "Mini Bosses" category -> mini notifications; everything else
+// (Raid Bosses, Library Bosses) -> boss notifications.
+const NOTIF_GROUP: Record<string, 'boss' | 'mini'> = {};
+BOSS_CATEGORIES.forEach(cat => cat.bosses.forEach(b => {
+  NOTIF_GROUP[b.name] = cat.category === 'Mini Bosses' ? 'mini' : 'boss';
+}));
+function notifGroupForBoss(boss: string): 'boss' | 'mini' {
+  return NOTIF_GROUP[boss] || 'boss';
+}
 
 // ── Boss event duration by category ────────────────────────────
 // Fixed fight-window lengths, not admin-editable: Raid Bosses = 5min,
@@ -254,6 +278,7 @@ Deno.serve(async (req) => {
       // ── Public ──────────────────────────────────────────────
       case 'get_config':          return ok(getConfig());
       case 'get_leaderboard':     return ok(await getLeaderboard(supabase));
+      case 'get_char_profile':    return ok(await getCharProfile(supabase, email, data.charId as string));
 
       // ── User ────────────────────────────────────────────────
       case 'get_current_user':    return ok(await getCurrentUser(supabase, email));
@@ -288,6 +313,7 @@ Deno.serve(async (req) => {
       case 'get_late_linked_attendance': return ok(await getLateLinkedAttendance(supabase, email));
       case 'get_inventory':       return ok(await getInventory(supabase, email));
       case 'mark_items_sold':     return ok(await markItemsSold(supabase, email, data));
+      case 'get_drop_history':    return ok(await getDropHistory(supabase, email));
       case 'get_payouts_page':    return ok(await getPayoutsPage(supabase, email, data.month as string));
       case 'get_available_months':return ok(await getAvailableMonths(supabase, email));
       case 'mark_char_paid':      return ok(await markCharPaid(supabase, email, data));
@@ -309,10 +335,36 @@ Deno.serve(async (req) => {
       case 'get_kos':              return ok(await getKos(supabase, email));
       case 'update_kos':           return ok(await updateKos(supabase, email, data));
 
+      // ── Push notifications ───────────────────────────────────
+      case 'save_push_subscription':   return ok(await savePushSubscription(supabase, email, data));
+      case 'remove_push_subscription': return ok(await removePushSubscription(supabase, email, data));
+      case 'get_notification_prefs':   return ok(await getNotificationPrefs(supabase, email));
+      case 'update_notification_prefs':return ok(await updateNotificationPrefs(supabase, email, data));
+      // Called only by the pg_cron job (see migration/setup notes) — no
+      // member email, authorized purely by the shared secret header
+      // instead, since a cron job has no signed-in user to check.
+      case 'notify_tick': {
+        if (!CRON_SECRET || req.headers.get('x-cron-secret') !== CRON_SECRET) return err('Unauthorized');
+        return ok(await notifyTick(supabase));
+      }
+
       default: return err('Unknown action: ' + action);
     }
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
+    // Supabase/Postgrest errors are plain objects with a `.message` (not
+    // `instanceof Error`), so the old `String(e)` fallback rendered them
+    // as the literal text "[object Object]" — that's what showed up in
+    // the character profile popup (and anywhere else a query threw).
+    // Fall back to the object's own `.message`/`.error_description` before
+    // giving up and stringifying it.
+    let message: string;
+    if (e instanceof Error) {
+      message = e.message;
+    } else if (e && typeof e === 'object' && 'message' in e && typeof (e as { message?: unknown }).message === 'string') {
+      message = (e as { message: string }).message;
+    } else {
+      try { message = JSON.stringify(e); } catch { message = String(e); }
+    }
     return err(message);
   }
 });
@@ -340,6 +392,40 @@ async function getLeaderboard(supabase: ReturnType<typeof db>) {
     .limit(500);
   if (error) throw error;
   return (data || []).map((c, i) => ({ charId: c.char_id, ign: c.ign, points: c.points, charClass: c.char_class, rank: i + 1 }));
+}
+
+// ============================================================
+//  CHARACTER PROFILE POPUP (leaderboard — click any character)
+//  Open to any signed-in member, not admin-gated: it's the same info
+//  already visible on the public leaderboard plus a lifetime-points
+//  line and that character's point-deduction history.
+// ============================================================
+async function getCharProfile(supabase: ReturnType<typeof db>, email: string, charId: string) {
+  if (!email) return { error: 'No email provided' };
+  if (!charId) return { error: 'charId required' };
+
+  const { data: char, error: ce } = await supabase.from('characters').select('*').eq('char_id', charId).maybeSingle();
+  if (ce) throw ce;
+  if (!char) return { error: 'Character not found' };
+
+  // NOTE: the primary key on this table is `deduction_id`, not `id` (see
+  // the insert in sellItem() below) — selecting `id` here throws
+  // "column point_deductions.id does not exist".
+  const { data: deductionRows, error: de } = await supabase
+    .from('point_deductions')
+    .select('deduction_id, amount, item_name, created_at')
+    .eq('char_id', charId)
+    .order('created_at', { ascending: false });
+  if (de) throw de;
+
+  return {
+    charId, ign: char.ign, level: char.level, charClass: char.char_class, guild: char.guild,
+    points: Number(char.points) || 0,
+    lifetimePoints: Number(char.lifetime_points) || Number(char.points) || 0,
+    deductions: (deductionRows || []).map(d => ({
+      id: d.deduction_id, amount: Number(d.amount) || 0, itemName: d.item_name || '', createdAt: d.created_at,
+    })),
+  };
 }
 
 // ============================================================
@@ -757,8 +843,15 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   const { data: inserted, error: ae } = await supabase.from('attendance').insert(rows).select('id, boss, ts');
   if (ae) throw ae;
 
+  // lifetime_points only ever goes up (mirrors every point gain, never
+  // reduced by a point deduction) — points is the current/spendable total
+  // shown as "Current Points" and used for leaderboard ranking.
+  const { data: charForLifetime } = await supabase.from('characters').select('lifetime_points').eq('char_id', charId).maybeSingle();
   const { error: ue } = await supabase.from('characters')
-    .update({ points: (Number(char.points) || 0) + totalPoints })
+    .update({
+      points: (Number(char.points) || 0) + totalPoints,
+      lifetime_points: (Number(charForLifetime?.lifetime_points) || 0) + totalPoints,
+    })
     .eq('char_id', charId);
   if (ue) throw ue;
 
@@ -792,18 +885,40 @@ async function linkLateSubmissions(supabase: ReturnType<typeof db>, charId: stri
   const bosses = [...new Set(rows.map(r => r.boss))];
   const { data: confirmedRuns } = await supabase
     .from('runs')
-    .select('run_id, boss, window_start, window_end')
+    .select('run_id, boss, window_start')
     .eq('status', 'Confirmed')
     .in('boss', bosses);
   if (!confirmedRuns || !confirmedRuns.length) return;
 
+  // A confirmed run's stored window_end is a fixed windowStart+4h, set
+  // once at confirm time and never moved. Matching new submissions
+  // against that fixed end meant a confirmed run stayed "open" to
+  // absorb new attendance for the full 4h regardless of when the boss
+  // was actually killed again — so a genuinely new kill 1-2h after
+  // confirmation (same-day fast respawn) got silently merged into the
+  // old confirmed run instead of ever reaching getGroupedRuns to become
+  // its own run. Fix: use a rolling cutoff — GROUP_WINDOW_MS after the
+  // LATEST attendance timestamp actually linked to that run so far —
+  // same rolling-gap principle as the getGroupedRuns fix, just applied
+  // post-confirmation.
+  const runIds = confirmedRuns.map(r => r.run_id);
+  const { data: linkedRows } = runIds.length
+    ? await supabase.from('attendance').select('run_id, ts').in('run_id', runIds)
+    : { data: [] as Array<{ run_id: string; ts: string }> };
+  const lastTsByRun: Record<string, number> = {};
+  (linkedRows || []).forEach(r => {
+    const t = new Date(r.ts).getTime();
+    if (!lastTsByRun[r.run_id] || t > lastTsByRun[r.run_id]) lastTsByRun[r.run_id] = t;
+  });
+
   for (const row of rows) {
     const ts = new Date(row.ts).getTime();
-    const match = confirmedRuns.find(r =>
-      r.boss === row.boss &&
-      ts >= new Date(r.window_start).getTime() &&
-      ts <= new Date(r.window_end).getTime()
-    );
+    const match = confirmedRuns.find(r => {
+      if (r.boss !== row.boss) return false;
+      const startMs = new Date(r.window_start).getTime();
+      const lastMs  = lastTsByRun[r.run_id] ?? startMs;
+      return ts >= startMs && ts - lastMs <= GROUP_WINDOW_MS;
+    });
     if (!match) continue;
 
     await supabase.from('attendance').update({ run_id: match.run_id, late_linked: true }).eq('id', row.id);
@@ -836,12 +951,27 @@ async function getMyAttendance(supabase: ReturnType<typeof db>, email: string, c
 async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) {
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
-  const { data, error } = await supabase
-    .from('attendance')
-    .select('id, ts, boss, points, run_id, char_id, ign, email')
-    .order('ts', { ascending: false });
-  if (error) throw error;
-  return (data || []).map(r => ({
+  // Same class of bug as getGroupedRuns used to have (see the comment
+  // there): an unbounded .select() with no .range() gets silently capped
+  // at 1000 rows by PostgREST. Here that showed up as the Attendance
+  // History "Total Submissions" stat chip (which just does att.length on
+  // the frontend) freezing at 1000 once the table passed that size,
+  // rather than dropping any particular rows — the whole result set was
+  // truncated. Paginate through in pages of PAGE_SIZE until a short page
+  // comes back.
+  const PAGE_SIZE = 1000;
+  const rows: Array<{ id: string; ts: string; boss: string; points: number; run_id: string; char_id: string; ign: string; email: string }> = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('attendance')
+      .select('id, ts, boss, points, run_id, char_id, ign, email')
+      .order('ts', { ascending: false })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+  return rows.map(r => ({
     id: r.id, timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id,
     charId: r.char_id, ign: r.ign, email: r.email,
   }));
@@ -853,11 +983,36 @@ async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) 
 async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
-  const { data: attRows, error: ae } = await supabase
-    .from('attendance')
-    .select('id, ts, char_id, ign, email, boss, manually_added')
-    .order('ts', { ascending: true });
-  if (ae) throw ae;
+  // IMPORTANT: this query used to have no date bound and no explicit
+  // .range()/.limit(). Supabase/PostgREST caps unbounded selects at 1000
+  // rows by default, and since we sort ascending by ts, that cap silently
+  // keeps the OLDEST 1000 rows and drops everything newer once the table
+  // passes ~1000 total attendance rows — which is why recent boss kills
+  // (e.g. today's Actaemon/Billiard runs) stopped appearing on the Drops
+  // page while older runs kept showing fine. Bounding to a recent window
+  // helps keep this from re-scanning the whole table's history on every
+  // load, but it does NOT by itself dodge the 1000-row cap: once the
+  // alliance's submission volume passes ~1000 rows within the 30-day
+  // window itself (which happens quickly once the alliance is active —
+  // see the identical cap bug already found in getAllAttendance), the
+  // cap kicks back in and silently drops the newest rows again — which
+  // is exactly what was still happening here. Paginating with .range()
+  // is the actual fix; the date bound is just an optimization on top of
+  // it, not a substitute for it.
+  const groupedRunsCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const PAGE_SIZE = 1000;
+  const attRows: Array<{ id: string; ts: string; char_id: string; ign: string; email: string; boss: string; manually_added: boolean; run_id: string }> = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error: ae } = await supabase
+      .from('attendance')
+      .select('id, ts, char_id, ign, email, boss, manually_added, run_id')
+      .gte('ts', groupedRunsCutoff)
+      .order('ts', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (ae) throw ae;
+    attRows.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
 
   const { data: savedRuns } = await supabase.from('runs').select('*');
 
@@ -885,26 +1040,37 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   const globalResetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
 
   // Group attendance into run windows (mirrors GAS logic)
-  const bossGroups: Record<string, Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean }>> = {};
+  const bossGroups: Record<string, Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string }>> = {};
   (attRows || []).forEach(r => {
     if (!bossGroups[r.boss]) bossGroups[r.boss] = [];
-    bossGroups[r.boss].push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id, ign: r.ign, email: r.email, manuallyAdded: !!r.manually_added });
+    bossGroups[r.boss].push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id, ign: r.ign, email: r.email, manuallyAdded: !!r.manually_added, runId: r.run_id || '' });
   });
 
-  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> }> = [];
+  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; linkedRunId: string; participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> }> = [];
   Object.keys(bossGroups).forEach(boss => {
     const entries = bossGroups[boss].sort((a, b) => a.ts - b.ts);
     let windowStart: number | null = null;
+    let lastTs: number | null = null;
     let windowEntries: typeof entries = [];
     entries.forEach(e => {
       // A reset forces a break if it falls strictly between the current
-      // window's start and this entry — regardless of the 2h threshold.
+      // window's start and this entry — regardless of the 4h threshold.
       const crossesReset = globalResetMs != null && windowStart !== null && windowStart < globalResetMs && e.ts >= globalResetMs;
-      if (windowStart === null) { windowStart = e.ts; windowEntries = [e]; }
-      else if (!crossesReset && e.ts - windowStart! <= GROUP_WINDOW_MS) { windowEntries.push(e); }
+      if (windowStart === null) { windowStart = e.ts; lastTs = e.ts; windowEntries = [e]; }
+      // Gap check anchors to the LAST entry folded into this window, not
+      // the window's original start. Anchoring to windowStart made this a
+      // fixed 4h bucket from the first kill, so any boss that respawns
+      // faster than 4h would have its second (genuinely separate) kill
+      // silently absorbed into the first run instead of starting a new
+      // one — while a kill landing >4h after the *first* kill (but soon
+      // after the second) would split off on its own. Anchoring to the
+      // most recent entry makes this a real rolling gap: a new run only
+      // starts once GROUP_WINDOW_MS has actually elapsed since the last
+      // recorded kill of that boss.
+      else if (!crossesReset && e.ts - lastTs! <= GROUP_WINDOW_MS) { windowEntries.push(e); lastTs = e.ts; }
       else {
         runs.push(buildRun(boss, windowStart!, windowEntries));
-        windowStart = e.ts; windowEntries = [e];
+        windowStart = e.ts; lastTs = e.ts; windowEntries = [e];
       }
     });
     if (windowEntries.length > 0) runs.push(buildRun(boss, windowStart!, windowEntries));
@@ -922,9 +1088,16 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   (attRows || []).forEach(r => { charInfo[r.char_id] = { charId: r.char_id, ign: r.ign, email: r.email, attendanceId: r.id, manuallyAdded: !!r.manually_added }; });
 
   return runs.map(run => {
-    const saved = (savedRuns || []).find(r =>
-      r.boss === run.boss && Math.abs(new Date(r.window_start).getTime() - run.windowStart) < 60000
-    );
+    // Prefer the run_id actually stamped on this window's attendance rows
+    // (ground truth, immune to windowStart drift). Only fall back to the
+    // old boss+windowStart proximity match for rows that predate run_id
+    // being reliably set (or a window with zero linked rows, e.g. a purely
+    // manually-added run whose insert didn't carry a runId yet).
+    const saved = run.linkedRunId
+      ? (savedRuns || []).find(r => r.run_id === run.linkedRunId)
+      : (savedRuns || []).find(r =>
+          r.boss === run.boss && Math.abs(new Date(r.window_start).getTime() - run.windowStart) < 60000
+        );
     const confirmedParticipants = saved ? (participantsByRun[saved.run_id] || []).map(id => charInfo[id]).filter(Boolean) : null;
     const participants = confirmedParticipants || run.participants;
     return {
@@ -943,11 +1116,30 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   });
 }
 
-function buildRun(boss: string, windowStart: number, entries: Array<{ id: string; charId: string; ign: string; email: string; manuallyAdded: boolean }>) {
+function buildRun(boss: string, windowStart: number, entries: Array<{ id: string; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string }>) {
   const seen = new Set<string>();
   const participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> = [];
   entries.forEach(e => { if (!seen.has(e.charId)) { seen.add(e.charId); participants.push({ charId: e.charId, ign: e.ign, email: e.email, attendanceId: e.id, manuallyAdded: e.manuallyAdded }); } });
-  return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, participants };
+
+  // Which confirmed run (if any) this window is actually linked to — read
+  // directly off the attendance rows' own run_id rather than re-derived
+  // from timing. Previously getGroupedRuns() matched a saved run to this
+  // window by comparing windowStart values within a 60s tolerance, which
+  // silently breaks (run appears to have 0/wrong participants, or drops
+  // out of the confirmed list entirely) whenever the live regroup's
+  // computed windowStart drifts from the value frozen in runs.window_start
+  // at confirm time — e.g. after a late-linked submission reshuffles which
+  // entry anchors the window. attendance.run_id is the ground truth written
+  // by confirmRun/linkAttendanceToRun and never needs to be recomputed, so
+  // take a majority vote of the non-empty run_ids actually present on this
+  // window's rows instead of guessing from timestamps.
+  const runIdCounts: Record<string, number> = {};
+  entries.forEach(e => { if (e.runId) runIdCounts[e.runId] = (runIdCounts[e.runId] || 0) + 1; });
+  let linkedRunId = '';
+  let bestCount = 0;
+  Object.keys(runIdCounts).forEach(id => { if (runIdCounts[id] > bestCount) { bestCount = runIdCounts[id]; linkedRunId = id; } });
+
+  return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, linkedRunId, participants };
 }
 
 // ============================================================
@@ -1201,7 +1393,11 @@ async function addRunParticipant(supabase: ReturnType<typeof db>, email: string,
   }).select('id').single();
   if (ie) throw ie;
 
-  await supabase.from('characters').update({ points: (Number(char.points) || 0) + points }).eq('char_id', charId);
+  const { data: charForLifetime2 } = await supabase.from('characters').select('lifetime_points').eq('char_id', charId).maybeSingle();
+  await supabase.from('characters').update({
+    points: (Number(char.points) || 0) + points,
+    lifetime_points: (Number(charForLifetime2?.lifetime_points) || 0) + points,
+  }).eq('char_id', charId);
 
   if (runId) {
     await supabase.from('run_participants').upsert(
@@ -1225,9 +1421,10 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
   const windowStart  = runData.windowStart as string;
   const notes    = (runData.notes as string) || '';
 
-  if (isEdit && !(await isSuperAdmin(supabase, email))) {
-    return { error: 'Editing a confirmed run requires super admin permission.' };
-  }
+  // Editing drops on an already-confirmed run used to require super admin.
+  // Now any Drops Handler (or Super Admin) can — the isDropsHandler check
+  // at the top of this function already gates the whole endpoint, so no
+  // extra check is needed here.
 
   const participantStr = participants.map(p => p.charId).join(',');
   const dropsStr = JSON.stringify(drops);
@@ -1392,9 +1589,18 @@ async function getInventory(supabase: ReturnType<typeof db>, email: string) {
 async function markItemsSold(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
-  const invIds     = data.invIds as string[];
-  const goldPerItem = Number(data.goldPerItem) || 0;
-  const winner     = (data.winner as string) || '';
+  const invIds       = data.invIds as string[];
+  const goldPerItem  = Number(data.goldPerItem) || 0;
+  const winner       = (data.winner as string) || '';
+  // New: optional character link for the winner (drives the point
+  // deduction + shows up correctly in that character's profile), and an
+  // optional points-deducted amount that applies once to this whole
+  // "Mark Selected Sold" action (not per stack sold).
+  const winnerCharId  = (data.winnerCharId as string) || '';
+  const deductPointsRaw = data.deductPoints;
+  const deductPoints  = winnerCharId && deductPointsRaw !== undefined && deductPointsRaw !== null && deductPointsRaw !== ''
+    ? Math.max(0, Math.round(Number(deductPointsRaw) || 0))
+    : 0;
 
   const { data: invRows } = await supabase.from('inventory').select('*').in('inv_id', invIds).eq('status', 'Available');
   if (!invRows || invRows.length === 0) return { error: 'No available items found' };
@@ -1402,6 +1608,14 @@ async function markItemsSold(supabase: ReturnType<typeof db>, email: string, dat
   const now   = new Date();
   const month = monthStr(now);
   let salesCount = 0, payoutsCount = 0;
+
+  // Every inv row selected in one "Mark Selected Sold" click is always the
+  // same item (the sell modal is opened per-item) — different stacks of it
+  // dropped across different runs. Group them under one batchId so the
+  // Drop History page can show this as a single bulk-sell row (e.g. "30
+  // Caligo Scales sold") instead of one row per underlying run's stack.
+  const batchId = 'BATCH_' + crypto.randomUUID();
+  let winnerIgnForLog = winner;
 
   for (const inv of invRows) {
     const totalGold = goldPerItem * (Number(inv.qty) || 1);
@@ -1411,7 +1625,8 @@ async function markItemsSold(supabase: ReturnType<typeof db>, email: string, dat
     const { error: se } = await supabase.from('sales').insert({
       sale_id: saleId, inv_id: inv.inv_id, run_id: inv.run_id, boss: inv.boss,
       item_name: inv.item_name, qty: inv.qty, gold_per: goldPerItem,
-      total_gold: totalGold, winner, sold_at: now.toISOString(),
+      total_gold: totalGold, winner, winner_char_id: winnerCharId || null,
+      batch_id: batchId, sold_at: now.toISOString(),
     });
     if (se) throw se;
     salesCount++;
@@ -1443,7 +1658,81 @@ async function markItemsSold(supabase: ReturnType<typeof db>, email: string, dat
     }
   }
 
-  return { success: true, salesCount, payoutsCount };
+  // Point deduction — one entry for the whole batch, logged onto the
+  // winning character's profile (and Drop History) and subtracted from
+  // their current points. Never below 0, and lifetime_points is
+  // deliberately untouched — it only ever tracks points earned.
+  if (winnerCharId && deductPoints > 0) {
+    const { data: winChar } = await supabase.from('characters').select('char_id, ign, points').eq('char_id', winnerCharId).maybeSingle();
+    if (winChar) {
+      winnerIgnForLog = winChar.ign;
+      const newPoints = Math.max(0, (Number(winChar.points) || 0) - deductPoints);
+      await supabase.from('characters').update({ points: newPoints }).eq('char_id', winnerCharId);
+
+      const itemName = invRows[0]?.item_name || '';
+      const { error: pde } = await supabase.from('point_deductions').insert({
+        deduction_id: 'PD_' + crypto.randomUUID(), char_id: winnerCharId,
+        amount: deductPoints, item_name: itemName, sale_batch_id: batchId,
+        created_at: now.toISOString(), created_by: email,
+      });
+      if (pde) throw pde;
+    }
+  }
+
+  return { success: true, salesCount, payoutsCount, batchId, winner: winnerIgnForLog };
+}
+
+// ============================================================
+//  DROP HISTORY (super-admin only) — one row per bulk "Mark Selected
+//  Sold" action (grouped by batch_id), not one row per underlying
+//  inventory stack, since a single sell action is how these actually
+//  get sold in practice (e.g. "30 Caligo Scales" sold together).
+// ============================================================
+async function getDropHistory(supabase: ReturnType<typeof db>, email: string) {
+  if (!(await isSuperAdmin(supabase, email))) return { error: 'Unauthorized' };
+
+  const { data: rows, error } = await supabase
+    .from('sales')
+    .select('sale_id, batch_id, boss, item_name, qty, gold_per, total_gold, winner, winner_char_id, sold_at')
+    .order('sold_at', { ascending: false });
+  if (error) throw error;
+
+  const { data: deductions } = await supabase
+    .from('point_deductions')
+    .select('sale_batch_id, amount, char_id');
+  const deductionByBatch: Record<string, number> = {};
+  (deductions || []).forEach(d => { deductionByBatch[d.sale_batch_id] = (deductionByBatch[d.sale_batch_id] || 0) + (Number(d.amount) || 0); });
+
+  const winnerCharIds = [...new Set((rows || []).map(r => r.winner_char_id).filter(Boolean))];
+  const { data: winnerChars } = winnerCharIds.length
+    ? await supabase.from('characters').select('char_id, ign').in('char_id', winnerCharIds)
+    : { data: [] as Array<{ char_id: string; ign: string }> };
+  const ignByCharId: Record<string, string> = {};
+  (winnerChars || []).forEach(c => { ignByCharId[c.char_id] = c.ign; });
+
+  const batches: Record<string, {
+    batchId: string; boss: string; itemName: string; qty: number; totalGold: number;
+    winner: string; soldAt: string; pointsDeducted: number;
+  }> = {};
+
+  (rows || []).forEach(r => {
+    // Older sales rows (sold before this feature existed) have no
+    // batch_id — fall back to treating each as its own single-row batch
+    // using its sale_id, so historical sales still show up.
+    const key = r.batch_id || `legacy:${r.sale_id}`;
+    if (!batches[key]) {
+      batches[key] = {
+        batchId: key, boss: r.boss, itemName: r.item_name, qty: 0, totalGold: 0,
+        winner: (r.winner_char_id && ignByCharId[r.winner_char_id]) || r.winner || '',
+        soldAt: r.sold_at, pointsDeducted: r.batch_id ? (deductionByBatch[r.batch_id] || 0) : 0,
+      };
+    }
+    batches[key].qty += Number(r.qty) || 0;
+    batches[key].totalGold += Number(r.total_gold) || 0;
+    if (new Date(r.sold_at).getTime() > new Date(batches[key].soldAt).getTime()) batches[key].soldAt = r.sold_at;
+  });
+
+  return Object.values(batches).sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
 }
 
 // ============================================================
@@ -1609,6 +1898,7 @@ async function createAnnouncement(supabase: ReturnType<typeof db>, email: string
     announcement_id: id, title, body, created_by: email,
   });
   if (error) throw error;
+  await _pushAnnouncement(supabase, title, body);
   return { success: true, id };
 }
 
@@ -1626,6 +1916,7 @@ async function _postSystemAnnouncement(supabase: ReturnType<typeof db>, title: s
     announcement_id: id, title, body, created_by: 'system',
   });
   if (error) throw error;
+  await _pushAnnouncement(supabase, title, body);
   return { success: true, id };
 }
 
@@ -1646,6 +1937,316 @@ async function markAnnouncementsRead(supabase: ReturnType<typeof db>, email: str
   const { error } = await supabase.from('announcement_reads').upsert(rows, { onConflict: 'email,announcement_id', ignoreDuplicates: true });
   if (error) throw error;
   return { success: true };
+}
+
+// ============================================================
+//  PUSH NOTIFICATIONS
+//  Two tables: push_subscriptions (one row per browser/device the member
+//  has opted in on) and notification_prefs (per-email toggle state).
+//  Announcements push immediately on create; event "starts in 10 min"
+//  pushes are driven by notify_tick, called every minute by a pg_cron
+//  job (see migration/setup notes) since this is a stateless Edge
+//  Function with no background timer of its own.
+// ============================================================
+async function savePushSubscription(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!email) return { error: 'No email provided' };
+  const sub = data.subscription as { endpoint: string; keys: { p256dh: string; auth: string } } | undefined;
+  if (!sub?.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) return { error: 'Invalid subscription payload.' };
+
+  const { error } = await supabase.from('push_subscriptions').upsert({
+    endpoint: sub.endpoint, email, p256dh: sub.keys.p256dh, auth: sub.keys.auth,
+    created_at: new Date().toISOString(),
+  }, { onConflict: 'endpoint' });
+  if (error) throw error;
+  return { success: true };
+}
+
+async function removePushSubscription(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!email) return { error: 'No email provided' };
+  const endpoint = data.endpoint as string;
+  if (!endpoint) return { error: 'endpoint required' };
+  await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint).eq('email', email);
+  return { success: true };
+}
+
+const DEFAULT_NOTIF_PREFS = { announcements: true, bossPrefs: {} as Record<string, boolean>, miniPrefs: {} as Record<string, boolean> };
+
+async function getNotificationPrefs(supabase: ReturnType<typeof db>, email: string) {
+  if (!email) return { error: 'No email provided' };
+  const { data: row } = await supabase.from('notification_prefs').select('*').eq('email', email).maybeSingle();
+  if (!row) return { ...DEFAULT_NOTIF_PREFS };
+  return {
+    announcements: row.announcements !== false,
+    bossPrefs: row.boss_prefs || {},
+    miniPrefs: row.mini_prefs || {},
+  };
+}
+
+async function updateNotificationPrefs(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!email) return { error: 'No email provided' };
+  const update: Record<string, unknown> = { email };
+  if (data.announcements !== undefined) update.announcements = !!data.announcements;
+  if (data.bossPrefs !== undefined) update.boss_prefs = data.bossPrefs;
+  if (data.miniPrefs !== undefined) update.mini_prefs = data.miniPrefs;
+  const { error } = await supabase.from('notification_prefs').upsert(update, { onConflict: 'email' });
+  if (error) throw error;
+  return { success: true };
+}
+
+// ── Native Web Push (RFC 8291 encryption + RFC 8292 VAPID), built with
+// only Deno's built-in Web Crypto — no npm/third-party package at all.
+// This exists specifically to avoid the earlier outage where a
+// top-level `import ... from 'npm:web-push'` crashed the ENTIRE
+// function's boot (every action, not just push) because that package
+// doesn't run cleanly in this Deno runtime. There is no npm dependency
+// left anywhere in this file.
+function _b64urlToBytes(b64url: string): Uint8Array {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(b64url.length + (4 - b64url.length % 4) % 4, '=');
+  const bin = atob(b64);
+  return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+function _bytesToB64url(bytes: Uint8Array): string {
+  let bin = '';
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function _concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  parts.forEach(p => { out.set(p, offset); offset += p.length; });
+  return out;
+}
+// TS's DOM lib in this checker environment types Uint8Array as generic
+// over its buffer, which BufferSource-typed WebCrypto/fetch params don't
+// accept without a cast — purely a type-level mismatch (Deno's own
+// runtime types this fine); this keeps every call site unambiguous.
+function _bs(u: Uint8Array): BufferSource { return u as unknown as BufferSource; }
+
+async function _vapidPrivateKey(): Promise<CryptoKey> {
+  // web-push's "generate-vapid-keys" (and every VAPID generator following
+  // the same convention) outputs the private key as a raw 32-byte EC
+  // scalar, base64url-encoded — not PKCS8/JWK. WebCrypto can't import a
+  // raw private scalar directly, so we rebuild a JWK from it: x/y come
+  // from the public key's uncompressed point, d is the private scalar.
+  const pub = _b64urlToBytes(VAPID_PUBLIC_KEY); // 65 bytes: 0x04 || X(32) || Y(32)
+  const x = pub.slice(1, 33), y = pub.slice(33, 65);
+  const jwk: JsonWebKey = {
+    kty: 'EC', crv: 'P-256', ext: true,
+    x: _bytesToB64url(x), y: _bytesToB64url(y), d: VAPID_PRIVATE_KEY,
+  };
+  return await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+}
+
+async function _vapidAuthHeader(endpoint: string): Promise<string> {
+  const aud = new URL(endpoint).origin;
+  const header = { typ: 'JWT', alg: 'ES256' };
+  const payload = { aud, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: VAPID_SUBJECT };
+  const signingInput = `${_bytesToB64url(new TextEncoder().encode(JSON.stringify(header)))}.${_bytesToB64url(new TextEncoder().encode(JSON.stringify(payload)))}`;
+  const key = await _vapidPrivateKey();
+  // WebCrypto's ECDSA sign() returns the raw (r||s) format JWS requires
+  // directly — no DER conversion needed.
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(signingInput)));
+  return `vapid t=${signingInput}.${_bytesToB64url(sig)}, k=${VAPID_PUBLIC_KEY}`;
+}
+
+// Encrypts `payload` per RFC 8291 (aes128gcm content-coding) for one
+// subscription, and POSTs it to the push service. Throws a
+// { statusCode } object on a non-2xx response so the caller can prune
+// dead subscriptions (404/410) without treating every failure as dead.
+async function _sendWebPush(sub: { endpoint: string; p256dh: string; auth: string }, payload: unknown) {
+  const uaPublicRaw = _b64urlToBytes(sub.p256dh);   // 65 bytes
+  const authSecret  = _b64urlToBytes(sub.auth);      // 16 bytes
+
+  const serverKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const asPublicRaw = new Uint8Array(await crypto.subtle.exportKey('raw', serverKeyPair.publicKey));
+  const uaPublicKey = await crypto.subtle.importKey('raw', _bs(uaPublicRaw), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const ecdhSecret = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: uaPublicKey }, serverKeyPair.privateKey, 256));
+
+  const keyInfo = _concatBytes(new TextEncoder().encode('WebPush: info\0'), uaPublicRaw, asPublicRaw);
+  const ikmKey = await crypto.subtle.importKey('raw', _bs(ecdhSecret), 'HKDF', false, ['deriveBits']);
+  const ikm = new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: _bs(authSecret), info: _bs(keyInfo) }, ikmKey, 256));
+
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cekKey = await crypto.subtle.importKey('raw', _bs(ikm), 'HKDF', false, ['deriveBits']);
+  const cek   = new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: _bs(salt), info: _bs(new TextEncoder().encode('Content-Encoding: aes128gcm\0')) }, cekKey, 128));
+  const nonce = new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: _bs(salt), info: _bs(new TextEncoder().encode('Content-Encoding: nonce\0')) }, cekKey, 96));
+
+  const plaintext = _concatBytes(new TextEncoder().encode(JSON.stringify(payload)), new Uint8Array([2])); // delimiter byte for a single/last record
+  const cekCryptoKey = await crypto.subtle.importKey('raw', _bs(cek), 'AES-GCM', false, ['encrypt']);
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: _bs(nonce), tagLength: 128 }, cekCryptoKey, _bs(plaintext)));
+
+  const recordSizeBytes = new Uint8Array(4);
+  new DataView(recordSizeBytes.buffer).setUint32(0, 4096, false);
+  const header = _concatBytes(salt, recordSizeBytes, new Uint8Array([asPublicRaw.length]), asPublicRaw);
+  const body = _concatBytes(header, ciphertext);
+
+  const res = await fetch(sub.endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Encoding': 'aes128gcm',
+      'Content-Type': 'application/octet-stream',
+      'TTL': '86400',
+      'Authorization': await _vapidAuthHeader(sub.endpoint),
+    },
+    body: _bs(body) as BodyInit,
+  });
+  if (!res.ok) {
+    const err: { statusCode?: number } = { statusCode: res.status };
+    throw err;
+  }
+}
+
+// Sends one push payload to every subscription belonging to `emails`,
+// pruning subscriptions the push service reports as dead/expired (410
+// Gone / 404) so the table doesn't accumulate stale entries forever.
+async function _sendPushToEmails(supabase: ReturnType<typeof db>, emails: string[], payload: { title: string; body: string; tag?: string }) {
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return; // push not configured yet — no-op
+  const uniq = [...new Set(emails.filter(Boolean))];
+  if (!uniq.length) return;
+
+  const { data: subs } = await supabase.from('push_subscriptions').select('*').in('email', uniq);
+
+  await Promise.all((subs || []).map(async (s) => {
+    try {
+      await _sendWebPush({ endpoint: s.endpoint, p256dh: s.p256dh, auth: s.auth }, payload);
+    } catch (e: unknown) {
+      const statusCode = (e as { statusCode?: number })?.statusCode;
+      if (statusCode === 404 || statusCode === 410) {
+        await supabase.from('push_subscriptions').delete().eq('endpoint', s.endpoint);
+      }
+      // Other errors (network blip, etc.) are swallowed — a failed push
+      // to one device should never fail the announcement/event action
+      // that triggered it.
+    }
+  }));
+}
+
+// Pushes an announcement to every member who has announcements enabled
+// (default on). Called right after a successful createAnnouncement —
+// system-posted announcements (KOS diffs, scheduled-reset notices) push
+// too, same as an admin-authored one.
+async function _pushAnnouncement(supabase: ReturnType<typeof db>, title: string, body: string) {
+  const { data: prefRows } = await supabase.from('notification_prefs').select('email, announcements');
+  const { data: allRoster } = await supabase.from('roster').select('email').eq('status', 'active');
+  const optedOut = new Set((prefRows || []).filter(r => r.announcements === false).map(r => r.email));
+  const targetEmails = (allRoster || []).map(r => r.email).filter(e => !optedOut.has(e));
+  await _sendPushToEmails(supabase, targetEmails, { title: '📢 ' + title, body, tag: 'announcement' });
+}
+
+// ── PERMANENT RECURRING EVENTS (Library Boss / Siege) ──────────────────
+// Mirrors RECURRING_EVENTS in app.js exactly — these two bosses run on a
+// fixed UTC schedule and are synthesized client-side for the calendar
+// (never written to the `events` table, so they never showed up in the
+// notifyTick query above). Keep this list in sync with app.js's copy.
+const RECURRING_EVENTS: { boss: string; hourUTC: number; minuteUTC: number; daysOfWeekUTC: number[] | null }[] = [
+  { boss: 'Library Boss', hourUTC: 2,  minuteUTC: 0,  daysOfWeekUTC: null }, // every day
+  { boss: 'Library Boss', hourUTC: 14, minuteUTC: 0,  daysOfWeekUTC: null }, // every day
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, daysOfWeekUTC: [0] },  // Sunday
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, daysOfWeekUTC: [2] },  // Tuesday
+];
+
+// Recurring occurrences whose scheduled time falls within
+// [windowStartMs, windowEndMs]. Each occurrence gets a deterministic id
+// (same scheme app.js uses for its client-side calendar entries) so it
+// can be deduped against `recurring_notifications` across ticks.
+function _recurringOccurrencesInWindow(windowStartMs: number, windowEndMs: number) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const out: { id: string; boss: string }[] = [];
+  const startDayMs = Math.floor(windowStartMs / DAY) * DAY - DAY;
+  const endDayMs   = Math.ceil(windowEndMs / DAY) * DAY + DAY;
+  for (let dayMs = startDayMs; dayMs <= endDayMs; dayMs += DAY) {
+    const d = new Date(dayMs);
+    const dowUTC = d.getUTCDay();
+    RECURRING_EVENTS.forEach(r => {
+      if (r.daysOfWeekUTC && !r.daysOfWeekUTC.includes(dowUTC)) return;
+      const occMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), r.hourUTC, r.minuteUTC, 0);
+      if (occMs < windowStartMs || occMs > windowEndMs) return;
+      out.push({ id: `RECUR_${r.boss.replace(/\s+/g, '')}_${occMs}`, boss: r.boss });
+    });
+  }
+  return out;
+}
+
+// Called every ~1 minute by a pg_cron job hitting this function with
+// action=notify_tick and the shared secret header — see migration notes.
+// Finds events starting in ~10 minutes that haven't been notified yet,
+// and pushes to whoever has that specific boss/mini enabled. Also checks
+// the fixed Library Boss/Siege schedule (see RECURRING_EVENTS above) —
+// those have no `events` row to flag notified_10min on, so they're
+// deduped against the `recurring_notifications` table instead (requires
+// migration: create table recurring_notifications (occurrence_id text
+// primary key, created_at timestamptz not null default now())).
+async function notifyTick(supabase: ReturnType<typeof db>) {
+  const now = Date.now();
+  const windowStart = new Date(now + 9 * 60 * 1000).toISOString();
+  const windowEnd   = new Date(now + 11 * 60 * 1000).toISOString();
+
+  const { data: events } = await supabase
+    .from('events')
+    .select('event_id, boss, scheduled_at, notified_10min')
+    .gte('scheduled_at', windowStart)
+    .lte('scheduled_at', windowEnd)
+    .eq('notified_10min', false);
+
+  const recurring = _recurringOccurrencesInWindow(now + 9 * 60 * 1000, now + 11 * 60 * 1000);
+
+  if ((!events || !events.length) && !recurring.length) return { checked: 0, notified: 0 };
+
+  const { data: prefRows } = await supabase.from('notification_prefs').select('email, boss_prefs, mini_prefs');
+  const { data: allRoster } = await supabase.from('roster').select('email').eq('status', 'active');
+  const rosterEmails = (allRoster || []).map(r => r.email);
+  const prefByEmail: Record<string, { boss_prefs?: Record<string, boolean>; mini_prefs?: Record<string, boolean> }> = {};
+  (prefRows || []).forEach(r => { prefByEmail[r.email] = r; });
+
+  const targetsFor = (boss: string) => {
+    const group = notifGroupForBoss(boss);
+    return rosterEmails.filter(email => {
+      const prefs = prefByEmail[email];
+      const groupMap = group === 'mini' ? prefs?.mini_prefs : prefs?.boss_prefs;
+      // Unset = default ON, same convention as announcements.
+      return groupMap?.[boss] !== false;
+    });
+  };
+
+  let notified = 0;
+  for (const evt of events || []) {
+    await _sendPushToEmails(supabase, targetsFor(evt.boss), {
+      title: `⚔ ${evt.boss} starting soon`,
+      body: `${evt.boss} starts in about 10 minutes.`,
+      tag: 'event-' + evt.event_id,
+    });
+    await supabase.from('events').update({ notified_10min: true }).eq('event_id', evt.event_id);
+    notified++;
+  }
+
+  if (recurring.length) {
+    const { data: already } = await supabase
+      .from('recurring_notifications')
+      .select('occurrence_id')
+      .in('occurrence_id', recurring.map(r => r.id));
+    const alreadySet = new Set((already || []).map(r => r.occurrence_id));
+
+    for (const occ of recurring) {
+      if (alreadySet.has(occ.id)) continue;
+      await _sendPushToEmails(supabase, targetsFor(occ.boss), {
+        title: `⚔ ${occ.boss} starting soon`,
+        body: `${occ.boss} starts in about 10 minutes.`,
+        tag: 'event-' + occ.id,
+      });
+      await supabase.from('recurring_notifications').insert({ occurrence_id: occ.id });
+      notified++;
+    }
+
+    // Housekeeping — forget occurrences from more than a couple days ago
+    // so this table doesn't grow forever. Best-effort; a failure here
+    // doesn't affect notification delivery.
+    await supabase.from('recurring_notifications')
+      .delete()
+      .lt('created_at', new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString());
+  }
+
+  return { checked: (events ? events.length : 0) + recurring.length, notified };
 }
 
 // ============================================================
