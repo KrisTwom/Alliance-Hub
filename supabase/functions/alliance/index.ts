@@ -1461,13 +1461,23 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
     await writeToInventory(supabase, finalRunId!, boss, drops, now);
   }
 
-  await linkAttendanceToRun(supabase, finalRunId!, boss, windowStart, participants.map(p => p.charId));
+  const linkedCharIds = await linkAttendanceToRun(supabase, finalRunId!, boss, windowStart, participants.map(p => p.charId));
 
   // run_participants is the payout source of truth (see sellItem).
   // Upsert whoever is currently checked; on an edit, also remove anyone
   // who got unchecked — "uncheck to exclude" needs to actually pull them
   // out of the split, not just skip re-adding them.
-  const currentCharIds = participants.map(p => p.charId);
+  //
+  // currentCharIds is a UNION of the frontend's checked list with
+  // linkedCharIds — anyone linkAttendanceToRun just discovered (i.e. they
+  // submitted attendance after the confirm modal's snapshot was taken but
+  // before Confirm was clicked) needs to land in the split too, or they'd
+  // be linked on attendance.run_id but still silently excluded from loot.
+  // This doesn't break "uncheck to exclude" on edits: someone already
+  // linked from a prior confirm has run_id already set, so they never
+  // reappear via the eq('run_id','') filter in linkAttendanceToRun —
+  // only genuinely new stragglers get auto-included.
+  const currentCharIds = [...new Set([...participants.map(p => p.charId), ...linkedCharIds])];
   if (currentCharIds.length) {
     await supabase.from('run_participants').upsert(
       currentCharIds.map(charId => ({ run_id: finalRunId!, char_id: charId })),
@@ -1487,21 +1497,31 @@ async function linkAttendanceToRun(supabase: ReturnType<typeof db>, runId: strin
   const windowStartMs = new Date(windowStart).getTime();
   const windowEndMs   = windowStartMs + GROUP_WINDOW_MS;
 
+  // Intentionally NOT filtered by charIds. charIds is just the frontend's
+  // snapshot of who was checked when the confirm modal was opened — if
+  // anyone submits attendance for this boss/window between that snapshot
+  // and the admin clicking Confirm, they'd otherwise never get linked
+  // (run_id stuck at '' forever, invisible to run_participants/payouts
+  // even though Attendance History still shows them, since that view is
+  // unfiltered by run_id). Linking is purely time-window based; charIds
+  // is only used by the caller (confirmRun) to seed run_participants —
+  // this function tells it who it actually linked so late arrivals get
+  // folded in too.
   const { data: rows } = await supabase
     .from('attendance')
     .select('id, ts, char_id')
     .eq('boss', boss)
-    .eq('run_id', '')
-    .in('char_id', charIds);
+    .eq('run_id', '');
 
-  const toUpdate = (rows || []).filter(r => {
+  const toLink = (rows || []).filter(r => {
     const ts = new Date(r.ts).getTime();
     return ts >= windowStartMs && ts <= windowEndMs;
-  }).map(r => r.id);
+  });
 
-  if (toUpdate.length > 0) {
-    await supabase.from('attendance').update({ run_id: runId }).in('id', toUpdate);
+  if (toLink.length > 0) {
+    await supabase.from('attendance').update({ run_id: runId }).in('id', toLink.map(r => r.id));
   }
+  return [...new Set(toLink.map(r => r.char_id))];
 }
 
 async function writeToInventory(supabase: ReturnType<typeof db>, runId: string, boss: string, drops: Array<{ itemName: string; qty: number }>, droppedAt: string) {

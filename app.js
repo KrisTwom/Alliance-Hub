@@ -3133,14 +3133,35 @@ function submitRunConfirm(idx) {
   const run  = window._runs[idx];
   const btn  = document.getElementById('confirm-run-btn');
   btn.disabled = true; btn.textContent = '⏳ Confirming…';
-  const participants = [...document.querySelectorAll('.part-check:checked')].map(cb => ({ charId:cb.value, ign:cb.dataset.ign, email:cb.dataset.email }));
-  const drops        = [...document.querySelectorAll('.drop-check:checked')].map(cb => ({ itemName:cb.value, qty:Number(document.querySelector(`.drop-qty[data-item="${cb.value}"]`)?.value)||1 }));
-  const notes        = document.getElementById('modal-notes').value;
 
-  API.write('confirm_run',
-    { runData: { boss:run.boss, windowStart:run.windowStart, participants, drops, notes, existingRunId:run.runId } },
-    ['get_grouped_runs', 'get_inventory']
-  ).then(res => {
+  const checkedIds   = new Set([...document.querySelectorAll('.part-check:checked')].map(cb => cb.value));
+  const renderedIds  = new Set(run.participants.map(p => p.charId));
+  const participants = [...document.querySelectorAll('.part-check:checked')].map(cb => ({ charId:cb.value, ign:cb.dataset.ign, email:cb.dataset.email }));
+  const drops         = [...document.querySelectorAll('.drop-check:checked')].map(cb => ({ itemName:cb.value, qty:Number(document.querySelector(`.drop-qty[data-item="${cb.value}"]`)?.value)||1 }));
+  const notes         = document.getElementById('modal-notes').value;
+
+  // Re-fetch grouped runs right before submitting and fold in anyone who
+  // submitted attendance for this boss/window after the modal's snapshot
+  // was taken — but only if they were never rendered as a checkbox at all
+  // (a genuinely new straggler), never someone the admin actively
+  // unchecked to exclude them. The backend has its own backstop for this
+  // same race (see linkAttendanceToRun/confirmRun), so this is just
+  // belt-and-suspenders to shrink the window and keep the success toast
+  // reflecting who actually got included.
+  API.read('get_grouped_runs').then(freshRuns => {
+    const fresh = (freshRuns || []).find(r => r.boss === run.boss && r.windowStart === run.windowStart);
+    if (fresh) {
+      fresh.participants.forEach(p => {
+        if (!renderedIds.has(p.charId) && !checkedIds.has(p.charId)) {
+          participants.push({ charId: p.charId, ign: p.ign, email: p.email });
+        }
+      });
+    }
+    return API.write('confirm_run',
+      { runData: { boss:run.boss, windowStart:run.windowStart, participants, drops, notes, existingRunId:run.runId } },
+      ['get_grouped_runs', 'get_inventory']
+    );
+  }).then(res => {
     if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); renderDrops(); }
     else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; }
   }).catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; });
