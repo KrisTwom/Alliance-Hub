@@ -304,6 +304,11 @@ Deno.serve(async (req) => {
       case 'set_member_role':     return ok(await setMemberRole(supabase, email, data));
       case 'get_grouped_runs':    return ok(await getGroupedRuns(supabase, email));
       case 'confirm_run':         return ok(await confirmRun(supabase, email, data.runData as Record<string, unknown>));
+      // One-time repair for the fixed-window SQL backfill incident — see
+      // repairRunLinks() above. Safe to leave wired in; it's idempotent
+      // and super-admin gated, but feel free to remove this line (and
+      // the function) once you've confirmed the Drops page looks right.
+      case 'repair_run_links':    return ok(await repairRunLinks(supabase, email));
       case 'get_window_resets':   return ok(await getWindowResets(supabase, email));
       case 'reset_window':        return ok(await resetWindow(supabase, email));
       case 'schedule_window_reset': return ok(await scheduleWindowReset(supabase, email, data));
@@ -1140,6 +1145,179 @@ function buildRun(boss: string, windowStart: number, entries: Array<{ id: string
   Object.keys(runIdCounts).forEach(id => { if (runIdCounts[id] > bestCount) { bestCount = runIdCounts[id]; linkedRunId = id; } });
 
   return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, linkedRunId, participants };
+}
+
+// ============================================================
+//  ONE-TIME REPAIR: undo the fixed-window SQL backfill
+// ============================================================
+// A manual SQL backfill (run directly against Supabase, outside this
+// codebase) tried to re-link orphaned attendance rows (run_id = '') to
+// their confirmed run using `ts BETWEEN runs.window_start AND
+// runs.window_end` — a *fixed* 4h window anchored to the run's original
+// confirm-time windowStart. That's not how this app actually groups
+// runs: the real algorithm (see the loop in getGroupedRuns / buildRun
+// above) is a *rolling* gap — a new run only starts once GROUP_WINDOW_MS
+// has elapsed since the boss's LAST recorded kill, not 4h from its first.
+// For any boss killed more than once within 4h of an earlier confirmed
+// run (Devilang/Faith/Actaemon/Billiard all qualify), the backfill
+// force-stamped later, genuinely separate kills' attendance onto that
+// earlier run's run_id, scrambling participant counts.
+//
+// A first version of this repair (recompute the true rolling-gap windows
+// and match each whole window to at most one saved run) was ALSO wrong:
+// a single rolling window can legitimately contain multiple, genuinely
+// separate confirmed runs of the same boss chained together by a handful
+// of bridging/late entries — e.g. two Actaemon kills ~6h apart still
+// count as one rolling window if a straggler submission lands in between.
+// Assuming a strict 1-window-to-1-run mapping silently merged those runs'
+// participants into whichever one a `.find()` happened to return first,
+// zeroing out the other — which is exactly what made things worse.
+//
+// This version instead trusts `runs.participant_ids` as ground truth —
+// it's the admin-confirmed record from the moment each run was actually
+// confirmed, and neither the bad SQL backfill nor the first repair
+// attempt ever touched it. For each attendance row:
+//   1. If its char_id appears in some saved run's participant_ids for
+//      the same boss, assign it to whichever such run's window_start is
+//      closest in time (handles a person attending the same recurring
+//      boss on many different days — and correctly splits merged
+//      rolling windows, since each half's real participants are still
+//      listed against their own run).
+//   2. Otherwise (char was never part of any confirmed run's original
+//      participant list — i.e. a genuine straggler), fall back to the
+//      true rolling-gap window, but ONLY assign it when that window
+//      unambiguously matches exactly one saved run.
+//   3. Anything still unresolved is left at run_id = '' rather than
+//      guessed — safe: it stays visible in Attendance History and can be
+//      attached to a run manually via "add participant" if needed.
+// Then run_participants is rebuilt from scratch to mirror the corrected
+// attendance.run_id values (safe: every run_participants row always has
+// a matching attendance row — see addRunParticipant).
+// Super-admin only. Safe to re-run: fully idempotent, and rows that are
+// already correct are left untouched.
+async function repairRunLinks(supabase: ReturnType<typeof db>, email: string) {
+  if (!(await isSuperAdmin(supabase, email))) return { error: 'Super Admin only.' };
+
+  const PAGE_SIZE = 1000;
+  const attRows: Array<{ id: string; ts: string; char_id: string; boss: string; run_id: string }> = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error: ae } = await supabase
+      .from('attendance')
+      .select('id, ts, char_id, boss, run_id')
+      .order('ts', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (ae) throw ae;
+    attRows.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+
+  const { data: savedRunsRaw } = await supabase.from('runs').select('run_id, boss, window_start, participant_ids');
+  const savedRuns = (savedRunsRaw || []).map(r => ({
+    runId: r.run_id as string,
+    boss: r.boss as string,
+    ws: new Date(r.window_start as string).getTime(),
+    pids: new Set((r.participant_ids as string || '').split(',').map(s => s.trim()).filter(Boolean)),
+  }));
+  const { data: resetRow } = await supabase.from('window_resets').select('reset_at').eq('id', 1).maybeSingle();
+  const globalResetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
+
+  const correctedRunId: Record<string, string> = {}; // attendance.id -> rightful run_id ('' = leave unlinked)
+
+  // Tier 1: ground truth from runs.participant_ids, nearest-window_start
+  // tie-break for chars who've attended this boss on multiple days.
+  const savedByBoss: Record<string, typeof savedRuns> = {};
+  savedRuns.forEach(r => { (savedByBoss[r.boss] ||= []).push(r); });
+  attRows.forEach(r => {
+    const candidates = (savedByBoss[r.boss] || []).filter(s => s.pids.has(r.char_id));
+    if (!candidates.length) return;
+    const ts = new Date(r.ts).getTime();
+    const best = candidates.reduce((a, b) => Math.abs(a.ws - ts) <= Math.abs(b.ws - ts) ? a : b);
+    correctedRunId[r.id] = best.runId;
+  });
+
+  // Tier 2: for rows tier 1 couldn't place, recompute the true rolling-gap
+  // windows (same algorithm as getGroupedRuns/buildRun) and assign only
+  // where a window unambiguously matches exactly one saved run.
+  const byBoss: Record<string, Array<{ id: string; ts: number; charId: string }>> = {};
+  attRows.forEach(r => { (byBoss[r.boss] ||= []).push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id }); });
+
+  Object.keys(byBoss).forEach(boss => {
+    const entries = byBoss[boss].sort((a, b) => a.ts - b.ts);
+    const bossSavedRuns = savedByBoss[boss] || [];
+    let windowStart: number | null = null;
+    let lastTs: number | null = null;
+    let windowEntries: typeof entries = [];
+
+    const flush = () => {
+      if (windowEntries.length === 0) return;
+      const unresolved = windowEntries.filter(e => correctedRunId[e.id] === undefined);
+      if (unresolved.length === 0) return;
+      const firstTs = windowEntries[0].ts;
+      const lastEntryTs = windowEntries[windowEntries.length - 1].ts;
+      const matches = bossSavedRuns.filter(r => r.ws >= firstTs && r.ws <= lastEntryTs);
+      if (matches.length === 1) {
+        unresolved.forEach(e => { correctedRunId[e.id] = matches[0].runId; });
+      }
+      // matches.length === 0 or > 1: leave unresolved (tier 3, run_id='')
+    };
+
+    entries.forEach(e => {
+      const crossesReset = globalResetMs != null && windowStart !== null && windowStart < globalResetMs && e.ts >= globalResetMs;
+      if (windowStart === null) { windowStart = e.ts; lastTs = e.ts; windowEntries = [e]; }
+      else if (!crossesReset && e.ts - lastTs! <= GROUP_WINDOW_MS) { windowEntries.push(e); lastTs = e.ts; }
+      else { flush(); windowStart = e.ts; lastTs = e.ts; windowEntries = [e]; }
+    });
+    flush();
+  });
+
+  // Tier 3: anything still unresolved is left alone at run_id=''.
+  Object.keys(byBoss).forEach(boss => {
+    byBoss[boss].forEach(e => { if (correctedRunId[e.id] === undefined) correctedRunId[e.id] = ''; });
+  });
+
+  const rebuiltParticipants: Record<string, Set<string>> = {};
+  attRows.forEach(r => {
+    const rid = correctedRunId[r.id];
+    if (rid) (rebuiltParticipants[rid] ||= new Set()).add(r.char_id);
+  });
+
+  // Only touch rows whose run_id is actually wrong.
+  const toCorrect = attRows.filter(r => correctedRunId[r.id] !== (r.run_id || ''));
+  const CHUNK = 200;
+  for (let i = 0; i < toCorrect.length; i += CHUNK) {
+    const chunk = toCorrect.slice(i, i + CHUNK);
+    const byTarget: Record<string, string[]> = {};
+    chunk.forEach(r => { (byTarget[correctedRunId[r.id]] ||= []).push(r.id); });
+    for (const target of Object.keys(byTarget)) {
+      await supabase.from('attendance').update({ run_id: target }).in('id', byTarget[target]);
+    }
+  }
+
+  // Rebuild run_participants for every confirmed run from scratch so it
+  // exactly mirrors the now-corrected attendance.run_id values.
+  let participantRowsWritten = 0;
+  for (const run of savedRuns) {
+    await supabase.from('run_participants').delete().eq('run_id', run.runId);
+    const charIds = [...(rebuiltParticipants[run.runId] || [])];
+    if (charIds.length) {
+      await supabase.from('run_participants').upsert(
+        charIds.map(charId => ({ run_id: run.runId, char_id: charId })),
+        { onConflict: 'run_id,char_id', ignoreDuplicates: true }
+      );
+      participantRowsWritten += charIds.length;
+    }
+  }
+
+  const unresolvedCount = attRows.filter(r => correctedRunId[r.id] === '' && !r.run_id).length
+    + attRows.filter(r => correctedRunId[r.id] === '').length;
+
+  return {
+    success: true,
+    attendanceRowsCorrected: toCorrect.length,
+    runsRebuilt: savedRuns.length,
+    participantRowsWritten,
+    leftUnlinked: attRows.filter(r => correctedRunId[r.id] === '').length,
+  };
 }
 
 // ============================================================
