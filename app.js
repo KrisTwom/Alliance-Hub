@@ -1630,7 +1630,7 @@ function openEditAttendanceModal(attId) {
     </div>
     <div style="display:flex;gap:.75rem;margin-top:1.5rem">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="edit-att-save-btn" onclick="_saveEditAttendance('${attId}')">Save</button>
+      <button class="btn btn-primary" id="edit-att-save-btn" disabled onclick="_saveEditAttendance('${attId}')">Save</button>
     </div>
   `);
   _loadRunOptionsForEditModal(row.boss, row.runId);
@@ -1646,7 +1646,9 @@ function _onEditAttBossChange() {
 
 function _loadRunOptionsForEditModal(boss, preselectRunId) {
   const sel = document.getElementById('edit-att-run');
+  const btn = document.getElementById('edit-att-save-btn');
   if (!sel) return;
+  if (btn) btn.disabled = true; // don't let Save fire while options (and the correct preselect) are still loading
   sel.innerHTML = `<option value="">— Unconfirmed —</option>`;
   API.read('get_runs_for_boss', { boss }).then(runs => {
     const sel2 = document.getElementById('edit-att-run');
@@ -1654,6 +1656,8 @@ function _loadRunOptionsForEditModal(boss, preselectRunId) {
     sel2.innerHTML = `<option value="">— Unconfirmed —</option>` + (runs || []).map(r =>
       `<option value="${r.runId}" ${r.runId === preselectRunId ? 'selected' : ''}>${fmtDate(r.windowStart)} ${fmtTime(r.windowStart)}</option>`
     ).join('');
+    const btn2 = document.getElementById('edit-att-save-btn');
+    if (btn2) btn2.disabled = false;
   });
 }
 
