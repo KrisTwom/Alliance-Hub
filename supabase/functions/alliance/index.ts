@@ -1224,13 +1224,23 @@ async function repairRunLinks(supabase: ReturnType<typeof db>, email: string) {
   const correctedRunId: Record<string, string> = {}; // attendance.id -> rightful run_id ('' = leave unlinked)
 
   // Tier 1: ground truth from runs.participant_ids, nearest-window_start
-  // tie-break for chars who've attended this boss on multiple days.
+  // tie-break for chars who've attended this boss on multiple days —
+  // but ONLY among candidates whose ts actually falls within that run's
+  // own original [window_start, window_start+GROUP_WINDOW_MS] span.
+  // Without this bound, a straggler from a genuinely later/separate kill
+  // (never listed in THAT run's participant_ids, because that's exactly
+  // what made them a straggler) could still be "the nearest match" for
+  // an EARLIER run simply because they legitimately also attended that
+  // earlier one and are listed there — wrongly pulling them 12+ hours
+  // away from where their attendance row actually belongs.
   const savedByBoss: Record<string, typeof savedRuns> = {};
   savedRuns.forEach(r => { (savedByBoss[r.boss] ||= []).push(r); });
   attRows.forEach(r => {
-    const candidates = (savedByBoss[r.boss] || []).filter(s => s.pids.has(r.char_id));
-    if (!candidates.length) return;
     const ts = new Date(r.ts).getTime();
+    const candidates = (savedByBoss[r.boss] || []).filter(s =>
+      s.pids.has(r.char_id) && ts >= s.ws && ts <= s.ws + GROUP_WINDOW_MS
+    );
+    if (!candidates.length) return;
     const best = candidates.reduce((a, b) => Math.abs(a.ws - ts) <= Math.abs(b.ws - ts) ? a : b);
     correctedRunId[r.id] = best.runId;
   });
