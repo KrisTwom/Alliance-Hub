@@ -1882,10 +1882,20 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
       { onConflict: 'run_id,char_id', ignoreDuplicates: true }
     );
   }
-  if (isEdit) {
-    let removeQuery = supabase.from('run_participants').delete().eq('run_id', finalRunId!);
-    if (currentCharIds.length) removeQuery = removeQuery.not('char_id', 'in', `(${currentCharIds.join(',')})`);
-    await removeQuery;
+  // Only remove anyone on an edit where we actually have a non-empty
+  // checked list to diff against. If currentCharIds ever comes back
+  // empty here, that's almost certainly a rendering hiccup (stale modal,
+  // nothing got checked) rather than an admin deliberately clearing
+  // every participant — and blindly deleting with no char_id filter at
+  // all would wipe the whole run's participants unconditionally. Bulk
+  // uncheck-to-remove still works normally whenever at least one person
+  // stays checked; removing the very last participant just needs the
+  // explicit per-person trash-icon action (removeRunParticipant) instead
+  // of falling out of an empty bulk save.
+  if (isEdit && currentCharIds.length) {
+    await supabase.from('run_participants').delete()
+      .eq('run_id', finalRunId!)
+      .not('char_id', 'in', `(${currentCharIds.join(',')})`);
   }
 
   return { success: true, runId: finalRunId };
