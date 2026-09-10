@@ -288,6 +288,8 @@ Deno.serve(async (req) => {
       case 'submit_attendance':   return ok(await submitAttendance(supabase, email, data.charId as string, data.bosses as string[]));
       case 'get_my_attendance':   return ok(await getMyAttendance(supabase, email, data.charId as string));
       case 'get_all_attendance':  return ok(await getAllAttendance(supabase, email));
+      case 'get_runs_for_boss':   return ok(await getRunsForBoss(supabase, email, data.boss as string));
+      case 'edit_attendance_row': return ok(await editAttendanceRow(supabase, email, data));
       case 'get_my_payouts':      return ok(await getMyPayouts(supabase, email, data.charId as string));
       case 'get_all_data':        return ok(await getAllData(supabase, email));
 
@@ -980,6 +982,92 @@ async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) 
     id: r.id, timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id,
     charId: r.char_id, ign: r.ign, email: r.email,
   }));
+}
+
+// Powers the "Assign to run" dropdown in the attendance-fix modal — the
+// last 100 confirmed runs for a given boss, most recent first, so an
+// admin correcting a wrong-boss or wrong-time submission can pick the
+// actual run it belongs to instead of relying on any auto-grouping.
+async function getRunsForBoss(supabase: ReturnType<typeof db>, email: string, boss: string) {
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
+  const { data, error } = await supabase
+    .from('runs')
+    .select('run_id, window_start')
+    .eq('boss', boss)
+    .order('window_start', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data || []).map(r => ({ runId: r.run_id, windowStart: r.window_start }));
+}
+
+// The escape hatch this whole run-grouping saga was missing: a direct way
+// to fix ONE bad submission (wrong boss picked, or a timestamp glitch that
+// landed it in the wrong window) without needing a full historical
+// repair script. Either or both of `boss` / `runId` may be provided:
+//   - boss: corrects a wrong-boss submission. If runId isn't also given
+//     and the boss actually changed, the row is detached (run_id='') since
+//     its old run_id belonged to the old boss and can't still apply.
+//   - runId: '' detaches the row (back to Not Confirmed/unlinked);
+//     a specific run_id reassigns it — but only if that run's own boss
+//     matches the row's (possibly just-corrected) boss, so this can't
+//     silently create a cross-boss run_participants entry.
+// Keeps run_participants AND runs.participant_ids in sync for both the
+// old and new run, so this doesn't quietly drift from ground truth that
+// a future repair might rely on.
+async function editAttendanceRow(supabase: ReturnType<typeof db>, email: string, params: Record<string, unknown>) {
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
+  if (!(await isDropsHandler(supabase, email))) return { error: 'Only a Drops Handler or Super Admin can fix attendance.' };
+
+  const attendanceId = params.attendanceId as string;
+  const newBoss = params.boss as string | undefined;
+  const newRunIdParam = params.runId as string | undefined; // undefined = leave as-is, '' = detach
+
+  const { data: row, error: fe } = await supabase
+    .from('attendance').select('id, boss, run_id, char_id').eq('id', attendanceId).maybeSingle();
+  if (fe) throw fe;
+  if (!row) return { error: 'Attendance row not found.' };
+
+  const oldRunId  = row.run_id || '';
+  const finalBoss = (newBoss && newBoss !== row.boss) ? newBoss : row.boss;
+  const bossChanged = finalBoss !== row.boss;
+
+  let finalRunId = oldRunId;
+  if (newRunIdParam !== undefined) {
+    if (newRunIdParam === '') {
+      finalRunId = '';
+    } else {
+      const { data: targetRun } = await supabase.from('runs').select('run_id, boss').eq('run_id', newRunIdParam).maybeSingle();
+      if (!targetRun) return { error: 'Target run not found.' };
+      if (targetRun.boss !== finalBoss) return { error: `That run is for ${targetRun.boss}, not ${finalBoss}.` };
+      finalRunId = newRunIdParam;
+    }
+  } else if (bossChanged) {
+    finalRunId = ''; // old run_id belonged to the old boss — can't still apply
+  }
+
+  await supabase.from('attendance').update({ boss: finalBoss, run_id: finalRunId }).eq('id', attendanceId);
+
+  // Sync run_participants + runs.participant_ids for whichever of the old
+  // and new runs actually changed.
+  for (const runId of new Set([oldRunId, finalRunId].filter(Boolean))) {
+    const { data: stillThere } = await supabase
+      .from('attendance').select('id').eq('run_id', runId).eq('char_id', row.char_id).limit(1);
+    const { data: runRow } = await supabase.from('runs').select('participant_ids').eq('run_id', runId).maybeSingle();
+    const pids = new Set((runRow?.participant_ids as string || '').split(',').map(s => s.trim()).filter(Boolean));
+
+    if (!stillThere || !stillThere.length) {
+      await supabase.from('run_participants').delete().eq('run_id', runId).eq('char_id', row.char_id);
+      pids.delete(row.char_id);
+    } else if (runId === finalRunId) {
+      await supabase.from('run_participants').upsert(
+        { run_id: runId, char_id: row.char_id }, { onConflict: 'run_id,char_id', ignoreDuplicates: true }
+      );
+      pids.add(row.char_id);
+    }
+    await supabase.from('runs').update({ participant_ids: [...pids].join(',') }).eq('run_id', runId);
+  }
+
+  return { success: true };
 }
 
 // ============================================================

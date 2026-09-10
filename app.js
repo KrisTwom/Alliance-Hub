@@ -1530,13 +1530,16 @@ function _renderAttHistoryTable() {
         <thead><tr>
           <th class="sortable-th" onclick="_onAttHistorySortClick('ign')">Member${_attHistorySortArrow('ign')}</th>
           <th class="sortable-th" onclick="_onAttHistorySortClick('boss')">Boss${_attHistorySortArrow('boss')}</th>
-          <th>Points</th><th>Timestamp</th>
+          <th>Points</th><th>Timestamp</th><th>Run</th>
+          ${(App.user.isAdmin && App.user.isDropsHandler) ? '<th></th>' : ''}
         </tr></thead>
         <tbody>${sorted.map(a=>`<tr>
           <td>${escHtml(a.ign || '—')}</td>
           <td>${escHtml(a.boss)}</td>
           <td style="color:var(--gold)">+${a.points}</td>
           <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
+          <td style="font-size:.78rem;color:${a.runId ? 'var(--text-secondary)' : 'var(--danger)'}">${a.runId ? 'Linked' : 'Unconfirmed'}</td>
+          ${(App.user.isAdmin && App.user.isDropsHandler) ? `<td><button class="btn btn-sm btn-secondary" style="padding:.15rem .5rem" title="Fix this submission" onclick="openEditAttendanceModal('${a.id}')">✏️</button></td>` : ''}
         </tr>`).join('')}</tbody>
       </table>`
     : `<table class="data-table">
@@ -1591,6 +1594,80 @@ function renderMyAttendanceHistory() {
       <div class="table-scroll" id="att-history-table-wrap"></div>`;
     _renderAttHistoryTable();
   });
+}
+
+// ============================================================
+//  FIX ATTENDANCE SUBMISSION  (admin escape hatch)
+// ============================================================
+// A member picking the wrong boss, or a client-clock glitch landing a
+// submission in the wrong grouping window, used to require a full
+// historical repair script to fix (see repairRunLinks) — expensive,
+// risky, and overkill for a single bad row. This lets a Drops
+// Handler/Super Admin fix ONE row directly: correct its boss, and/or
+// manually pick which confirmed run it actually belongs to (or detach
+// it back to Unconfirmed). No auto-grouping involved — the admin's pick
+// is exactly what gets written.
+function openEditAttendanceModal(attId) {
+  const row = (window._attHistoryRows || []).find(a => a.id === attId);
+  if (!row) return;
+  const bossOptions = _allBossNames().map(b =>
+    `<option value="${escHtml(b)}" ${b === row.boss ? 'selected' : ''}>${escHtml(b)}</option>`
+  ).join('');
+
+  showModal(`
+    <div class="modal-title">✏️ Fix Attendance Submission</div>
+    <div style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">
+      ${escHtml(row.ign || '—')} · submitted ${fmtDate(row.timestamp)} ${fmtTime(row.timestamp)}
+    </div>
+    <div class="form-group">
+      <label class="form-label">Boss</label>
+      <select class="form-select" id="edit-att-boss" onchange="_onEditAttBossChange()">${bossOptions}</select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Assign to run</label>
+      <select class="form-select" id="edit-att-run"><option value="">Loading…</option></select>
+    </div>
+    <div style="display:flex;gap:.75rem;margin-top:1.5rem">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="edit-att-save-btn" onclick="_saveEditAttendance('${attId}')">Save</button>
+    </div>
+  `);
+  _loadRunOptionsForEditModal(row.boss, row.runId);
+}
+
+function _onEditAttBossChange() {
+  const boss = document.getElementById('edit-att-boss').value;
+  // Boss changed — the old run pick no longer applies (different boss),
+  // so don't try to preselect it; default to Unconfirmed until the admin
+  // picks the right run for the new boss.
+  _loadRunOptionsForEditModal(boss, '');
+}
+
+function _loadRunOptionsForEditModal(boss, preselectRunId) {
+  const sel = document.getElementById('edit-att-run');
+  if (!sel) return;
+  sel.innerHTML = `<option value="">— Unconfirmed —</option>`;
+  API.read('get_runs_for_boss', { boss }).then(runs => {
+    const sel2 = document.getElementById('edit-att-run');
+    if (!sel2) return;
+    sel2.innerHTML = `<option value="">— Unconfirmed —</option>` + (runs || []).map(r =>
+      `<option value="${r.runId}" ${r.runId === preselectRunId ? 'selected' : ''}>${fmtDate(r.windowStart)} ${fmtTime(r.windowStart)}</option>`
+    ).join('');
+  });
+}
+
+function _saveEditAttendance(attId) {
+  const boss  = document.getElementById('edit-att-boss').value;
+  const runId = document.getElementById('edit-att-run').value;
+  const btn   = document.getElementById('edit-att-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+
+  API.write('edit_attendance_row', { attendanceId: attId, boss, runId }, ['get_all_attendance', 'get_grouped_runs'])
+    .then(res => {
+      if (res.success) { toast('Attendance updated', 'success'); closeModal(); renderMyAttendanceHistory(); }
+      else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = 'Save'; }
+    })
+    .catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = 'Save'; });
 }
 
 // ============================================================
