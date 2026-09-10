@@ -926,16 +926,17 @@ function renderHome() {
   });
 }
 
-// Events happening later today, in the viewer's own local timezone —
-// scheduledAt is stored as UTC ISO and `new Date()` already converts it
-// to local time for comparison/display, so no extra tz math is needed.
+// Events happening in the next 24 hours (rolling window from now, not
+// capped at local midnight) — scheduledAt is stored as UTC ISO and
+// `new Date()` already converts it to local time for comparison/display,
+// so no extra tz math is needed.
 function _upcomingBossesToday(events) {
   const now = Date.now();
-  const endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999);
+  const next24h = now + 24 * 60 * 60 * 1000;
   return (events || [])
     .filter(ev => {
       const t = new Date(ev.scheduledAt).getTime();
-      return t >= now && t <= endOfToday.getTime();
+      return t >= now && t <= next24h;
     })
     .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt))
     .slice(0, 6);
@@ -2047,6 +2048,23 @@ function toggleAnnouncementNotif(checked) {
   }
 }
 
+// Super-admin-only toggle for the temporary Event Bosses section (see
+// Settings render above). App.config is set once at bootstrap and read
+// directly by renderAttendance, so on success we refetch get_config
+// (busted below) and reassign App.config in place — otherwise the
+// Attendance page wouldn't see the change until a full reload.
+function _toggleEventBossVisibility(key, checked) {
+  API.write('set_event_boss_visibility', { [key]: checked }, ['get_config']).then(res => {
+    if (!res.success) {
+      toast(res.error || 'Error', 'error');
+      const el = document.getElementById(key === 'summerSephia' ? 'event-boss-summer-sephia' : 'event-boss-kooby-dic');
+      if (el) el.checked = !checked;
+      return;
+    }
+    API.read('get_config').then(cfg => { if (cfg) App.config = cfg; });
+  }).catch(() => toast('Network error', 'error'));
+}
+
 // group is 'boss' or 'mini'. Opens a fullscreen (mobile) list of every
 // boss in that group with its own toggle, defaulting to on.
 function openBossNotifPage(group) {
@@ -2163,6 +2181,36 @@ function renderSettings() {
         <span style="color:var(--text-secondary);font-size:1.1rem">›</span>
       </div>
     </div>
+
+    ${App.user.isSuperAdmin ? `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Event Bosses</div>
+          <div class="card-meta">Super Admin only. Controls whether these temporary event bosses appear in the Attendance page's Event Bosses section. If both are off, the whole section is hidden.</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Summer Sephia</div>
+          <div class="settings-row-desc">Show Summer Sephia as a submittable boss.</div>
+        </div>
+        <label class="notif-switch">
+          <input type="checkbox" id="event-boss-summer-sephia" ${App.config.eventBossVisibility?.summerSephia ? 'checked' : ''} onchange="_toggleEventBossVisibility('summerSephia', this.checked)">
+          <span class="notif-switch-track"></span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Kooby Dic</div>
+          <div class="settings-row-desc">Show Kooby Dic as a submittable boss.</div>
+        </div>
+        <label class="notif-switch">
+          <input type="checkbox" id="event-boss-kooby-dic" ${App.config.eventBossVisibility?.koobyDic ? 'checked' : ''} onchange="_toggleEventBossVisibility('koobyDic', this.checked)">
+          <span class="notif-switch-track"></span>
+        </label>
+      </div>
+    </div>` : ''}
 
     <div class="card">
       <div class="card-header">
@@ -2478,7 +2526,7 @@ const RECURRING_EVENTS = [
   { boss: 'Library Boss', hourUTC: 2,  minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
   { boss: 'Library Boss', hourUTC: 14, minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
   { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [0] },  // Sunday
-  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [2] },  // Tuesday
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [3] },  // Wednesday
 ];
 
 // Generates every recurring occurrence whose spawn time falls within

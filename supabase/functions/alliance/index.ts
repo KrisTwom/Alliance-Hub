@@ -27,6 +27,11 @@ const SUPER_ADMIN_EMAILS = (Deno.env.get('SUPER_ADMIN_EMAILS') || 'retisovermine
 
 const GROUP_WINDOW_MS = 4 * 60 * 60 * 1000;
 
+// A member can only submit attendance for a boss/mini if a scheduled
+// event for it actually started (or, for Siege, ended) within this many
+// ms ago — see checkAttendanceEligibility() below.
+const ATTENDANCE_WINDOW_MS = 3 * 60 * 60 * 1000;
+
 // ── Web Push config (see push_subscriptions/notification_prefs below) ──
 // VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY: generate once with
 //   npx web-push generate-vapid-keys
@@ -72,6 +77,19 @@ const BOSS_CATEGORIES = [
       { name: 'Library Boss', points: 3, emoji: '📖' },
     ]
   },
+  // Temporary event content — lives for a few weeks around a game event,
+  // then goes dormant for months. Visibility is controlled at runtime via
+  // event_boss_settings (Settings page, Super Admin only) rather than by
+  // editing this list, so it can be toggled without a redeploy — see
+  // getConfig(), which filters this category down (or removes it
+  // entirely if both are hidden) before sending config to the client.
+  {
+    category: 'Event Bosses', emoji: '🎉',
+    bosses: [
+      { name: 'Summer Sephia', points: 1, emoji: '☀️' },
+      { name: 'Kooby Dic',     points: 0, emoji: '🐶' },
+    ]
+  },
 ];
 
 const BOSS_DROPS: Record<string, string[]> = {
@@ -80,10 +98,10 @@ const BOSS_DROPS: Record<string, string[]> = {
   'Barslaf':      ['Snowfield Treasure','Broken Necklace','Weap S','Arm S'],
   'Illust':       ['Breath','Mercy Rune','Penitence Rune','Resurrection Rune','Atonement Rune','Weap S','Arm S'],
   'Sephia':       ['5 Color Leather','Execution Rune','Torture Rune','Bio Magic Rune','Corruption Rune','Weap S','Arm S'],
-  'Aiyo':         ['Aiyo Orb','Aiyo Glove','Weap S','Arm S'],
+  'Aiyo':         ['Aiyo Orb','Aiyo Glove','Weap S','Arm S','Weap SS','Arm SS'],
   'Darlene':      ['Faded Ring','Maze Treasure','Weap S','Arm S'],
   'Caligo':       ['Caligo Hand','Caligo Scales','Caligo Glove','Caligo Boots','Otherworld Belt','Weap S','Arm S'],
-  'Platanista':   ['Surge Cycle','Giant Rune','Depredation Rune','Judgement Rune','Supremacy Rune','Weap S','Arm S'],
+  'Platanista':   ['Surge Cycle','Giant Rune','Depredation Rune','Judgement Rune','Supremacy Rune','Weap S','Arm S','Weap SS','Arm SS'],
   'Siege':        [],
   'Devilang':     ['Wingwing Boots'],
   'Actaemon':     ['Relic of Infinity','Actaemon Horn','Weap S','Arm S'],
@@ -91,6 +109,8 @@ const BOSS_DROPS: Record<string, string[]> = {
   'Faith':        ['Breath','Mercy Rune','Penitence Rune','Resurrection Rune','Atonement Rune','Weap S','Arm S'],
   'Soul Lich':    ['Surge Cycle','Tree Armor','Weap S', 'Arm S'],
   'Library Boss': ['Broken Oath','Rune Piece','Pure Knowledge'],
+  'Summer Sephia': ['Weap S','Arm S'],
+  'Kooby Dic':     ['Weap S','Arm S'],
 };
 
 // ── Boss point lookup ─────────────────────────────────────────
@@ -276,7 +296,8 @@ Deno.serve(async (req) => {
   try {
     switch (action) {
       // ── Public ──────────────────────────────────────────────
-      case 'get_config':          return ok(getConfig());
+      case 'get_config':          return ok(await getConfig(supabase));
+      case 'set_event_boss_visibility': return ok(await setEventBossVisibility(supabase, email, data));
       case 'get_leaderboard':     return ok(await getLeaderboard(supabase));
       case 'get_char_profile':    return ok(await getCharProfile(supabase, email, data.charId as string));
 
@@ -379,8 +400,40 @@ Deno.serve(async (req) => {
 // ============================================================
 //  CONFIG
 // ============================================================
-function getConfig() {
-  return { bossCategories: BOSS_CATEGORIES, bossDrops: BOSS_DROPS };
+// event_boss_settings is a single-row table (id=1), same pattern as
+// window_resets — each event boss's visibility is an independent flag so
+// they can be shown/hidden separately; if both end up hidden, getConfig
+// drops the whole 'Event Bosses' category rather than send an empty one.
+async function getEventBossVisibility(supabase: ReturnType<typeof db>) {
+  const { data } = await supabase.from('event_boss_settings').select('summer_sephia_visible, kooby_dic_visible').eq('id', 1).maybeSingle();
+  return {
+    summerSephia: !!data?.summer_sephia_visible,
+    koobyDic: !!data?.kooby_dic_visible,
+  };
+}
+
+async function setEventBossVisibility(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!(await isSuperAdmin(supabase, email))) return { error: 'Super Admin only.' };
+  const fields: Record<string, unknown> = { id: 1 };
+  if (data.summerSephia !== undefined) fields.summer_sephia_visible = !!data.summerSephia;
+  if (data.koobyDic !== undefined) fields.kooby_dic_visible = !!data.koobyDic;
+  const { error } = await supabase.from('event_boss_settings').upsert(fields);
+  if (error) throw error;
+  return { success: true };
+}
+
+async function getConfig(supabase: ReturnType<typeof db>) {
+  const visibility = await getEventBossVisibility(supabase);
+  const categories = BOSS_CATEGORIES.map(cat => {
+    if (cat.category !== 'Event Bosses') return cat;
+    const bosses = cat.bosses.filter(b =>
+      (b.name === 'Summer Sephia' && visibility.summerSephia) ||
+      (b.name === 'Kooby Dic' && visibility.koobyDic)
+    );
+    return { ...cat, bosses };
+  }).filter(cat => cat.category !== 'Event Bosses' || cat.bosses.length > 0);
+
+  return { bossCategories: categories, bossDrops: BOSS_DROPS, eventBossVisibility: visibility };
 }
 
 // ============================================================
@@ -493,7 +546,7 @@ async function getAllData(supabase: ReturnType<typeof db>, email: string) {
 
   const [user, config, leaderboard] = await Promise.all([
     getCurrentUser(supabase, email),
-    Promise.resolve(getConfig()),
+    Promise.resolve(getConfig(supabase)),
     getLeaderboard(supabase),
   ]);
 
@@ -791,6 +844,63 @@ async function getCharDetails(supabase: ReturnType<typeof db>, email: string, ch
 // ============================================================
 //  ATTENDANCE
 // ============================================================
+// ── ATTENDANCE ELIGIBILITY WINDOW ───────────────────────────────
+// A member can only submit attendance for a boss/mini if a scheduled
+// event for it genuinely occurred recently — this is what actually
+// stops "wrong boss" clicks and stale-timestamp submissions from ever
+// reaching the grouping/repair logic in the first place, instead of
+// trying to reconstruct sane data after the fact.
+//
+// The anchor is normally the event's START time (a 3h window opens once
+// the fight begins) — except Siege, which anchors to the event's END
+// (Siege runs long and attendance naturally gets logged once it's over,
+// not while it's still ongoing).
+//
+// Exception: a Maintenance event's END time opens the same 3h window for
+// EVERY boss/mini except Library Boss and Siege (those stay on their own
+// fixed schedule regardless of maintenance).
+async function checkAttendanceEligibility(supabase: ReturnType<typeof db>, bosses: string[], nowMs: number): Promise<{ ok: true } | { ok: false; blocked: string[] }> {
+  // Generous lookback pad — Maintenance windows can run long, and this
+  // is a cheap over-fetch either way.
+  const lookbackMs = nowMs - ATTENDANCE_WINDOW_MS - 24 * 60 * 60 * 1000;
+  const relevantBosses = [...new Set([...bosses, 'Maintenance'])];
+
+  const { data: evRows } = await supabase
+    .from('events')
+    .select('boss, scheduled_at, duration_minutes')
+    .in('boss', relevantBosses)
+    .gte('scheduled_at', new Date(lookbackMs).toISOString())
+    .lte('scheduled_at', new Date(nowMs).toISOString());
+
+  const anchorsByBoss: Record<string, number[]> = {};
+  const maintenanceEnds: number[] = [];
+  (evRows || []).forEach(r => {
+    const startMs = new Date(r.scheduled_at as string).getTime();
+    const endMs = startMs + (Number(r.duration_minutes) || 0) * 60000;
+    if (r.boss === 'Maintenance') { maintenanceEnds.push(endMs); return; }
+    (anchorsByBoss[r.boss as string] ||= []).push(r.boss === 'Siege' ? endMs : startMs);
+  });
+
+  // Fixed Library Boss / Siege schedule — never written to `events`.
+  _recurringOccurrencesInWindow(lookbackMs, nowMs).forEach(o => {
+    const anchor = o.boss === 'Siege' ? o.occMs + o.durationMinutes * 60000 : o.occMs;
+    (anchorsByBoss[o.boss] ||= []).push(anchor);
+  });
+
+  const maintAnchor = maintenanceEnds.length ? Math.max(...maintenanceEnds) : null;
+
+  const blocked = bosses.filter(boss => {
+    const anchors = anchorsByBoss[boss] || [];
+    let eligible = anchors.some(a => nowMs >= a && nowMs <= a + ATTENDANCE_WINDOW_MS);
+    if (!eligible && maintAnchor !== null && boss !== 'Library Boss' && boss !== 'Siege') {
+      eligible = nowMs >= maintAnchor && nowMs <= maintAnchor + ATTENDANCE_WINDOW_MS;
+    }
+    return !eligible;
+  });
+
+  return blocked.length ? { ok: false, blocked } : { ok: true };
+}
+
 async function submitAttendance(supabase: ReturnType<typeof db>, email: string, charId: string, bosses: string[]) {
   if (await isRestricted(supabase, email)) {
     return { success: false, message: 'Your account is restricted from submitting attendance. Contact an admin if you believe this is a mistake.' };
@@ -802,6 +912,18 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   if (!(await isLinkedToChar(supabase, email, charId))) return { success: false, message: 'You are not linked to this character.' };
 
   const now = new Date();
+
+  // All-or-nothing schedule gate: if ANY selected boss has no recent
+  // scheduled event backing it, the WHOLE submission is rejected — not
+  // just the offending boss — so a mixed batch can't partially land.
+  const eligibility = await checkAttendanceEligibility(supabase, bosses, now.getTime());
+  if (!eligibility.ok) {
+    return {
+      success: false,
+      message: `No recent event found for ${eligibility.blocked.join(', ')} within the last 3 hours. Check the schedule and make sure you selected the right boss(es) — nothing in this submission was recorded.`,
+    };
+  }
+
   const nowIso = now.toISOString();
 
   // Same char + same boss within the last GROUP_WINDOW_MS = a resubmission,
@@ -2435,11 +2557,11 @@ async function _pushAnnouncement(supabase: ReturnType<typeof db>, title: string,
 // fixed UTC schedule and are synthesized client-side for the calendar
 // (never written to the `events` table, so they never showed up in the
 // notifyTick query above). Keep this list in sync with app.js's copy.
-const RECURRING_EVENTS: { boss: string; hourUTC: number; minuteUTC: number; daysOfWeekUTC: number[] | null }[] = [
-  { boss: 'Library Boss', hourUTC: 2,  minuteUTC: 0,  daysOfWeekUTC: null }, // every day
-  { boss: 'Library Boss', hourUTC: 14, minuteUTC: 0,  daysOfWeekUTC: null }, // every day
-  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, daysOfWeekUTC: [0] },  // Sunday
-  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, daysOfWeekUTC: [2] },  // Tuesday
+const RECURRING_EVENTS: { boss: string; hourUTC: number; minuteUTC: number; durationMinutes: number; daysOfWeekUTC: number[] | null }[] = [
+  { boss: 'Library Boss', hourUTC: 2,  minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
+  { boss: 'Library Boss', hourUTC: 14, minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [0] },  // Sunday
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [3] },  // Wednesday
 ];
 
 // Recurring occurrences whose scheduled time falls within
@@ -2448,7 +2570,7 @@ const RECURRING_EVENTS: { boss: string; hourUTC: number; minuteUTC: number; days
 // can be deduped against `recurring_notifications` across ticks.
 function _recurringOccurrencesInWindow(windowStartMs: number, windowEndMs: number) {
   const DAY = 24 * 60 * 60 * 1000;
-  const out: { id: string; boss: string }[] = [];
+  const out: { id: string; boss: string; occMs: number; durationMinutes: number }[] = [];
   const startDayMs = Math.floor(windowStartMs / DAY) * DAY - DAY;
   const endDayMs   = Math.ceil(windowEndMs / DAY) * DAY + DAY;
   for (let dayMs = startDayMs; dayMs <= endDayMs; dayMs += DAY) {
@@ -2458,7 +2580,7 @@ function _recurringOccurrencesInWindow(windowStartMs: number, windowEndMs: numbe
       if (r.daysOfWeekUTC && !r.daysOfWeekUTC.includes(dowUTC)) return;
       const occMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), r.hourUTC, r.minuteUTC, 0);
       if (occMs < windowStartMs || occMs > windowEndMs) return;
-      out.push({ id: `RECUR_${r.boss.replace(/\s+/g, '')}_${occMs}`, boss: r.boss });
+      out.push({ id: `RECUR_${r.boss.replace(/\s+/g, '')}_${occMs}`, boss: r.boss, occMs, durationMinutes: r.durationMinutes });
     });
   }
   return out;
