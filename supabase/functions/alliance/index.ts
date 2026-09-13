@@ -1099,7 +1099,15 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
           r.boss === run.boss && Math.abs(new Date(r.window_start).getTime() - run.windowStart) < 60000
         );
     const confirmedParticipants = saved ? (participantsByRun[saved.run_id] || []).map(id => charInfo[id]).filter(Boolean) : null;
-    const participants = confirmedParticipants || run.participants;
+    // NOTE: confirmedParticipants is either null (no matching saved run) or
+    // an array. An empty array is still truthy in JS, so `confirmedParticipants
+    // || run.participants` was silently keeping a genuine [] (run_participants
+    // has zero rows for this run — e.g. it was confirmed while the modal was
+    // showing an empty roster, see confirmRun) instead of falling back to the
+    // live attendance regroup, which still has the real attendee list. Only
+    // trust confirmedParticipants when it actually has entries; otherwise the
+    // raw regroup from attendance is the best available truth.
+    const participants = (confirmedParticipants && confirmedParticipants.length) ? confirmedParticipants : run.participants;
     return {
       runId:            saved ? saved.run_id : null,
       boss:             run.boss,
