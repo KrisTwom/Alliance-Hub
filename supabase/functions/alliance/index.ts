@@ -27,6 +27,11 @@ const SUPER_ADMIN_EMAILS = (Deno.env.get('SUPER_ADMIN_EMAILS') || 'retisovermine
 
 const GROUP_WINDOW_MS = 4 * 60 * 60 * 1000;
 
+// A member can only submit attendance for a boss/mini if a scheduled
+// event for it actually started (or, for Siege, ended) within this many
+// ms ago — see checkAttendanceEligibility() below.
+const ATTENDANCE_WINDOW_MS = 3 * 60 * 60 * 1000;
+
 // ── Web Push config (see push_subscriptions/notification_prefs below) ──
 // VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY: generate once with
 //   npx web-push generate-vapid-keys
@@ -72,6 +77,19 @@ const BOSS_CATEGORIES = [
       { name: 'Library Boss', points: 3, emoji: '📖' },
     ]
   },
+  // Temporary event content — lives for a few weeks around a game event,
+  // then goes dormant for months. Visibility is controlled at runtime via
+  // event_boss_settings (Settings page, Super Admin only) rather than by
+  // editing this list, so it can be toggled without a redeploy — see
+  // getConfig(), which filters this category down (or removes it
+  // entirely if both are hidden) before sending config to the client.
+  {
+    category: 'Event Bosses', emoji: '🎉',
+    bosses: [
+      { name: 'Summer Sephia', points: 1, emoji: '☀️' },
+      { name: 'Kooby Dic',     points: 0, emoji: '🐶' },
+    ]
+  },
 ];
 
 const BOSS_DROPS: Record<string, string[]> = {
@@ -80,10 +98,10 @@ const BOSS_DROPS: Record<string, string[]> = {
   'Barslaf':      ['Snowfield Treasure','Broken Necklace','Weap S','Arm S'],
   'Illust':       ['Breath','Mercy Rune','Penitence Rune','Resurrection Rune','Atonement Rune','Weap S','Arm S'],
   'Sephia':       ['5 Color Leather','Execution Rune','Torture Rune','Bio Magic Rune','Corruption Rune','Weap S','Arm S'],
-  'Aiyo':         ['Aiyo Orb','Aiyo Glove','Weap S','Arm S'],
+  'Aiyo':         ['Aiyo Orb','Aiyo Glove','Weap S','Arm S','Weap SS','Arm SS'],
   'Darlene':      ['Faded Ring','Maze Treasure','Weap S','Arm S'],
   'Caligo':       ['Caligo Hand','Caligo Scales','Caligo Glove','Caligo Boots','Otherworld Belt','Weap S','Arm S'],
-  'Platanista':   ['Surge Cycle','Giant Rune','Depredation Rune','Judgement Rune','Supremacy Rune','Weap S','Arm S'],
+  'Platanista':   ['Surge Cycle','Giant Rune','Depredation Rune','Judgement Rune','Supremacy Rune','Weap S','Arm S','Weap SS','Arm SS'],
   'Siege':        [],
   'Devilang':     ['Wingwing Boots'],
   'Actaemon':     ['Relic of Infinity','Actaemon Horn','Weap S','Arm S'],
@@ -91,6 +109,8 @@ const BOSS_DROPS: Record<string, string[]> = {
   'Faith':        ['Breath','Mercy Rune','Penitence Rune','Resurrection Rune','Atonement Rune','Weap S','Arm S'],
   'Soul Lich':    ['Surge Cycle','Tree Armor','Weap S', 'Arm S'],
   'Library Boss': ['Broken Oath','Rune Piece','Pure Knowledge'],
+  'Summer Sephia': ['Weap S','Arm S'],
+  'Kooby Dic':     ['Weap S','Arm S'],
 };
 
 // ── Boss point lookup ─────────────────────────────────────────
@@ -276,7 +296,8 @@ Deno.serve(async (req) => {
   try {
     switch (action) {
       // ── Public ──────────────────────────────────────────────
-      case 'get_config':          return ok(getConfig());
+      case 'get_config':          return ok(await getConfig(supabase));
+      case 'set_event_boss_visibility': return ok(await setEventBossVisibility(supabase, email, data));
       case 'get_leaderboard':     return ok(await getLeaderboard(supabase));
       case 'get_char_profile':    return ok(await getCharProfile(supabase, email, data.charId as string));
 
@@ -288,6 +309,8 @@ Deno.serve(async (req) => {
       case 'submit_attendance':   return ok(await submitAttendance(supabase, email, data.charId as string, data.bosses as string[]));
       case 'get_my_attendance':   return ok(await getMyAttendance(supabase, email, data.charId as string));
       case 'get_all_attendance':  return ok(await getAllAttendance(supabase, email));
+      case 'get_runs_for_boss':   return ok(await getRunsForBoss(supabase, email, data.boss as string));
+      case 'edit_attendance_row': return ok(await editAttendanceRow(supabase, email, data));
       case 'get_my_payouts':      return ok(await getMyPayouts(supabase, email, data.charId as string));
       case 'get_all_data':        return ok(await getAllData(supabase, email));
 
@@ -304,6 +327,11 @@ Deno.serve(async (req) => {
       case 'set_member_role':     return ok(await setMemberRole(supabase, email, data));
       case 'get_grouped_runs':    return ok(await getGroupedRuns(supabase, email));
       case 'confirm_run':         return ok(await confirmRun(supabase, email, data.runData as Record<string, unknown>));
+      // One-time repair for the fixed-window SQL backfill incident — see
+      // repairRunLinks() above. Safe to leave wired in; it's idempotent
+      // and super-admin gated, but feel free to remove this line (and
+      // the function) once you've confirmed the Drops page looks right.
+      case 'repair_run_links':    return ok(await repairRunLinks(supabase, email));
       case 'get_window_resets':   return ok(await getWindowResets(supabase, email));
       case 'reset_window':        return ok(await resetWindow(supabase, email));
       case 'schedule_window_reset': return ok(await scheduleWindowReset(supabase, email, data));
@@ -372,8 +400,40 @@ Deno.serve(async (req) => {
 // ============================================================
 //  CONFIG
 // ============================================================
-function getConfig() {
-  return { bossCategories: BOSS_CATEGORIES, bossDrops: BOSS_DROPS };
+// event_boss_settings is a single-row table (id=1), same pattern as
+// window_resets — each event boss's visibility is an independent flag so
+// they can be shown/hidden separately; if both end up hidden, getConfig
+// drops the whole 'Event Bosses' category rather than send an empty one.
+async function getEventBossVisibility(supabase: ReturnType<typeof db>) {
+  const { data } = await supabase.from('event_boss_settings').select('summer_sephia_visible, kooby_dic_visible').eq('id', 1).maybeSingle();
+  return {
+    summerSephia: !!data?.summer_sephia_visible,
+    koobyDic: !!data?.kooby_dic_visible,
+  };
+}
+
+async function setEventBossVisibility(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!(await isSuperAdmin(supabase, email))) return { error: 'Super Admin only.' };
+  const fields: Record<string, unknown> = { id: 1 };
+  if (data.summerSephia !== undefined) fields.summer_sephia_visible = !!data.summerSephia;
+  if (data.koobyDic !== undefined) fields.kooby_dic_visible = !!data.koobyDic;
+  const { error } = await supabase.from('event_boss_settings').upsert(fields);
+  if (error) throw error;
+  return { success: true };
+}
+
+async function getConfig(supabase: ReturnType<typeof db>) {
+  const visibility = await getEventBossVisibility(supabase);
+  const categories = BOSS_CATEGORIES.map(cat => {
+    if (cat.category !== 'Event Bosses') return cat;
+    const bosses = cat.bosses.filter(b =>
+      (b.name === 'Summer Sephia' && visibility.summerSephia) ||
+      (b.name === 'Kooby Dic' && visibility.koobyDic)
+    );
+    return { ...cat, bosses };
+  }).filter(cat => cat.category !== 'Event Bosses' || cat.bosses.length > 0);
+
+  return { bossCategories: categories, bossDrops: BOSS_DROPS, eventBossVisibility: visibility };
 }
 
 // ============================================================
@@ -486,7 +546,7 @@ async function getAllData(supabase: ReturnType<typeof db>, email: string) {
 
   const [user, config, leaderboard] = await Promise.all([
     getCurrentUser(supabase, email),
-    Promise.resolve(getConfig()),
+    Promise.resolve(getConfig(supabase)),
     getLeaderboard(supabase),
   ]);
 
@@ -784,6 +844,63 @@ async function getCharDetails(supabase: ReturnType<typeof db>, email: string, ch
 // ============================================================
 //  ATTENDANCE
 // ============================================================
+// ── ATTENDANCE ELIGIBILITY WINDOW ───────────────────────────────
+// A member can only submit attendance for a boss/mini if a scheduled
+// event for it genuinely occurred recently — this is what actually
+// stops "wrong boss" clicks and stale-timestamp submissions from ever
+// reaching the grouping/repair logic in the first place, instead of
+// trying to reconstruct sane data after the fact.
+//
+// The anchor is normally the event's START time (a 3h window opens once
+// the fight begins) — except Siege, which anchors to the event's END
+// (Siege runs long and attendance naturally gets logged once it's over,
+// not while it's still ongoing).
+//
+// Exception: a Maintenance event's END time opens the same 3h window for
+// EVERY boss/mini except Library Boss and Siege (those stay on their own
+// fixed schedule regardless of maintenance).
+async function checkAttendanceEligibility(supabase: ReturnType<typeof db>, bosses: string[], nowMs: number): Promise<{ ok: true } | { ok: false; blocked: string[] }> {
+  // Generous lookback pad — Maintenance windows can run long, and this
+  // is a cheap over-fetch either way.
+  const lookbackMs = nowMs - ATTENDANCE_WINDOW_MS - 24 * 60 * 60 * 1000;
+  const relevantBosses = [...new Set([...bosses, 'Maintenance'])];
+
+  const { data: evRows } = await supabase
+    .from('events')
+    .select('boss, scheduled_at, duration_minutes')
+    .in('boss', relevantBosses)
+    .gte('scheduled_at', new Date(lookbackMs).toISOString())
+    .lte('scheduled_at', new Date(nowMs).toISOString());
+
+  const anchorsByBoss: Record<string, number[]> = {};
+  const maintenanceEnds: number[] = [];
+  (evRows || []).forEach(r => {
+    const startMs = new Date(r.scheduled_at as string).getTime();
+    const endMs = startMs + (Number(r.duration_minutes) || 0) * 60000;
+    if (r.boss === 'Maintenance') { maintenanceEnds.push(endMs); return; }
+    (anchorsByBoss[r.boss as string] ||= []).push(r.boss === 'Siege' ? endMs : startMs);
+  });
+
+  // Fixed Library Boss / Siege schedule — never written to `events`.
+  _recurringOccurrencesInWindow(lookbackMs, nowMs).forEach(o => {
+    const anchor = o.boss === 'Siege' ? o.occMs + o.durationMinutes * 60000 : o.occMs;
+    (anchorsByBoss[o.boss] ||= []).push(anchor);
+  });
+
+  const maintAnchor = maintenanceEnds.length ? Math.max(...maintenanceEnds) : null;
+
+  const blocked = bosses.filter(boss => {
+    const anchors = anchorsByBoss[boss] || [];
+    let eligible = anchors.some(a => nowMs >= a && nowMs <= a + ATTENDANCE_WINDOW_MS);
+    if (!eligible && maintAnchor !== null && boss !== 'Library Boss' && boss !== 'Siege') {
+      eligible = nowMs >= maintAnchor && nowMs <= maintAnchor + ATTENDANCE_WINDOW_MS;
+    }
+    return !eligible;
+  });
+
+  return blocked.length ? { ok: false, blocked } : { ok: true };
+}
+
 async function submitAttendance(supabase: ReturnType<typeof db>, email: string, charId: string, bosses: string[]) {
   if (await isRestricted(supabase, email)) {
     return { success: false, message: 'Your account is restricted from submitting attendance. Contact an admin if you believe this is a mistake.' };
@@ -795,6 +912,18 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   if (!(await isLinkedToChar(supabase, email, charId))) return { success: false, message: 'You are not linked to this character.' };
 
   const now = new Date();
+
+  // All-or-nothing schedule gate: if ANY selected boss has no recent
+  // scheduled event backing it, the WHOLE submission is rejected — not
+  // just the offending boss — so a mixed batch can't partially land.
+  const eligibility = await checkAttendanceEligibility(supabase, bosses, now.getTime());
+  if (!eligibility.ok) {
+    return {
+      success: false,
+      message: `No recent event found for ${eligibility.blocked.join(', ')} within the last 3 hours. Check the schedule and make sure you selected the right boss(es) — nothing in this submission was recorded.`,
+    };
+  }
+
   const nowIso = now.toISOString();
 
   // Same char + same boss within the last GROUP_WINDOW_MS = a resubmission,
@@ -977,6 +1106,92 @@ async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) 
   }));
 }
 
+// Powers the "Assign to run" dropdown in the attendance-fix modal — the
+// last 100 confirmed runs for a given boss, most recent first, so an
+// admin correcting a wrong-boss or wrong-time submission can pick the
+// actual run it belongs to instead of relying on any auto-grouping.
+async function getRunsForBoss(supabase: ReturnType<typeof db>, email: string, boss: string) {
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
+  const { data, error } = await supabase
+    .from('runs')
+    .select('run_id, window_start')
+    .eq('boss', boss)
+    .order('window_start', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data || []).map(r => ({ runId: r.run_id, windowStart: r.window_start }));
+}
+
+// The escape hatch this whole run-grouping saga was missing: a direct way
+// to fix ONE bad submission (wrong boss picked, or a timestamp glitch that
+// landed it in the wrong window) without needing a full historical
+// repair script. Either or both of `boss` / `runId` may be provided:
+//   - boss: corrects a wrong-boss submission. If runId isn't also given
+//     and the boss actually changed, the row is detached (run_id='') since
+//     its old run_id belonged to the old boss and can't still apply.
+//   - runId: '' detaches the row (back to Not Confirmed/unlinked);
+//     a specific run_id reassigns it — but only if that run's own boss
+//     matches the row's (possibly just-corrected) boss, so this can't
+//     silently create a cross-boss run_participants entry.
+// Keeps run_participants AND runs.participant_ids in sync for both the
+// old and new run, so this doesn't quietly drift from ground truth that
+// a future repair might rely on.
+async function editAttendanceRow(supabase: ReturnType<typeof db>, email: string, params: Record<string, unknown>) {
+  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
+  if (!(await isDropsHandler(supabase, email))) return { error: 'Only a Drops Handler or Super Admin can fix attendance.' };
+
+  const attendanceId = params.attendanceId as string;
+  const newBoss = params.boss as string | undefined;
+  const newRunIdParam = params.runId as string | undefined; // undefined = leave as-is, '' = detach
+
+  const { data: row, error: fe } = await supabase
+    .from('attendance').select('id, boss, run_id, char_id').eq('id', attendanceId).maybeSingle();
+  if (fe) throw fe;
+  if (!row) return { error: 'Attendance row not found.' };
+
+  const oldRunId  = row.run_id || '';
+  const finalBoss = (newBoss && newBoss !== row.boss) ? newBoss : row.boss;
+  const bossChanged = finalBoss !== row.boss;
+
+  let finalRunId = oldRunId;
+  if (newRunIdParam !== undefined) {
+    if (newRunIdParam === '') {
+      finalRunId = '';
+    } else {
+      const { data: targetRun } = await supabase.from('runs').select('run_id, boss').eq('run_id', newRunIdParam).maybeSingle();
+      if (!targetRun) return { error: 'Target run not found.' };
+      if (targetRun.boss !== finalBoss) return { error: `That run is for ${targetRun.boss}, not ${finalBoss}.` };
+      finalRunId = newRunIdParam;
+    }
+  } else if (bossChanged) {
+    finalRunId = ''; // old run_id belonged to the old boss — can't still apply
+  }
+
+  await supabase.from('attendance').update({ boss: finalBoss, run_id: finalRunId }).eq('id', attendanceId);
+
+  // Sync run_participants + runs.participant_ids for whichever of the old
+  // and new runs actually changed.
+  for (const runId of new Set([oldRunId, finalRunId].filter(Boolean))) {
+    const { data: stillThere } = await supabase
+      .from('attendance').select('id').eq('run_id', runId).eq('char_id', row.char_id).limit(1);
+    const { data: runRow } = await supabase.from('runs').select('participant_ids').eq('run_id', runId).maybeSingle();
+    const pids = new Set((runRow?.participant_ids as string || '').split(',').map(s => s.trim()).filter(Boolean));
+
+    if (!stillThere || !stillThere.length) {
+      await supabase.from('run_participants').delete().eq('run_id', runId).eq('char_id', row.char_id);
+      pids.delete(row.char_id);
+    } else if (runId === finalRunId) {
+      await supabase.from('run_participants').upsert(
+        { run_id: runId, char_id: row.char_id }, { onConflict: 'run_id,char_id', ignoreDuplicates: true }
+      );
+      pids.add(row.char_id);
+    }
+    await supabase.from('runs').update({ participant_ids: [...pids].join(',') }).eq('run_id', runId);
+  }
+
+  return { success: true };
+}
+
 // ============================================================
 //  RUNS
 // ============================================================
@@ -1148,6 +1363,189 @@ function buildRun(boss: string, windowStart: number, entries: Array<{ id: string
   Object.keys(runIdCounts).forEach(id => { if (runIdCounts[id] > bestCount) { bestCount = runIdCounts[id]; linkedRunId = id; } });
 
   return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, linkedRunId, participants };
+}
+
+// ============================================================
+//  ONE-TIME REPAIR: undo the fixed-window SQL backfill
+// ============================================================
+// A manual SQL backfill (run directly against Supabase, outside this
+// codebase) tried to re-link orphaned attendance rows (run_id = '') to
+// their confirmed run using `ts BETWEEN runs.window_start AND
+// runs.window_end` — a *fixed* 4h window anchored to the run's original
+// confirm-time windowStart. That's not how this app actually groups
+// runs: the real algorithm (see the loop in getGroupedRuns / buildRun
+// above) is a *rolling* gap — a new run only starts once GROUP_WINDOW_MS
+// has elapsed since the boss's LAST recorded kill, not 4h from its first.
+// For any boss killed more than once within 4h of an earlier confirmed
+// run (Devilang/Faith/Actaemon/Billiard all qualify), the backfill
+// force-stamped later, genuinely separate kills' attendance onto that
+// earlier run's run_id, scrambling participant counts.
+//
+// A first version of this repair (recompute the true rolling-gap windows
+// and match each whole window to at most one saved run) was ALSO wrong:
+// a single rolling window can legitimately contain multiple, genuinely
+// separate confirmed runs of the same boss chained together by a handful
+// of bridging/late entries — e.g. two Actaemon kills ~6h apart still
+// count as one rolling window if a straggler submission lands in between.
+// Assuming a strict 1-window-to-1-run mapping silently merged those runs'
+// participants into whichever one a `.find()` happened to return first,
+// zeroing out the other — which is exactly what made things worse.
+//
+// This version instead trusts `runs.participant_ids` as ground truth —
+// it's the admin-confirmed record from the moment each run was actually
+// confirmed, and neither the bad SQL backfill nor the first repair
+// attempt ever touched it. For each attendance row:
+//   1. If its char_id appears in some saved run's participant_ids for
+//      the same boss, assign it to whichever such run's window_start is
+//      closest in time (handles a person attending the same recurring
+//      boss on many different days — and correctly splits merged
+//      rolling windows, since each half's real participants are still
+//      listed against their own run).
+//   2. Otherwise (char was never part of any confirmed run's original
+//      participant list — i.e. a genuine straggler), fall back to the
+//      true rolling-gap window, but ONLY assign it when that window
+//      unambiguously matches exactly one saved run.
+//   3. Anything still unresolved is left at run_id = '' rather than
+//      guessed — safe: it stays visible in Attendance History and can be
+//      attached to a run manually via "add participant" if needed.
+// Then run_participants is rebuilt from scratch to mirror the corrected
+// attendance.run_id values (safe: every run_participants row always has
+// a matching attendance row — see addRunParticipant).
+// Super-admin only. Safe to re-run: fully idempotent, and rows that are
+// already correct are left untouched.
+async function repairRunLinks(supabase: ReturnType<typeof db>, email: string) {
+  if (!(await isSuperAdmin(supabase, email))) return { error: 'Super Admin only.' };
+
+  const PAGE_SIZE = 1000;
+  const attRows: Array<{ id: string; ts: string; char_id: string; boss: string; run_id: string }> = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error: ae } = await supabase
+      .from('attendance')
+      .select('id, ts, char_id, boss, run_id')
+      .order('ts', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (ae) throw ae;
+    attRows.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+
+  const { data: savedRunsRaw } = await supabase.from('runs').select('run_id, boss, window_start, participant_ids');
+  const savedRuns = (savedRunsRaw || []).map(r => ({
+    runId: r.run_id as string,
+    boss: r.boss as string,
+    ws: new Date(r.window_start as string).getTime(),
+    pids: new Set((r.participant_ids as string || '').split(',').map(s => s.trim()).filter(Boolean)),
+  }));
+  const { data: resetRow } = await supabase.from('window_resets').select('reset_at').eq('id', 1).maybeSingle();
+  const globalResetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
+
+  const correctedRunId: Record<string, string> = {}; // attendance.id -> rightful run_id ('' = leave unlinked)
+
+  // Tier 1: ground truth from runs.participant_ids, nearest-window_start
+  // tie-break for chars who've attended this boss on multiple days —
+  // but ONLY among candidates whose ts actually falls within that run's
+  // own original [window_start, window_start+GROUP_WINDOW_MS] span.
+  // Without this bound, a straggler from a genuinely later/separate kill
+  // (never listed in THAT run's participant_ids, because that's exactly
+  // what made them a straggler) could still be "the nearest match" for
+  // an EARLIER run simply because they legitimately also attended that
+  // earlier one and are listed there — wrongly pulling them 12+ hours
+  // away from where their attendance row actually belongs.
+  const savedByBoss: Record<string, typeof savedRuns> = {};
+  savedRuns.forEach(r => { (savedByBoss[r.boss] ||= []).push(r); });
+  attRows.forEach(r => {
+    const ts = new Date(r.ts).getTime();
+    const candidates = (savedByBoss[r.boss] || []).filter(s =>
+      s.pids.has(r.char_id) && ts >= s.ws && ts <= s.ws + GROUP_WINDOW_MS
+    );
+    if (!candidates.length) return;
+    const best = candidates.reduce((a, b) => Math.abs(a.ws - ts) <= Math.abs(b.ws - ts) ? a : b);
+    correctedRunId[r.id] = best.runId;
+  });
+
+  // Tier 2: for rows tier 1 couldn't place, recompute the true rolling-gap
+  // windows (same algorithm as getGroupedRuns/buildRun) and assign only
+  // where a window unambiguously matches exactly one saved run.
+  const byBoss: Record<string, Array<{ id: string; ts: number; charId: string }>> = {};
+  attRows.forEach(r => { (byBoss[r.boss] ||= []).push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id }); });
+
+  Object.keys(byBoss).forEach(boss => {
+    const entries = byBoss[boss].sort((a, b) => a.ts - b.ts);
+    const bossSavedRuns = savedByBoss[boss] || [];
+    let windowStart: number | null = null;
+    let lastTs: number | null = null;
+    let windowEntries: typeof entries = [];
+
+    const flush = () => {
+      if (windowEntries.length === 0) return;
+      const unresolved = windowEntries.filter(e => correctedRunId[e.id] === undefined);
+      if (unresolved.length === 0) return;
+      const firstTs = windowEntries[0].ts;
+      const lastEntryTs = windowEntries[windowEntries.length - 1].ts;
+      const matches = bossSavedRuns.filter(r => r.ws >= firstTs && r.ws <= lastEntryTs);
+      if (matches.length === 1) {
+        unresolved.forEach(e => { correctedRunId[e.id] = matches[0].runId; });
+      }
+      // matches.length === 0 or > 1: leave unresolved (tier 3, run_id='')
+    };
+
+    entries.forEach(e => {
+      const crossesReset = globalResetMs != null && windowStart !== null && windowStart < globalResetMs && e.ts >= globalResetMs;
+      if (windowStart === null) { windowStart = e.ts; lastTs = e.ts; windowEntries = [e]; }
+      else if (!crossesReset && e.ts - lastTs! <= GROUP_WINDOW_MS) { windowEntries.push(e); lastTs = e.ts; }
+      else { flush(); windowStart = e.ts; lastTs = e.ts; windowEntries = [e]; }
+    });
+    flush();
+  });
+
+  // Tier 3: anything still unresolved is left alone at run_id=''.
+  Object.keys(byBoss).forEach(boss => {
+    byBoss[boss].forEach(e => { if (correctedRunId[e.id] === undefined) correctedRunId[e.id] = ''; });
+  });
+
+  const rebuiltParticipants: Record<string, Set<string>> = {};
+  attRows.forEach(r => {
+    const rid = correctedRunId[r.id];
+    if (rid) (rebuiltParticipants[rid] ||= new Set()).add(r.char_id);
+  });
+
+  // Only touch rows whose run_id is actually wrong.
+  const toCorrect = attRows.filter(r => correctedRunId[r.id] !== (r.run_id || ''));
+  const CHUNK = 200;
+  for (let i = 0; i < toCorrect.length; i += CHUNK) {
+    const chunk = toCorrect.slice(i, i + CHUNK);
+    const byTarget: Record<string, string[]> = {};
+    chunk.forEach(r => { (byTarget[correctedRunId[r.id]] ||= []).push(r.id); });
+    for (const target of Object.keys(byTarget)) {
+      await supabase.from('attendance').update({ run_id: target }).in('id', byTarget[target]);
+    }
+  }
+
+  // Rebuild run_participants for every confirmed run from scratch so it
+  // exactly mirrors the now-corrected attendance.run_id values.
+  let participantRowsWritten = 0;
+  for (const run of savedRuns) {
+    await supabase.from('run_participants').delete().eq('run_id', run.runId);
+    const charIds = [...(rebuiltParticipants[run.runId] || [])];
+    if (charIds.length) {
+      await supabase.from('run_participants').upsert(
+        charIds.map(charId => ({ run_id: run.runId, char_id: charId })),
+        { onConflict: 'run_id,char_id', ignoreDuplicates: true }
+      );
+      participantRowsWritten += charIds.length;
+    }
+  }
+
+  const unresolvedCount = attRows.filter(r => correctedRunId[r.id] === '' && !r.run_id).length
+    + attRows.filter(r => correctedRunId[r.id] === '').length;
+
+  return {
+    success: true,
+    attendanceRowsCorrected: toCorrect.length,
+    runsRebuilt: savedRuns.length,
+    participantRowsWritten,
+    leftUnlinked: attRows.filter(r => correctedRunId[r.id] === '').length,
+  };
 }
 
 // ============================================================
@@ -1469,23 +1867,43 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
     await writeToInventory(supabase, finalRunId!, boss, drops, now);
   }
 
-  await linkAttendanceToRun(supabase, finalRunId!, boss, windowStart, participants.map(p => p.charId));
+  const linkedCharIds = await linkAttendanceToRun(supabase, finalRunId!, boss, windowStart, participants.map(p => p.charId));
 
   // run_participants is the payout source of truth (see sellItem).
   // Upsert whoever is currently checked; on an edit, also remove anyone
   // who got unchecked — "uncheck to exclude" needs to actually pull them
   // out of the split, not just skip re-adding them.
-  const currentCharIds = participants.map(p => p.charId);
+  //
+  // currentCharIds is a UNION of the frontend's checked list with
+  // linkedCharIds — anyone linkAttendanceToRun just discovered (i.e. they
+  // submitted attendance after the confirm modal's snapshot was taken but
+  // before Confirm was clicked) needs to land in the split too, or they'd
+  // be linked on attendance.run_id but still silently excluded from loot.
+  // This doesn't break "uncheck to exclude" on edits: someone already
+  // linked from a prior confirm has run_id already set, so they never
+  // reappear via the eq('run_id','') filter in linkAttendanceToRun —
+  // only genuinely new stragglers get auto-included.
+  const currentCharIds = [...new Set([...participants.map(p => p.charId), ...linkedCharIds])];
   if (currentCharIds.length) {
     await supabase.from('run_participants').upsert(
       currentCharIds.map(charId => ({ run_id: finalRunId!, char_id: charId })),
       { onConflict: 'run_id,char_id', ignoreDuplicates: true }
     );
   }
-  if (isEdit) {
-    let removeQuery = supabase.from('run_participants').delete().eq('run_id', finalRunId!);
-    if (currentCharIds.length) removeQuery = removeQuery.not('char_id', 'in', `(${currentCharIds.join(',')})`);
-    await removeQuery;
+  // Only remove anyone on an edit where we actually have a non-empty
+  // checked list to diff against. If currentCharIds ever comes back
+  // empty here, that's almost certainly a rendering hiccup (stale modal,
+  // nothing got checked) rather than an admin deliberately clearing
+  // every participant — and blindly deleting with no char_id filter at
+  // all would wipe the whole run's participants unconditionally. Bulk
+  // uncheck-to-remove still works normally whenever at least one person
+  // stays checked; removing the very last participant just needs the
+  // explicit per-person trash-icon action (removeRunParticipant) instead
+  // of falling out of an empty bulk save.
+  if (isEdit && currentCharIds.length) {
+    await supabase.from('run_participants').delete()
+      .eq('run_id', finalRunId!)
+      .not('char_id', 'in', `(${currentCharIds.join(',')})`);
   }
 
   return { success: true, runId: finalRunId };
@@ -1495,21 +1913,31 @@ async function linkAttendanceToRun(supabase: ReturnType<typeof db>, runId: strin
   const windowStartMs = new Date(windowStart).getTime();
   const windowEndMs   = windowStartMs + GROUP_WINDOW_MS;
 
+  // Intentionally NOT filtered by charIds. charIds is just the frontend's
+  // snapshot of who was checked when the confirm modal was opened — if
+  // anyone submits attendance for this boss/window between that snapshot
+  // and the admin clicking Confirm, they'd otherwise never get linked
+  // (run_id stuck at '' forever, invisible to run_participants/payouts
+  // even though Attendance History still shows them, since that view is
+  // unfiltered by run_id). Linking is purely time-window based; charIds
+  // is only used by the caller (confirmRun) to seed run_participants —
+  // this function tells it who it actually linked so late arrivals get
+  // folded in too.
   const { data: rows } = await supabase
     .from('attendance')
     .select('id, ts, char_id')
     .eq('boss', boss)
-    .eq('run_id', '')
-    .in('char_id', charIds);
+    .eq('run_id', '');
 
-  const toUpdate = (rows || []).filter(r => {
+  const toLink = (rows || []).filter(r => {
     const ts = new Date(r.ts).getTime();
     return ts >= windowStartMs && ts <= windowEndMs;
-  }).map(r => r.id);
+  });
 
-  if (toUpdate.length > 0) {
-    await supabase.from('attendance').update({ run_id: runId }).in('id', toUpdate);
+  if (toLink.length > 0) {
+    await supabase.from('attendance').update({ run_id: runId }).in('id', toLink.map(r => r.id));
   }
+  return [...new Set(toLink.map(r => r.char_id))];
 }
 
 async function writeToInventory(supabase: ReturnType<typeof db>, runId: string, boss: string, drops: Array<{ itemName: string; qty: number }>, droppedAt: string) {
@@ -2147,11 +2575,11 @@ async function _pushAnnouncement(supabase: ReturnType<typeof db>, title: string,
 // fixed UTC schedule and are synthesized client-side for the calendar
 // (never written to the `events` table, so they never showed up in the
 // notifyTick query above). Keep this list in sync with app.js's copy.
-const RECURRING_EVENTS: { boss: string; hourUTC: number; minuteUTC: number; daysOfWeekUTC: number[] | null }[] = [
-  { boss: 'Library Boss', hourUTC: 2,  minuteUTC: 0,  daysOfWeekUTC: null }, // every day
-  { boss: 'Library Boss', hourUTC: 14, minuteUTC: 0,  daysOfWeekUTC: null }, // every day
-  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, daysOfWeekUTC: [0] },  // Sunday
-  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, daysOfWeekUTC: [2] },  // Tuesday
+const RECURRING_EVENTS: { boss: string; hourUTC: number; minuteUTC: number; durationMinutes: number; daysOfWeekUTC: number[] | null }[] = [
+  { boss: 'Library Boss', hourUTC: 2,  minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
+  { boss: 'Library Boss', hourUTC: 14, minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [0] },  // Sunday
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [3] },  // Wednesday
 ];
 
 // Recurring occurrences whose scheduled time falls within
@@ -2160,7 +2588,7 @@ const RECURRING_EVENTS: { boss: string; hourUTC: number; minuteUTC: number; days
 // can be deduped against `recurring_notifications` across ticks.
 function _recurringOccurrencesInWindow(windowStartMs: number, windowEndMs: number) {
   const DAY = 24 * 60 * 60 * 1000;
-  const out: { id: string; boss: string }[] = [];
+  const out: { id: string; boss: string; occMs: number; durationMinutes: number }[] = [];
   const startDayMs = Math.floor(windowStartMs / DAY) * DAY - DAY;
   const endDayMs   = Math.ceil(windowEndMs / DAY) * DAY + DAY;
   for (let dayMs = startDayMs; dayMs <= endDayMs; dayMs += DAY) {
@@ -2170,7 +2598,7 @@ function _recurringOccurrencesInWindow(windowStartMs: number, windowEndMs: numbe
       if (r.daysOfWeekUTC && !r.daysOfWeekUTC.includes(dowUTC)) return;
       const occMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), r.hourUTC, r.minuteUTC, 0);
       if (occMs < windowStartMs || occMs > windowEndMs) return;
-      out.push({ id: `RECUR_${r.boss.replace(/\s+/g, '')}_${occMs}`, boss: r.boss });
+      out.push({ id: `RECUR_${r.boss.replace(/\s+/g, '')}_${occMs}`, boss: r.boss, occMs, durationMinutes: r.durationMinutes });
     });
   }
   return out;

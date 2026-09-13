@@ -403,6 +403,7 @@ window.initAllianceTracker = async function(email) {
     if (App.user.status === 'unregistered') { API._fetch('request_access'); _showPending(); return; }
     if (App.user.status === 'pending')      { _showPending(); return; }
     showView('home');
+    _autoPromptPushOnce();
 
   } catch(err) {
     showError(err.message || 'Could not reach the server. Check your Supabase Edge Function.');
@@ -925,16 +926,17 @@ function renderHome() {
   });
 }
 
-// Events happening later today, in the viewer's own local timezone —
-// scheduledAt is stored as UTC ISO and `new Date()` already converts it
-// to local time for comparison/display, so no extra tz math is needed.
+// Events happening in the next 24 hours (rolling window from now, not
+// capped at local midnight) — scheduledAt is stored as UTC ISO and
+// `new Date()` already converts it to local time for comparison/display,
+// so no extra tz math is needed.
 function _upcomingBossesToday(events) {
   const now = Date.now();
-  const endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999);
+  const next24h = now + 24 * 60 * 60 * 1000;
   return (events || [])
     .filter(ev => {
       const t = new Date(ev.scheduledAt).getTime();
-      return t >= now && t <= endOfToday.getTime();
+      return t >= now && t <= next24h;
     })
     .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt))
     .slice(0, 6);
@@ -1529,13 +1531,16 @@ function _renderAttHistoryTable() {
         <thead><tr>
           <th class="sortable-th" onclick="_onAttHistorySortClick('ign')">Member${_attHistorySortArrow('ign')}</th>
           <th class="sortable-th" onclick="_onAttHistorySortClick('boss')">Boss${_attHistorySortArrow('boss')}</th>
-          <th>Points</th><th>Timestamp</th>
+          <th>Points</th><th>Timestamp</th><th>Run</th>
+          ${(App.user.isAdmin && App.user.isDropsHandler) ? '<th></th>' : ''}
         </tr></thead>
         <tbody>${sorted.map(a=>`<tr>
           <td>${escHtml(a.ign || '—')}</td>
           <td>${escHtml(a.boss)}</td>
           <td style="color:var(--gold)">+${a.points}</td>
           <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
+          <td style="font-size:.78rem;color:${a.runId ? 'var(--text-secondary)' : 'var(--danger)'}">${a.runId ? 'Linked' : 'Unconfirmed'}</td>
+          ${(App.user.isAdmin && App.user.isDropsHandler) ? `<td><button class="btn btn-sm btn-secondary" style="padding:.15rem .5rem" title="Fix this submission" onclick="openEditAttendanceModal('${a.id}')">✏️</button></td>` : ''}
         </tr>`).join('')}</tbody>
       </table>`
     : `<table class="data-table">
@@ -1590,6 +1595,84 @@ function renderMyAttendanceHistory() {
       <div class="table-scroll" id="att-history-table-wrap"></div>`;
     _renderAttHistoryTable();
   });
+}
+
+// ============================================================
+//  FIX ATTENDANCE SUBMISSION  (admin escape hatch)
+// ============================================================
+// A member picking the wrong boss, or a client-clock glitch landing a
+// submission in the wrong grouping window, used to require a full
+// historical repair script to fix (see repairRunLinks) — expensive,
+// risky, and overkill for a single bad row. This lets a Drops
+// Handler/Super Admin fix ONE row directly: correct its boss, and/or
+// manually pick which confirmed run it actually belongs to (or detach
+// it back to Unconfirmed). No auto-grouping involved — the admin's pick
+// is exactly what gets written.
+function openEditAttendanceModal(attId) {
+  const row = (window._attHistoryRows || []).find(a => a.id === attId);
+  if (!row) return;
+  const bossOptions = _allBossNames().map(b =>
+    `<option value="${escHtml(b)}" ${b === row.boss ? 'selected' : ''}>${escHtml(b)}</option>`
+  ).join('');
+
+  showModal(`
+    <div class="modal-title">✏️ Fix Attendance Submission</div>
+    <div style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">
+      ${escHtml(row.ign || '—')} · submitted ${fmtDate(row.timestamp)} ${fmtTime(row.timestamp)}
+    </div>
+    <div class="form-group">
+      <label class="form-label">Boss</label>
+      <select class="form-select" id="edit-att-boss" onchange="_onEditAttBossChange()">${bossOptions}</select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Assign to run</label>
+      <select class="form-select" id="edit-att-run"><option value="">Loading…</option></select>
+    </div>
+    <div style="display:flex;gap:.75rem;margin-top:1.5rem">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="edit-att-save-btn" disabled onclick="_saveEditAttendance('${attId}')">Save</button>
+    </div>
+  `);
+  _loadRunOptionsForEditModal(row.boss, row.runId);
+}
+
+function _onEditAttBossChange() {
+  const boss = document.getElementById('edit-att-boss').value;
+  // Boss changed — the old run pick no longer applies (different boss),
+  // so don't try to preselect it; default to Unconfirmed until the admin
+  // picks the right run for the new boss.
+  _loadRunOptionsForEditModal(boss, '');
+}
+
+function _loadRunOptionsForEditModal(boss, preselectRunId) {
+  const sel = document.getElementById('edit-att-run');
+  const btn = document.getElementById('edit-att-save-btn');
+  if (!sel) return;
+  if (btn) btn.disabled = true; // don't let Save fire while options (and the correct preselect) are still loading
+  sel.innerHTML = `<option value="">— Unconfirmed —</option>`;
+  API.read('get_runs_for_boss', { boss }).then(runs => {
+    const sel2 = document.getElementById('edit-att-run');
+    if (!sel2) return;
+    sel2.innerHTML = `<option value="">— Unconfirmed —</option>` + (runs || []).map(r =>
+      `<option value="${r.runId}" ${r.runId === preselectRunId ? 'selected' : ''}>${fmtDate(r.windowStart)} ${fmtTime(r.windowStart)}</option>`
+    ).join('');
+    const btn2 = document.getElementById('edit-att-save-btn');
+    if (btn2) btn2.disabled = false;
+  });
+}
+
+function _saveEditAttendance(attId) {
+  const boss  = document.getElementById('edit-att-boss').value;
+  const runId = document.getElementById('edit-att-run').value;
+  const btn   = document.getElementById('edit-att-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+
+  API.write('edit_attendance_row', { attendanceId: attId, boss, runId }, ['get_all_attendance', 'get_grouped_runs'])
+    .then(res => {
+      if (res.success) { toast('Attendance updated', 'success'); closeModal(); renderMyAttendanceHistory(); }
+      else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = 'Save'; }
+    })
+    .catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = 'Save'; });
 }
 
 // ============================================================
@@ -1893,19 +1976,19 @@ function renderGuide() {
 //  app load — so we're not nagging everyone with a permission prompt
 //  before they've opted into anything.
 // ============================================================
-async function _ensurePushSubscribed() {
+async function _ensurePushSubscribed(silent = false) {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    toast('Push notifications aren\'t supported in this browser.', 'error');
+    if (!silent) toast('Push notifications aren\'t supported in this browser.', 'error');
     return false;
   }
   if (VAPID_PUBLIC_KEY === 'REPLACE_WITH_YOUR_VAPID_PUBLIC_KEY') {
-    toast('Push notifications aren\'t set up yet — ask an admin to finish setup.', 'error');
+    if (!silent) toast('Push notifications aren\'t set up yet — ask an admin to finish setup.', 'error');
     return false;
   }
   let permission = Notification.permission;
   if (permission === 'default') permission = await Notification.requestPermission();
   if (permission !== 'granted') {
-    toast('Notifications are blocked for this site in your browser settings.', 'error');
+    if (!silent) toast('Notifications are blocked for this site in your browser settings.', 'error');
     return false;
   }
   try {
@@ -1920,9 +2003,30 @@ async function _ensurePushSubscribed() {
     await API.write('save_push_subscription', { subscription: sub.toJSON() });
     return true;
   } catch (e) {
-    toast('Could not enable push notifications.', 'error');
+    if (!silent) toast('Could not enable push notifications.', 'error');
     return false;
   }
+}
+
+// Every notification preference defaults to ON (opt-out), but Web Push
+// can never be silently acquired — it always needs one real permission
+// prompt + subscribe call. Without this, prefs said "on" while
+// push_subscriptions stayed empty for everyone, so notify_tick had no
+// endpoints to push to no matter what the toggles showed. This runs
+// once per device, right after a member's first successful load, to
+// make the default-on prefs actually true. Guarded by a localStorage
+// flag so it never nags twice — if permission ends up denied/dismissed,
+// we don't ask again; the member can still enable manually via Settings
+// later (that path already re-requests permission on click).
+function _autoPromptPushOnce() {
+  const FLAG = 'alliance_push_auto_prompted';
+  if (localStorage.getItem(FLAG)) return;
+  localStorage.setItem(FLAG, '1');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (VAPID_PUBLIC_KEY === 'REPLACE_WITH_YOUR_VAPID_PUBLIC_KEY') return;
+  // Fire and forget — must never block app boot, and must never
+  // interrupt login with an error toast if it fails or is dismissed.
+  _ensurePushSubscribed(true /*silent*/).catch(() => {});
 }
 
 let _notifPrefs = { announcements: true, bossPrefs: {}, miniPrefs: {} };
@@ -1946,6 +2050,23 @@ function toggleAnnouncementNotif(checked) {
     _notifPrefs.announcements = false;
     API.write('update_notification_prefs', { announcements: false });
   }
+}
+
+// Super-admin-only toggle for the temporary Event Bosses section (see
+// Settings render above). App.config is set once at bootstrap and read
+// directly by renderAttendance, so on success we refetch get_config
+// (busted below) and reassign App.config in place — otherwise the
+// Attendance page wouldn't see the change until a full reload.
+function _toggleEventBossVisibility(key, checked) {
+  API.write('set_event_boss_visibility', { [key]: checked }, ['get_config']).then(res => {
+    if (!res.success) {
+      toast(res.error || 'Error', 'error');
+      const el = document.getElementById(key === 'summerSephia' ? 'event-boss-summer-sephia' : 'event-boss-kooby-dic');
+      if (el) el.checked = !checked;
+      return;
+    }
+    API.read('get_config').then(cfg => { if (cfg) App.config = cfg; });
+  }).catch(() => toast('Network error', 'error'));
 }
 
 // group is 'boss' or 'mini'. Opens a fullscreen (mobile) list of every
@@ -2064,6 +2185,36 @@ function renderSettings() {
         <span style="color:var(--text-secondary);font-size:1.1rem">›</span>
       </div>
     </div>
+
+    ${App.user.isSuperAdmin ? `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Event Bosses</div>
+          <div class="card-meta">Super Admin only. Controls whether these temporary event bosses appear in the Attendance page's Event Bosses section. If both are off, the whole section is hidden.</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Summer Sephia</div>
+          <div class="settings-row-desc">Show Summer Sephia as a submittable boss.</div>
+        </div>
+        <label class="notif-switch">
+          <input type="checkbox" id="event-boss-summer-sephia" ${App.config.eventBossVisibility?.summerSephia ? 'checked' : ''} onchange="_toggleEventBossVisibility('summerSephia', this.checked)">
+          <span class="notif-switch-track"></span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Kooby Dic</div>
+          <div class="settings-row-desc">Show Kooby Dic as a submittable boss.</div>
+        </div>
+        <label class="notif-switch">
+          <input type="checkbox" id="event-boss-kooby-dic" ${App.config.eventBossVisibility?.koobyDic ? 'checked' : ''} onchange="_toggleEventBossVisibility('koobyDic', this.checked)">
+          <span class="notif-switch-track"></span>
+        </label>
+      </div>
+    </div>` : ''}
 
     <div class="card">
       <div class="card-header">
@@ -2379,7 +2530,7 @@ const RECURRING_EVENTS = [
   { boss: 'Library Boss', hourUTC: 2,  minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
   { boss: 'Library Boss', hourUTC: 14, minuteUTC: 0,  durationMinutes: 5,  daysOfWeekUTC: null }, // every day
   { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [0] },  // Sunday
-  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [2] },  // Tuesday
+  { boss: 'Siege',        hourUTC: 5,  minuteUTC: 30, durationMinutes: 30, daysOfWeekUTC: [3] },  // Wednesday
 ];
 
 // Generates every recurring occurrence whose spawn time falls within
@@ -3111,14 +3262,35 @@ function submitRunConfirm(idx) {
   const run  = window._runs[idx];
   const btn  = document.getElementById('confirm-run-btn');
   btn.disabled = true; btn.textContent = '⏳ Confirming…';
-  const participants = [...document.querySelectorAll('.part-check:checked')].map(cb => ({ charId:cb.value, ign:cb.dataset.ign, email:cb.dataset.email }));
-  const drops        = [...document.querySelectorAll('.drop-check:checked')].map(cb => ({ itemName:cb.value, qty:Number(document.querySelector(`.drop-qty[data-item="${cb.value}"]`)?.value)||1 }));
-  const notes        = document.getElementById('modal-notes').value;
 
-  API.write('confirm_run',
-    { runData: { boss:run.boss, windowStart:run.windowStart, participants, drops, notes, existingRunId:run.runId } },
-    ['get_grouped_runs', 'get_inventory']
-  ).then(res => {
+  const checkedIds   = new Set([...document.querySelectorAll('.part-check:checked')].map(cb => cb.value));
+  const renderedIds  = new Set(run.participants.map(p => p.charId));
+  const participants = [...document.querySelectorAll('.part-check:checked')].map(cb => ({ charId:cb.value, ign:cb.dataset.ign, email:cb.dataset.email }));
+  const drops         = [...document.querySelectorAll('.drop-check:checked')].map(cb => ({ itemName:cb.value, qty:Number(document.querySelector(`.drop-qty[data-item="${cb.value}"]`)?.value)||1 }));
+  const notes         = document.getElementById('modal-notes').value;
+
+  // Re-fetch grouped runs right before submitting and fold in anyone who
+  // submitted attendance for this boss/window after the modal's snapshot
+  // was taken — but only if they were never rendered as a checkbox at all
+  // (a genuinely new straggler), never someone the admin actively
+  // unchecked to exclude them. The backend has its own backstop for this
+  // same race (see linkAttendanceToRun/confirmRun), so this is just
+  // belt-and-suspenders to shrink the window and keep the success toast
+  // reflecting who actually got included.
+  API.read('get_grouped_runs').then(freshRuns => {
+    const fresh = (freshRuns || []).find(r => r.boss === run.boss && r.windowStart === run.windowStart);
+    if (fresh) {
+      fresh.participants.forEach(p => {
+        if (!renderedIds.has(p.charId) && !checkedIds.has(p.charId)) {
+          participants.push({ charId: p.charId, ign: p.ign, email: p.email });
+        }
+      });
+    }
+    return API.write('confirm_run',
+      { runData: { boss:run.boss, windowStart:run.windowStart, participants, drops, notes, existingRunId:run.runId } },
+      ['get_grouped_runs', 'get_inventory']
+    );
+  }).then(res => {
     if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); renderDrops(); }
     else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; }
   }).catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; });
