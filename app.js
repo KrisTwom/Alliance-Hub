@@ -3176,7 +3176,7 @@ function openRunModal(idx) {
       <textarea class="form-textarea" id="modal-notes" placeholder="Optional admin notes…" ${App.user.isDropsHandler?'':'disabled'}>${run.notes||''}</textarea>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-secondary" id="confirm-run-cancel-btn" onclick="closeModal()">Cancel</button>
       ${!App.user.isDropsHandler
         ? `<button class="btn btn-secondary" disabled title="Only a Drops Handler or Super Admin can confirm runs" style="opacity:.45;cursor:not-allowed;">🔒 Drops Handler only</button>`
         : `<button class="btn btn-primary" id="confirm-run-btn" onclick="submitRunConfirm(${idx})">${run.runId ? '💾 Save Changes' : '✓ Confirm Run'}</button>`}
@@ -3261,7 +3261,16 @@ function _reopenRunModal(boss, windowStart) {
 function submitRunConfirm(idx) {
   const run  = window._runs[idx];
   const btn  = document.getElementById('confirm-run-btn');
+  const cancelBtn = document.getElementById('confirm-run-cancel-btn');
   btn.disabled = true; btn.textContent = '⏳ Confirming…';
+  if (cancelBtn) cancelBtn.disabled = true;
+  // Block click-outside-to-close for the duration of the save too — same
+  // forceAck flag the duplicate-attendance modal uses — so there's no way
+  // to dismiss the modal mid-save from either the Cancel button or the
+  // overlay while a confirm is actually in flight.
+  const overlay = document.getElementById('modal-overlay');
+  const prevForceAck = overlay.dataset.forceAck;
+  overlay.dataset.forceAck = '1';
 
   const checkedIds   = new Set([...document.querySelectorAll('.part-check:checked')].map(cb => cb.value));
   const renderedIds  = new Set(run.participants.map(p => p.charId));
@@ -3292,8 +3301,18 @@ function submitRunConfirm(idx) {
     );
   }).then(res => {
     if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); renderDrops(); }
-    else { toast(res.error||'Error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; }
-  }).catch(() => { toast('Network error', 'error'); btn.disabled=false; btn.textContent='✓ Confirm Run'; });
+    else {
+      toast(res.error||'Error', 'error');
+      btn.disabled=false; btn.textContent='✓ Confirm Run';
+      if (cancelBtn) cancelBtn.disabled = false;
+      overlay.dataset.forceAck = prevForceAck;
+    }
+  }).catch(() => {
+    toast('Network error', 'error');
+    btn.disabled=false; btn.textContent='✓ Confirm Run';
+    if (cancelBtn) cancelBtn.disabled = false;
+    overlay.dataset.forceAck = prevForceAck;
+  });
 }
 
 // ============================================================

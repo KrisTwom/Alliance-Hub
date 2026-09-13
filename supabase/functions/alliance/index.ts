@@ -1846,7 +1846,6 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
       status: 'Confirmed', notes, confirmed_at: now, confirmed_by: email,
     }).eq('run_id', runId);
     if (error) throw error;
-    await diffInventory(supabase, runId!, boss, drops, now);
   } else {
     finalRunId = 'RUN_' + crypto.randomUUID();
     const { error } = await supabase.from('runs').insert({
@@ -1865,10 +1864,18 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
       }
       throw error;
     }
-    await writeToInventory(supabase, finalRunId!, boss, drops, now);
   }
 
-  const linkedCharIds = await linkAttendanceToRun(supabase, finalRunId!, boss, windowStart, participants.map(p => p.charId));
+  // The inventory write and the attendance-linking pass touch different
+  // tables and don't depend on each other's results, so they used to run
+  // one after the other for no reason — each one waiting on a full round
+  // trip before the next even started. Running them together roughly
+  // halves this part of confirmRun's wall time, which matters because the
+  // whole chain of awaits here is what occasionally added up to a timeout.
+  const [, linkedCharIds] = await Promise.all([
+    isEdit ? diffInventory(supabase, runId!, boss, drops, now) : writeToInventory(supabase, finalRunId!, boss, drops, now),
+    linkAttendanceToRun(supabase, finalRunId!, boss, windowStart, participants.map(p => p.charId)),
+  ]);
 
   // run_participants is the payout source of truth (see sellItem).
   // Upsert whoever is currently checked; on an edit, also remove anyone
@@ -1962,26 +1969,45 @@ async function diffInventory(supabase: ReturnType<typeof db>, runId: string, bos
   const incoming: Record<string, number> = {};
   (newDrops || []).forEach(d => { incoming[d.itemName] = Number(d.qty) || 1; });
 
-  // Update existing
+  // Previously this ran one awaited query per changed item, sequentially —
+  // a run with 5-6 drop items meant 5-6 round trips back-to-back just here,
+  // on top of everything else confirmRun already does, which is what made
+  // confirming slow enough to occasionally time out. Same net effect, but
+  // batched: one insert for every genuinely new item, one delete for every
+  // removed item, and only the per-row qty updates (which can't be merged
+  // into a single query since each targets a different row/value) still go
+  // out individually — but now in parallel via Promise.all instead of
+  // waiting on each one before starting the next.
+  const toInsert: Array<{ inv_id: string; run_id: string; boss: string; item_name: string; qty: number; dropped_at: string; status: string }> = [];
+  const updatePromises: Array<Promise<{ error: unknown }>> = [];
+
   for (const [itemName, qty] of Object.entries(incoming)) {
     if (existingMap[itemName]) {
       if (existingMap[itemName].qty !== qty) {
-        await supabase.from('inventory').update({ qty }).eq('inv_id', existingMap[itemName].invId);
+        updatePromises.push(supabase.from('inventory').update({ qty }).eq('inv_id', existingMap[itemName].invId));
       }
     } else {
-      await supabase.from('inventory').insert({
+      toInsert.push({
         inv_id: 'INV_' + crypto.randomUUID(), run_id: runId, boss,
         item_name: itemName, qty, dropped_at: droppedAt, status: 'Available',
       });
     }
   }
 
-  // Delete removed items (Available only)
-  for (const [itemName, { invId }] of Object.entries(existingMap)) {
-    if (!incoming[itemName]) {
-      await supabase.from('inventory').delete().eq('inv_id', invId);
-    }
-  }
+  const toDeleteIds = Object.entries(existingMap)
+    .filter(([itemName]) => !incoming[itemName])
+    .map(([, { invId }]) => invId);
+
+  const [insertRes, deleteRes, ...updateResults] = await Promise.all([
+    toInsert.length ? supabase.from('inventory').insert(toInsert) : Promise.resolve({ error: null }),
+    toDeleteIds.length ? supabase.from('inventory').delete().in('inv_id', toDeleteIds) : Promise.resolve({ error: null }),
+    ...updatePromises,
+  ]);
+
+  if (insertRes.error) throw insertRes.error;
+  if (deleteRes.error) throw deleteRes.error;
+  const updateErr = updateResults.find(r => r.error);
+  if (updateErr) throw updateErr.error;
 }
 
 // ============================================================
