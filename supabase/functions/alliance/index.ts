@@ -1806,10 +1806,11 @@ async function addRunParticipant(supabase: ReturnType<typeof db>, email: string,
   }).eq('char_id', charId);
 
   if (runId) {
-    await supabase.from('run_participants').upsert(
+    const { error: rpErr } = await supabase.from('run_participants').upsert(
       { run_id: runId, char_id: charId },
       { onConflict: 'run_id,char_id', ignoreDuplicates: true }
     );
+    if (rpErr) throw rpErr;
   }
 
   return { success: true, attendanceId: inserted?.id, ign: char.ign, pointsAdded: points };
@@ -1885,10 +1886,11 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
   // only genuinely new stragglers get auto-included.
   const currentCharIds = [...new Set([...participants.map(p => p.charId), ...linkedCharIds])];
   if (currentCharIds.length) {
-    await supabase.from('run_participants').upsert(
+    const { error: rpUpsertErr } = await supabase.from('run_participants').upsert(
       currentCharIds.map(charId => ({ run_id: finalRunId!, char_id: charId })),
       { onConflict: 'run_id,char_id', ignoreDuplicates: true }
     );
+    if (rpUpsertErr) throw rpUpsertErr;
   }
   // Only remove anyone on an edit where we actually have a non-empty
   // checked list to diff against. If currentCharIds ever comes back
@@ -1901,9 +1903,10 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
   // explicit per-person trash-icon action (removeRunParticipant) instead
   // of falling out of an empty bulk save.
   if (isEdit && currentCharIds.length) {
-    await supabase.from('run_participants').delete()
+    const { error: rpDeleteErr } = await supabase.from('run_participants').delete()
       .eq('run_id', finalRunId!)
       .not('char_id', 'in', `(${currentCharIds.join(',')})`);
+    if (rpDeleteErr) throw rpDeleteErr;
   }
 
   return { success: true, runId: finalRunId };
@@ -1935,7 +1938,8 @@ async function linkAttendanceToRun(supabase: ReturnType<typeof db>, runId: strin
   });
 
   if (toLink.length > 0) {
-    await supabase.from('attendance').update({ run_id: runId }).in('id', toLink.map(r => r.id));
+    const { error: linkErr } = await supabase.from('attendance').update({ run_id: runId }).in('id', toLink.map(r => r.id));
+    if (linkErr) throw linkErr;
   }
   return [...new Set(toLink.map(r => r.char_id))];
 }
