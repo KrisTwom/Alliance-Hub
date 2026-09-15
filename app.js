@@ -3140,15 +3140,16 @@ function openRunModal(idx) {
       <span class="status ${run.status==='Confirmed'?'status-confirmed':'status-pending'}">${run.status}</span>
     </div>
     <div style="margin-bottom:1rem">
-      <div class="form-label" style="margin-bottom:.5rem">Participants (uncheck to exclude from loot split)</div>
-      <div id="modal-participants" style="display:flex;flex-direction:column;gap:.35rem;max-height:160px;overflow-y:auto;padding:.5rem;background:var(--bg-raised);border-radius:var(--radius);border:1px solid var(--border)">
-        ${run.participants.map(p => `
+      <div class="form-label" style="margin-bottom:.5rem">Submissions (uncheck a character to exclude them from the loot split)</div>
+      <div id="modal-participants" style="display:flex;flex-direction:column;gap:.35rem;max-height:220px;overflow-y:auto;padding:.5rem;background:var(--bg-raised);border-radius:var(--radius);border:1px solid var(--border)">
+        ${(run.submissions || run.participants).map(p => `
           <div style="display:flex;align-items:center;gap:.5rem;font-size:.9rem">
-            <label style="display:flex;align-items:center;gap:.5rem;cursor:${App.user.isDropsHandler ? 'pointer' : 'default'};flex:1">
-              <input type="checkbox" class="part-check" value="${p.charId}" data-ign="${p.ign}" data-email="${p.email}" checked ${App.user.isDropsHandler ? '' : 'disabled'} style="accent-color:var(--gold)">
-              ${escHtml(p.ign)}${p.manuallyAdded ? ' <span style="font-size:.7rem;color:var(--text-muted)">(added by admin)</span>' : ''}
+            <label style="display:flex;align-items:center;gap:.5rem;cursor:${App.user.isDropsHandler ? 'pointer' : 'default'};flex:1;min-width:0">
+              <input type="checkbox" class="part-check" data-charid="${p.charId}" value="${p.charId}" data-ign="${p.ign}" data-email="${p.email}" checked ${App.user.isDropsHandler ? 'onchange="_syncPartCheckboxes(this)"' : 'disabled'} style="accent-color:var(--gold);flex-shrink:0">
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p.ign)}${p.manuallyAdded ? ' <span style="font-size:.7rem;color:var(--text-muted)">(added by admin)</span>' : ''}</span>
+              ${p.ts ? `<span style="font-size:.75rem;color:var(--text-muted);flex-shrink:0;margin-left:auto">${fmtDate(p.ts)} ${fmtTime(p.ts)}</span>` : ''}
             </label>
-            ${App.user.isDropsHandler ? `<button type="button" class="btn btn-sm btn-danger" style="padding:.15rem .5rem" title="Remove attendee entirely (also removes points earned)" onclick="removeRunParticipant(${idx}, '${p.attendanceId}', '${String(p.ign).replace(/'/g, "\\'")}')">🗑</button>` : ''}
+            ${App.user.isDropsHandler ? `<button type="button" class="btn btn-sm btn-danger" style="padding:.15rem .5rem;flex-shrink:0" title="Delete this submission (also removes the points it earned)" onclick="removeRunParticipant(${idx}, '${p.attendanceId}', '${String(p.ign).replace(/'/g, "\\'")}')">🗑</button>` : ''}
           </div>`).join('')}
       </div>
       ${App.user.isDropsHandler ? `
@@ -3228,6 +3229,17 @@ function addRunParticipant(idx, charId, ign) {
       toast(res.error || 'Error', 'error');
     }
   }).catch(() => toast('Network error', 'error'));
+}
+
+// A character can have multiple submission rows in one run (e.g. Kooby
+// Dic, which has no submission cooldown — see NO_COOLDOWN_BOSSES on the
+// backend). The loot split is still per-character, not per-submission, so
+// checking/unchecking any one of that character's rows should check/
+// uncheck all of them together, rather than leaving the split state
+// ambiguous.
+function _syncPartCheckboxes(changedBox) {
+  const charId = changedBox.dataset.charid;
+  document.querySelectorAll(`.part-check[data-charid="${charId}"]`).forEach(cb => { cb.checked = changedBox.checked; });
 }
 
 function removeRunParticipant(idx, attendanceId, ign) {

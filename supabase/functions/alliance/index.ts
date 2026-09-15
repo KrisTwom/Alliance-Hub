@@ -148,6 +148,18 @@ function durationForBoss(boss: string): number {
 // currently just Maintenance windows, which vary in length every time.
 // Everything else keeps ignoring client-sent duration (see durationForBoss).
 const MANUAL_DURATION_BOSSES = new Set(['Maintenance']);
+
+// Bosses exempt from the normal submission restrictions — no per-window
+// duplicate-submission cooldown (see submitAttendance) and no requirement
+// that a recent scheduled event exists (see checkAttendanceEligibility).
+// Currently just Kooby Dic: it can spawn several times within minutes, so
+// a member legitimately needs to log the same char+boss repeatedly in
+// quick succession, which the normal GROUP_WINDOW_MS-based dedupe would
+// otherwise block for 4h after the first submission. Since submissions
+// for these bosses are never deduped, the Drops confirm popup shows every
+// individual submission rather than one row per unique character — see
+// getGroupedRuns/buildRun's `submissions` field.
+const NO_COOLDOWN_BOSSES = new Set(['Kooby Dic']);
 function resolveEventDuration(boss: string, clientDuration: unknown): number {
   if (MANUAL_DURATION_BOSSES.has(boss)) {
     const n = Number(clientDuration);
@@ -444,10 +456,12 @@ async function getLeaderboard(supabase: ReturnType<typeof db>) {
   // frontend's per-class filter can compute accurate class rankings —
   // filtering client-side against only the top 20 overall would silently
   // miss lower-ranked players of an underrepresented class.
+  // Was .gt('points', 0), which silently hid anyone sitting at exactly 0
+  // or below (e.g. a manual admin correction that pushed someone
+  // negative) instead of just ranking them at the bottom.
   const { data, error } = await supabase
     .from('characters')
     .select('char_id, ign, points, char_class')
-    .gt('points', 0)
     .order('points', { ascending: false })
     .limit(500);
   if (error) throw error;
@@ -810,6 +824,28 @@ async function updateCharacter(supabase: ReturnType<typeof db>, email: string, c
   if (fields.email     !== undefined) update.email      = fields.email;
   const { error } = await supabase.from('characters').update(update).eq('char_id', charId);
   if (error) throw error;
+
+  // An IGN change is a straight rename of this same char_id — points,
+  // lifetime_points, run_participants, character_links etc. all live keyed
+  // off char_id, so they carry over automatically with no extra work. But
+  // `ign` is also copied (denormalized) onto individual rows at write time
+  // for display — attendance.ign and payouts.ign — rather than looked up
+  // live each time. Without this cascade, only NEW rows created after the
+  // rename would show the new name; every existing Attendance History row,
+  // Drops run popup entry, and Payouts page row for this character would
+  // keep showing the old IGN forever. This is what makes a plain
+  // characters.ign edit (e.g. directly in Supabase) insufficient on its
+  // own — this is the one extra step that makes it actually equivalent to
+  // the old sheet's find-and-replace.
+  if (fields.ign !== undefined && fields.ign) {
+    const [{ error: ae }, { error: pe }] = await Promise.all([
+      supabase.from('attendance').update({ ign: fields.ign }).eq('char_id', charId),
+      supabase.from('payouts').update({ ign: fields.ign }).eq('char_id', charId),
+    ]);
+    if (ae) throw ae;
+    if (pe) throw pe;
+  }
+
   return { success: true };
 }
 
@@ -890,6 +926,7 @@ async function checkAttendanceEligibility(supabase: ReturnType<typeof db>, bosse
   const maintAnchor = maintenanceEnds.length ? Math.max(...maintenanceEnds) : null;
 
   const blocked = bosses.filter(boss => {
+    if (NO_COOLDOWN_BOSSES.has(boss)) return false; // no restrictions — see NO_COOLDOWN_BOSSES
     const anchors = anchorsByBoss[boss] || [];
     let eligible = anchors.some(a => nowMs >= a && nowMs <= a + ATTENDANCE_WINDOW_MS);
     if (!eligible && maintAnchor !== null && boss !== 'Library Boss' && boss !== 'Siege') {
@@ -945,12 +982,15 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   const resetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
   const effectiveFloorMs = (resetMs != null && resetMs > windowFloorMs) ? resetMs : windowFloorMs;
   const windowFloor = new Date(effectiveFloorMs).toISOString();
-  const { data: recent } = await supabase
-    .from('attendance')
-    .select('boss')
-    .eq('char_id', charId)
-    .in('boss', bosses)
-    .gte('ts', windowFloor);
+  const dedupeCheckBosses = bosses.filter(b => !NO_COOLDOWN_BOSSES.has(b));
+  const { data: recent } = dedupeCheckBosses.length
+    ? await supabase
+        .from('attendance')
+        .select('boss')
+        .eq('char_id', charId)
+        .in('boss', dedupeCheckBosses)
+        .gte('ts', windowFloor)
+    : { data: [] as Array<{ boss: string }> };
   const alreadyThisWindow = new Set((recent || []).map(r => r.boss));
   const duplicateBosses = bosses.filter(b => alreadyThisWindow.has(b));
   const newBosses = bosses.filter(b => !alreadyThisWindow.has(b));
@@ -1246,6 +1286,20 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
     participantsByRun[r.run_id].push(r.char_id);
   });
 
+  // Ground truth for the confirm popup's per-submission list (raw
+  // attendance rows, not deduped by charId — a boss like Kooby Dic has no
+  // submission cooldown, see NO_COOLDOWN_BOSSES, so the same character can
+  // legitimately have several rows in one run). Built from attRows, same
+  // 30-day cutoff as everything else here.
+  const submissionsByRun: Record<string, Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean; ts: string }>> = {};
+  (attRows || []).forEach(r => {
+    if (!r.run_id) return;
+    (submissionsByRun[r.run_id] ||= []).push({
+      charId: r.char_id, ign: r.ign, email: r.email, attendanceId: r.id,
+      manuallyAdded: !!r.manually_added, ts: r.ts,
+    });
+  });
+
   // A manual window reset (see resetWindow()) forces a hard break in the
   // grouping chain for every boss, even if the next submission would
   // otherwise land inside the normal 2h window — e.g. after an emergency
@@ -1261,7 +1315,7 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
     bossGroups[r.boss].push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id, ign: r.ign, email: r.email, manuallyAdded: !!r.manually_added, runId: r.run_id || '' });
   });
 
-  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; linkedRunId: string; participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> }> = [];
+  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; linkedRunId: string; participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }>; submissions: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean; ts: string }> }> = [];
   Object.keys(bossGroups).forEach(boss => {
     const entries = bossGroups[boss].sort((a, b) => a.ts - b.ts);
     let windowStart: number | null = null;
@@ -1323,6 +1377,11 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
     // trust confirmedParticipants when it actually has entries; otherwise the
     // raw regroup from attendance is the best available truth.
     const participants = (confirmedParticipants && confirmedParticipants.length) ? confirmedParticipants : run.participants;
+    // Same null-vs-empty-array caution as confirmedParticipants above: only
+    // trust the confirmed-run's raw submission rows when there actually are
+    // any, otherwise fall back to the live regroup's submissions.
+    const confirmedSubmissions = saved ? (submissionsByRun[saved.run_id] || []) : null;
+    const submissions = (confirmedSubmissions && confirmedSubmissions.length) ? confirmedSubmissions : run.submissions;
     return {
       runId:            saved ? saved.run_id : null,
       boss:             run.boss,
@@ -1330,6 +1389,7 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
       windowEnd:        new Date(run.windowEnd).toISOString(),
       participants,
       participantCount: participants.length,
+      submissions,
       drops:            saved ? saved.drops : '',
       status:           saved ? saved.status : 'Not Confirmed',
       notes:            saved ? saved.notes  : '',
@@ -1339,10 +1399,18 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   });
 }
 
-function buildRun(boss: string, windowStart: number, entries: Array<{ id: string; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string }>) {
+function buildRun(boss: string, windowStart: number, entries: Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string }>) {
   const seen = new Set<string>();
   const participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> = [];
   entries.forEach(e => { if (!seen.has(e.charId)) { seen.add(e.charId); participants.push({ charId: e.charId, ign: e.ign, email: e.email, attendanceId: e.id, manuallyAdded: e.manuallyAdded }); } });
+
+  // Raw per-submission list (NOT deduped by charId) for the Drops confirm
+  // popup — see NO_COOLDOWN_BOSSES / submissionsByRun above for why a
+  // single character can have more than one row here. Most recent first,
+  // matching how Attendance History orders things.
+  const submissions = [...entries]
+    .sort((a, b) => b.ts - a.ts)
+    .map(e => ({ charId: e.charId, ign: e.ign, email: e.email, attendanceId: e.id, manuallyAdded: e.manuallyAdded, ts: new Date(e.ts).toISOString() }));
 
   // Which confirmed run (if any) this window is actually linked to — read
   // directly off the attendance rows' own run_id rather than re-derived
@@ -1362,7 +1430,7 @@ function buildRun(boss: string, windowStart: number, entries: Array<{ id: string
   let bestCount = 0;
   Object.keys(runIdCounts).forEach(id => { if (runIdCounts[id] > bestCount) { bestCount = runIdCounts[id]; linkedRunId = id; } });
 
-  return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, linkedRunId, participants };
+  return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, linkedRunId, participants, submissions };
 }
 
 // ============================================================
@@ -1758,6 +1826,35 @@ async function getLateLinkedAttendance(supabase: ReturnType<typeof db>, email: s
 // correct) marked manually_added for audit. If the run is already
 // Confirmed, also upserts run_participants directly since that run won't
 // be re-derived from attendance the way a pending run is.
+// Replicates the exact rolling-gap grouping getGroupedRuns/buildRun uses
+// (a run only ends once GROUP_WINDOW_MS has elapsed since its last
+// recorded kill) and returns the rows belonging to whichever run starts
+// exactly at windowStartMs. `rows` must be pre-sorted ascending by ts and
+// must start no later than windowStartMs (so the group's true first
+// entry is present) — callers query with `gte('ts', windowStart)`.
+// Shared by addRunParticipant and linkAttendanceToRun so both stay
+// consistent with the real grouping algorithm instead of each
+// re-deriving their own (previously fixed-anchor) approximation.
+function _rollingGroupStartingAt<T extends { ts: string }>(rows: T[], windowStartMs: number): T[] {
+  let groupStartMs: number | null = null;
+  let lastTs: number | null = null;
+  let current: T[] = [];
+  for (const r of rows) {
+    const ts = new Date(r.ts).getTime();
+    if (groupStartMs === null) { groupStartMs = ts; lastTs = ts; current = [r]; }
+    else if (ts - lastTs! <= GROUP_WINDOW_MS) { current.push(r); lastTs = ts; }
+    else {
+      if (groupStartMs === windowStartMs) return current;
+      groupStartMs = ts; lastTs = ts; current = [r];
+    }
+  }
+  return groupStartMs === windowStartMs ? current : [];
+}
+
+function _charInRollingWindow(rows: Array<{ ts: string; char_id: string }>, windowStartMs: number, charId: string): boolean {
+  return _rollingGroupStartingAt(rows, windowStartMs).some(r => r.char_id === charId);
+}
+
 async function addRunParticipant(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   if (!(await isDropsHandler(supabase, email))) return { error: 'Only a Drops Handler or Super Admin can register attendance into a run.' };
@@ -1774,17 +1871,25 @@ async function addRunParticipant(supabase: ReturnType<typeof db>, email: string,
 
   // Already a participant (via attendance) for this boss+window? Don't
   // double-credit points if an admin clicks add twice.
+  //
+  // This used to bound the check to a FIXED windowStart..windowStart+4h
+  // span, same class of bug already fixed in getGroupedRuns/buildRun and
+  // linkLateSubmissions: a fixed anchor treats the window as a rigid 4h
+  // bucket from the run's first kill, so it can both false-negative (miss
+  // a genuine dupe landing just past the fixed end) and false-positive
+  // relative to how the run was actually grouped. Reuse the same
+  // rolling-gap check instead — walk this boss's rows chronologically
+  // from windowStart and see whether the charId shows up before a gap
+  // longer than GROUP_WINDOW_MS ever occurs.
   const windowStartMs = new Date(windowStart).getTime();
-  const windowEndMs   = windowStartMs + GROUP_WINDOW_MS;
   const { data: existingRows } = await supabase
     .from('attendance')
-    .select('id, ts')
-    .eq('char_id', charId)
-    .eq('boss', boss);
-  const alreadyIn = (existingRows || []).some(r => {
-    const t = new Date(r.ts).getTime();
-    return t >= windowStartMs && t <= windowEndMs;
-  });
+    .select('id, ts, char_id')
+    .eq('boss', boss)
+    .gte('ts', windowStart)
+    .order('ts', { ascending: true });
+  const existingRowsTyped: Array<{ id: string; ts: string; char_id: string }> = existingRows || [];
+  const alreadyIn = _charInRollingWindow(existingRowsTyped, windowStartMs, charId);
   if (alreadyIn) return { error: `${char.ign} is already recorded for this run.` };
 
   const points = BOSS_POINTS[boss] || 0;
@@ -1921,7 +2026,6 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
 
 async function linkAttendanceToRun(supabase: ReturnType<typeof db>, runId: string, boss: string, windowStart: string, charIds: string[]) {
   const windowStartMs = new Date(windowStart).getTime();
-  const windowEndMs   = windowStartMs + GROUP_WINDOW_MS;
 
   // Intentionally NOT filtered by charIds. charIds is just the frontend's
   // snapshot of who was checked when the confirm modal was opened — if
@@ -1933,16 +2037,32 @@ async function linkAttendanceToRun(supabase: ReturnType<typeof db>, runId: strin
   // is only used by the caller (confirmRun) to seed run_participants —
   // this function tells it who it actually linked so late arrivals get
   // folded in too.
-  const { data: rows } = await supabase
+  //
+  // The match window used to be a FIXED windowStart..windowStart+4h span.
+  // That's the same fixed-anchor bug already fixed in getGroupedRuns and
+  // linkLateSubmissions: unlinked rows sitting just past the fixed end
+  // (but still within a true rolling gap of the run's last kill) got
+  // skipped, while — worse — an unrelated later kill within the fixed 4h
+  // span but AFTER a real >4h gap had already started a new run got
+  // wrongly linked to this old one. Reuse the exact rolling-gap grouping
+  // instead, so this only ever links rows that the real algorithm would
+  // also consider part of the same run.
+  // Fetch the FULL chain (linked + unlinked) so the rolling-gap walk sees
+  // real chronological continuity — filtering to run_id='' up front would
+  // silently drop the window's own anchor row on a re-confirm/edit (its
+  // rows already got linked on the first confirm), making the chain
+  // start from the wrong row. Only the still-unlinked rows within the
+  // correctly-identified group actually get updated below.
+  const { data: linkRows } = await supabase
     .from('attendance')
-    .select('id, ts, char_id')
+    .select('id, ts, char_id, run_id')
     .eq('boss', boss)
-    .eq('run_id', '');
+    .gte('ts', windowStart)
+    .order('ts', { ascending: true });
+  const rows: Array<{ id: string; ts: string; char_id: string; run_id: string }> = linkRows || [];
 
-  const toLink = (rows || []).filter(r => {
-    const ts = new Date(r.ts).getTime();
-    return ts >= windowStartMs && ts <= windowEndMs;
-  });
+  const group = _rollingGroupStartingAt(rows, windowStartMs);
+  const toLink = group.filter(r => !r.run_id);
 
   if (toLink.length > 0) {
     const { error: linkErr } = await supabase.from('attendance').update({ run_id: runId }).in('id', toLink.map(r => r.id));
