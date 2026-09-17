@@ -178,7 +178,6 @@ const Cache = {
     get_all_attendance:   60 * 1000,        // 1 min — admin full-alliance log
     get_my_payouts:       2  * 60 * 1000,
     get_grouped_runs:     90 * 1000,        // 90 sec (changes when attendance submitted)
-    get_window_resets:    60 * 1000,
     get_char_attendance:  30 * 1000,
     get_late_linked_attendance: 60 * 1000,
     get_inventory:        2  * 60 * 1000,
@@ -1540,7 +1539,7 @@ function _renderAttHistoryTable() {
           <td style="color:var(--gold)">+${a.points}</td>
           <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
           <td style="font-size:.78rem;color:${a.runId ? 'var(--text-secondary)' : 'var(--danger)'}">${a.runId ? 'Linked' : 'Unconfirmed'}</td>
-          ${(App.user.isAdmin && App.user.isDropsHandler) ? `<td><button class="btn btn-sm btn-secondary" style="padding:.15rem .5rem" title="Fix this submission" onclick="openEditAttendanceModal('${a.id}')">✏️</button></td>` : ''}
+          ${(App.user.isAdmin && App.user.isDropsHandler) ? `<td><button class="btn btn-sm btn-danger" style="padding:.15rem .5rem" title="Delete this submission (also removes the points it earned)" onclick="deleteAttHistoryRow('${a.id}')">🗑</button></td>` : ''}
         </tr>`).join('')}</tbody>
       </table>`
     : `<table class="data-table">
@@ -1598,81 +1597,31 @@ function renderMyAttendanceHistory() {
 }
 
 // ============================================================
-//  FIX ATTENDANCE SUBMISSION  (admin escape hatch)
+//  DELETE ATTENDANCE SUBMISSION  (Attendance History — admin)
 // ============================================================
-// A member picking the wrong boss, or a client-clock glitch landing a
-// submission in the wrong grouping window, used to require a full
-// historical repair script to fix (see repairRunLinks) — expensive,
-// risky, and overkill for a single bad row. This lets a Drops
-// Handler/Super Admin fix ONE row directly: correct its boss, and/or
-// manually pick which confirmed run it actually belongs to (or detach
-// it back to Unconfirmed). No auto-grouping involved — the admin's pick
-// is exactly what gets written.
-function openEditAttendanceModal(attId) {
-  const row = (window._attHistoryRows || []).find(a => a.id === attId);
-  if (!row) return;
-  const bossOptions = _allBossNames().map(b =>
-    `<option value="${escHtml(b)}" ${b === row.boss ? 'selected' : ''}>${escHtml(b)}</option>`
-  ).join('');
-
-  showModal(`
-    <div class="modal-title">✏️ Fix Attendance Submission</div>
-    <div style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">
-      ${escHtml(row.ign || '—')} · submitted ${fmtDate(row.timestamp)} ${fmtTime(row.timestamp)}
-    </div>
-    <div class="form-group">
-      <label class="form-label">Boss</label>
-      <select class="form-select" id="edit-att-boss" onchange="_onEditAttBossChange()">${bossOptions}</select>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Assign to run</label>
-      <select class="form-select" id="edit-att-run"><option value="">Loading…</option></select>
-    </div>
-    <div style="display:flex;gap:.75rem;margin-top:1.5rem">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="edit-att-save-btn" disabled onclick="_saveEditAttendance('${attId}')">Save</button>
-    </div>
-  `);
-  _loadRunOptionsForEditModal(row.boss, row.runId);
-}
-
-function _onEditAttBossChange() {
-  const boss = document.getElementById('edit-att-boss').value;
-  // Boss changed — the old run pick no longer applies (different boss),
-  // so don't try to preselect it; default to Unconfirmed until the admin
-  // picks the right run for the new boss.
-  _loadRunOptionsForEditModal(boss, '');
-}
-
-function _loadRunOptionsForEditModal(boss, preselectRunId) {
-  const sel = document.getElementById('edit-att-run');
-  const btn = document.getElementById('edit-att-save-btn');
-  if (!sel) return;
-  if (btn) btn.disabled = true; // don't let Save fire while options (and the correct preselect) are still loading
-  sel.innerHTML = `<option value="">— Unconfirmed —</option>`;
-  API.read('get_runs_for_boss', { boss }).then(runs => {
-    const sel2 = document.getElementById('edit-att-run');
-    if (!sel2) return;
-    sel2.innerHTML = `<option value="">— Unconfirmed —</option>` + (runs || []).map(r =>
-      `<option value="${r.runId}" ${r.runId === preselectRunId ? 'selected' : ''}>${fmtDate(r.windowStart)} ${fmtTime(r.windowStart)}</option>`
-    ).join('');
-    const btn2 = document.getElementById('edit-att-save-btn');
-    if (btn2) btn2.disabled = false;
-  });
-}
-
-function _saveEditAttendance(attId) {
-  const boss  = document.getElementById('edit-att-boss').value;
-  const runId = document.getElementById('edit-att-run').value;
-  const btn   = document.getElementById('edit-att-save-btn');
-  btn.disabled = true; btn.textContent = 'Saving…';
-
-  API.write('edit_attendance_row', { attendanceId: attId, boss, runId }, ['get_all_attendance', 'get_grouped_runs'])
-    .then(res => {
-      if (res.success) { toast('Attendance updated', 'success'); closeModal(); renderMyAttendanceHistory(); }
-      else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = 'Save'; }
-    })
-    .catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = 'Save'; });
+// Attendance History used to also have a "Fix" tool here (boss
+// correction + manual run assignment). With event-anchored grouping,
+// mis-grouping shouldn't really happen anymore, so this page is now
+// delete-only — reassigning a submission to a different run lives on
+// the Drops page instead (see openReassignSubmission), closer to where
+// an admin would actually notice something needs fixing.
+function deleteAttHistoryRow(attId) {
+  if (!confirm('Permanently delete this attendance entry? This also removes the points it earned, and — if part of a confirmed run — removes them from that run\'s gold split.')) return;
+  API.write('delete_attendance', { id: attId },
+    ['get_roster', 'get_grouped_runs', 'get_leaderboard', 'get_my_attendance', 'get_char_attendance', 'get_all_attendance', 'get_inventory']
+  ).then(res => {
+    if (res.success) {
+      toast(
+        res.alreadySold
+          ? 'Deleted. Note: an item from this run already sold — that payout wasn\'t automatically re-split.'
+          : 'Attendance entry deleted.',
+        res.alreadySold ? 'warn' : 'success'
+      );
+      renderMyAttendanceHistory();
+    } else {
+      toast(res.error || 'Error', 'error');
+    }
+  }).catch(() => toast('Network error', 'error'));
 }
 
 // ============================================================
@@ -2976,7 +2925,7 @@ function renderDrops() {
     el.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
         <div class="section-title" style="margin-bottom:0">💎 Boss Runs</div>
-        <div id="reset-window-btn-wrap">${App.user.isAdmin ? `<button class="btn btn-secondary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openResetWindowModal()">🔄 Reset Window</button>` : ''}</div>
+        <div id="new-run-btn-wrap">${App.user.isDropsHandler ? `<button class="btn btn-secondary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openNewRunModal()">+ New Run</button>` : ''}</div>
       </div>
       <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
       <div class="table-scroll">
@@ -2996,122 +2945,54 @@ function renderDrops() {
           </tbody>
         </table>
       </div>`;
-    if (App.user.isAdmin) _refreshResetWindowButton();
   });
 }
 
 // ============================================================
-//  RESET WINDOW (admin — emergency maintenance handling)
-//  Now a 3-step confirmation flow that schedules a future reset time
-//  instead of resetting immediately. See scheduleWindowReset() /
-//  executeScheduledResetIfDue() in index.ts for the backend side and
-//  its cron caveat.
+//  NEW RUN (Drops page) — a "run" is just a scheduled event now (see
+//  event-anchored grouping in get_grouped_runs), so creating one is
+//  exactly createEvent under the hood. This is a trimmed version of the
+//  Create Event modal, surfaced directly on the Drops page so a Drops
+//  Handler never has to leave it to open a boss's run.
 // ============================================================
-
-// Checks whether a reset is already pending and updates the button to
-// either the normal action button or a disabled "scheduled" state.
-// Also opportunistically fires the reset if its time has arrived.
-function _refreshResetWindowButton() {
-  API.read('get_window_resets').then(info => {
-    const wrap = document.getElementById('reset-window-btn-wrap');
-    if (!wrap) return;
-    if (info?.pendingResetAt) {
-      const dueMs = new Date(info.pendingResetAt).getTime();
-      if (Date.now() >= dueMs) {
-        // Our turn to actually fire it — safe to call repeatedly, only
-        // the client that happens to poll after the due time does anything.
-        API.write('execute_scheduled_reset', {}, ['get_grouped_runs', 'get_window_resets']).then(res => {
-          if (res.executed) { toast('Scheduled window reset executed.', 'success'); renderDrops(); }
-        });
-        return;
-      }
-      wrap.innerHTML = `<button class="btn btn-secondary" disabled title="A reset is already scheduled for ${fmtDate(info.pendingResetAt)} ${fmtTime(info.pendingResetAt)}" style="opacity:.5;cursor:not-allowed">🔄 Reset scheduled — ${fmtTime(info.pendingResetAt)}</button>`;
-    } else {
-      wrap.innerHTML = `<button class="btn btn-secondary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openResetWindowModal()">🔄 Reset Window</button>`;
-    }
-  }).catch(() => {});
-}
-
-let _pendingResetScheduledFor = null;
-
-function openResetWindowModal() {
+function openNewRunModal() {
+  const bossOptions = _allBossNames().filter(b => b !== 'Siege' && b !== 'Library Boss');
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const defaultVal = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
   showModal(`
-    <div class="modal-title">🔄 Reset Boss Window</div>
+    <div class="modal-title">+ New Run</div>
     <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem;line-height:1.5">
-      Use this after an emergency maintenance/respawn. It forces the next attendance
-      submissions for <strong>every boss</strong> into brand-new run windows, even if they
-      land within 2 hours of the last one. Already-confirmed runs are not affected.
-      An announcement will be posted immediately telling the alliance when it'll happen.
+      Creates the scheduled event that opens attendance submissions for this
+      boss — the run itself appears here automatically once people start
+      submitting against it.
     </p>
     <div class="form-group">
-      <label class="form-label">Reset at</label>
-      <input class="form-input" id="reset-window-time" type="datetime-local">
+      <label class="form-label">Boss</label>
+      <select class="form-input" id="new-run-boss">${bossOptions.map(b => `<option value="${escHtml(b)}">${escHtml(b)}</option>`).join('')}</select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Time</label>
+      <input class="form-input" id="new-run-time" type="datetime-local" value="${defaultVal}">
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="_resetWindowStep1()">Continue</button>
+      <button class="btn btn-primary" id="new-run-submit-btn" onclick="submitNewRun()">Create</button>
     </div>`);
 }
 
-function _resetWindowStep1() {
-  const raw = document.getElementById('reset-window-time').value;
+function submitNewRun() {
+  const boss = document.getElementById('new-run-boss').value;
+  const raw  = document.getElementById('new-run-time').value;
   if (!raw) { toast('Pick a time first.', 'error'); return; }
-  const iso = new Date(raw).toISOString();
-  if (new Date(iso).getTime() <= Date.now()) { toast('That time is already in the past.', 'error'); return; }
-  _pendingResetScheduledFor = iso;
+  const btn = document.getElementById('new-run-submit-btn');
+  btn.disabled = true; btn.textContent = 'Creating…';
 
-  showModal(`
-    <div class="modal-title">⚠️ Confirm (1 of 3)</div>
-    <p style="color:var(--text-secondary);font-size:.9rem;margin-bottom:1rem">
-      You're scheduling a boss window reset for <strong>${fmtDate(iso)} ${fmtTime(iso)}</strong>.
-      This affects every boss and every member. Continue?
-    </p>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="_resetWindowStep2()">Continue</button>
-    </div>`);
-}
-
-function _resetWindowStep2() {
-  showModal(`
-    <div class="modal-title">⚠️ Confirm (2 of 3)</div>
-    <p style="color:var(--text-secondary);font-size:.9rem;margin-bottom:1rem">
-      Second confirmation — this cannot be undone once it fires, and an announcement
-      goes out to the whole alliance the moment you confirm the final step. Still sure?
-    </p>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-danger" onclick="_resetWindowStep3()">Continue</button>
-    </div>`);
-}
-
-function _resetWindowStep3() {
-  showModal(`
-    <div class="modal-title">🛑 Final Confirmation (3 of 3)</div>
-    <p style="color:var(--text-secondary);font-size:.9rem;margin-bottom:1rem">
-      This is the last step. Clicking below immediately posts the announcement and
-      locks in the reset for <strong>${fmtDate(_pendingResetScheduledFor)} ${fmtTime(_pendingResetScheduledFor)}</strong>.
-    </p>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-danger" id="reset-window-final-btn" onclick="submitWindowReset()">🔄 Schedule Reset</button>
-    </div>`);
-}
-
-function submitWindowReset() {
-  const btn = document.getElementById('reset-window-final-btn');
-  btn.disabled = true; btn.textContent = '⏳ Scheduling…';
-
-  API.write('schedule_window_reset', { scheduledFor: _pendingResetScheduledFor },
-    ['get_window_resets', 'get_announcements']).then(res => {
-    if (res.success) {
-      toast('Reset scheduled and announcement posted.', 'success');
-      closeModal(); _pendingResetScheduledFor = null;
-      renderDrops();
-    } else {
-      toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '🔄 Schedule Reset';
-    }
-  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '🔄 Schedule Reset'; });
+  API.write('create_event', { boss, scheduledAt: new Date(raw).toISOString() }, ['get_grouped_runs', 'get_events'])
+    .then(res => {
+      if (res.success) { toast(`${boss} run created.`, 'success'); closeModal(); renderDrops(); }
+      else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = 'Create'; }
+    }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = 'Create'; });
 }
 
 function toggleDropQty(cb) {
@@ -3149,6 +3030,7 @@ function openRunModal(idx) {
               <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p.ign)}${p.manuallyAdded ? ' <span style="font-size:.7rem;color:var(--text-muted)">(added by admin)</span>' : ''}</span>
               ${p.ts ? `<span style="font-size:.75rem;color:var(--text-muted);flex-shrink:0;margin-left:auto">${fmtDate(p.ts)} ${fmtTime(p.ts)}</span>` : ''}
             </label>
+            ${App.user.isDropsHandler ? `<button type="button" class="btn btn-sm btn-secondary" style="padding:.15rem .4rem;flex-shrink:0" title="Move this submission to a different run" onclick="openReassignSubmission(${idx}, '${p.attendanceId}', '${String(p.ign).replace(/'/g, "\\'")}')">↔</button>` : ''}
             ${App.user.isDropsHandler ? `<button type="button" class="btn btn-sm btn-danger" style="padding:.15rem .5rem;flex-shrink:0" title="Delete this submission (also removes the points it earned)" onclick="removeRunParticipant(${idx}, '${p.attendanceId}', '${String(p.ign).replace(/'/g, "\\'")}')">🗑</button>` : ''}
           </div>`).join('')}
       </div>
@@ -3219,7 +3101,7 @@ function addRunParticipant(idx, charId, ign) {
   const box = document.getElementById('add-participant-results');
   if (box) { box.style.display = 'none'; }
 
-  API.write('add_run_participant', { boss: run.boss, windowStart: run.windowStart, runId: run.runId, charId },
+  API.write('add_run_participant', { boss: run.boss, windowStart: run.windowStart, eventId: run.eventId || '', runId: run.runId, charId },
     ['get_grouped_runs', 'get_leaderboard', 'get_roster', 'get_my_attendance']
   ).then(res => {
     if (res.success) {
@@ -3240,6 +3122,50 @@ function addRunParticipant(idx, charId, ign) {
 function _syncPartCheckboxes(changedBox) {
   const charId = changedBox.dataset.charid;
   document.querySelectorAll(`.part-check[data-charid="${charId}"]`).forEach(cb => { cb.checked = changedBox.checked; });
+}
+
+// Moves one submission to a different existing run for the same boss —
+// the Drops-page replacement for what used to be Attendance History's
+// "Assign to run" tool. With event-anchored grouping this should rarely
+// be needed (mis-grouping isn't really possible anymore), but it still
+// matters for a wrong-boss correction or for Kooby Dic's legacy
+// rolling-gap grouping. Reuses editAttendanceRow on the backend — same
+// action the old tool called.
+function openReassignSubmission(idx, attendanceId, ign) {
+  const run = window._runs[idx];
+  if (!attendanceId) { toast('Nothing to move — no attendance record found for this entry.', 'error'); return; }
+
+  API.read('get_runs_for_boss', { boss: run.boss }).then(otherRuns => {
+    const options = (otherRuns || []).filter(r => r.runId !== run.runId);
+    showModal(`
+      <div class="modal-title">Move ${escHtml(ign)}'s submission</div>
+      <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Move this ${escHtml(run.boss)} submission to a different confirmed run, or detach it entirely.</p>
+      <div class="form-group">
+        <label class="form-label">Target run</label>
+        <select class="form-input" id="reassign-target">
+          <option value="">— Detach (not confirmed / unlinked) —</option>
+          ${options.map(r => `<option value="${r.runId}">${fmtDate(r.windowStart)} ${fmtTime(r.windowStart)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" id="reassign-submit-btn" onclick="submitReassignSubmission(${idx}, '${attendanceId}')">Move</button>
+      </div>`);
+  });
+}
+
+function submitReassignSubmission(idx, attendanceId) {
+  const run = window._runs[idx];
+  const runId = document.getElementById('reassign-target').value;
+  const btn = document.getElementById('reassign-submit-btn');
+  btn.disabled = true; btn.textContent = 'Moving…';
+
+  API.write('edit_attendance_row', { attendanceId, runId },
+    ['get_grouped_runs', 'get_leaderboard', 'get_char_attendance', 'get_my_attendance', 'get_inventory']
+  ).then(res => {
+    if (res.success) { toast('Submission moved.', 'success'); _reopenRunModal(run.boss, run.windowStart); }
+    else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = 'Move'; }
+  }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = 'Move'; });
 }
 
 function removeRunParticipant(idx, attendanceId, ign) {
@@ -3308,7 +3234,7 @@ function submitRunConfirm(idx) {
       });
     }
     return API.write('confirm_run',
-      { runData: { boss:run.boss, windowStart:run.windowStart, participants, drops, notes, existingRunId:run.runId } },
+      { runData: { boss:run.boss, windowStart:run.windowStart, eventId:run.eventId || '', participants, drops, notes, existingRunId:run.runId } },
       ['get_grouped_runs', 'get_inventory']
     );
   }).then(res => {

@@ -344,10 +344,10 @@ Deno.serve(async (req) => {
       // and super-admin gated, but feel free to remove this line (and
       // the function) once you've confirmed the Drops page looks right.
       case 'repair_run_links':    return ok(await repairRunLinks(supabase, email));
-      case 'get_window_resets':   return ok(await getWindowResets(supabase, email));
-      case 'reset_window':        return ok(await resetWindow(supabase, email));
-      case 'schedule_window_reset': return ok(await scheduleWindowReset(supabase, email, data));
-      case 'execute_scheduled_reset': return ok(await executeScheduledResetIfDue(supabase, email));
+      // Reset Window (get_window_resets / reset_window / schedule_window_reset
+      // / execute_scheduled_reset) was removed — Maintenance events now serve
+      // as the global cutoff automatically (see checkAttendanceEligibility's
+      // maintAnchor capping and getGroupedRuns' event-anchored grouping).
       case 'get_char_attendance': return ok(await getAttendanceForChar(supabase, email, data.charId as string));
       case 'delete_attendance':   return ok(await deleteAttendance(supabase, email, data.id as string));
       case 'get_late_linked_attendance': return ok(await getLateLinkedAttendance(supabase, email));
@@ -895,7 +895,7 @@ async function getCharDetails(supabase: ReturnType<typeof db>, email: string, ch
 // Exception: a Maintenance event's END time opens the same 3h window for
 // EVERY boss/mini except Library Boss and Siege (those stay on their own
 // fixed schedule regardless of maintenance).
-async function checkAttendanceEligibility(supabase: ReturnType<typeof db>, bosses: string[], nowMs: number): Promise<{ ok: true } | { ok: false; blocked: string[] }> {
+async function checkAttendanceEligibility(supabase: ReturnType<typeof db>, bosses: string[], nowMs: number): Promise<{ ok: true; eventIdByBoss: Record<string, string> } | { ok: false; blocked: string[] }> {
   // Generous lookback pad — Maintenance windows can run long, and this
   // is a cheap over-fetch either way.
   const lookbackMs = nowMs - ATTENDANCE_WINDOW_MS - 24 * 60 * 60 * 1000;
@@ -903,39 +903,69 @@ async function checkAttendanceEligibility(supabase: ReturnType<typeof db>, bosse
 
   const { data: evRows } = await supabase
     .from('events')
-    .select('boss, scheduled_at, duration_minutes')
+    .select('event_id, boss, scheduled_at, duration_minutes')
     .in('boss', relevantBosses)
     .gte('scheduled_at', new Date(lookbackMs).toISOString())
     .lte('scheduled_at', new Date(nowMs).toISOString());
 
-  const anchorsByBoss: Record<string, number[]> = {};
-  const maintenanceEnds: number[] = [];
+  const anchorsByBoss: Record<string, Array<{ eventId: string; anchorMs: number }>> = {};
+  let maintAnchor: number | null = null;
+  let maintEventId: string | null = null;
   (evRows || []).forEach(r => {
     const startMs = new Date(r.scheduled_at as string).getTime();
     const endMs = startMs + (Number(r.duration_minutes) || 0) * 60000;
-    if (r.boss === 'Maintenance') { maintenanceEnds.push(endMs); return; }
-    (anchorsByBoss[r.boss as string] ||= []).push(r.boss === 'Siege' ? endMs : startMs);
+    if (r.boss === 'Maintenance') {
+      if (maintAnchor === null || endMs > maintAnchor) { maintAnchor = endMs; maintEventId = r.event_id as string; }
+      return;
+    }
+    (anchorsByBoss[r.boss as string] ||= []).push({ eventId: r.event_id as string, anchorMs: r.boss === 'Siege' ? endMs : startMs });
   });
 
-  // Fixed Library Boss / Siege schedule — never written to `events`.
+  // Fixed Library Boss / Siege schedule — never written to `events`, so
+  // synthesize a stable per-occurrence id instead (RECUR_<boss>_<ms>) —
+  // deterministic across calls for the same occurrence, used as the
+  // grouping key in getGroupedRuns exactly like a real event_id.
   _recurringOccurrencesInWindow(lookbackMs, nowMs).forEach(o => {
     const anchor = o.boss === 'Siege' ? o.occMs + o.durationMinutes * 60000 : o.occMs;
-    (anchorsByBoss[o.boss] ||= []).push(anchor);
+    (anchorsByBoss[o.boss] ||= []).push({ eventId: o.id, anchorMs: anchor });
   });
 
-  const maintAnchor = maintenanceEnds.length ? Math.max(...maintenanceEnds) : null;
+  const eventIdByBoss: Record<string, string> = {};
+  const blocked: string[] = [];
 
-  const blocked = bosses.filter(boss => {
-    if (NO_COOLDOWN_BOSSES.has(boss)) return false; // no restrictions — see NO_COOLDOWN_BOSSES
+  for (const boss of bosses) {
+    if (NO_COOLDOWN_BOSSES.has(boss)) continue; // no restrictions — see NO_COOLDOWN_BOSSES
+
+    // A Maintenance that ENDED after a given anchor means the server came
+    // back up (every boss respawned) partway through that anchor's normal
+    // eligibility window — cap that specific anchor's window at the
+    // maintenance's end instead of its usual +3h, so late stragglers for
+    // the PRE-maintenance kill get blocked once the server's back up,
+    // rather than silently attaching to (and merging with) whatever kill
+    // happens next. An anchor created AFTER the maintenance ended (a fresh
+    // post-restart event) is completely unaffected by this.
     const anchors = anchorsByBoss[boss] || [];
-    let eligible = anchors.some(a => nowMs >= a && nowMs <= a + ATTENDANCE_WINDOW_MS);
-    if (!eligible && maintAnchor !== null && boss !== 'Library Boss' && boss !== 'Siege') {
-      eligible = nowMs >= maintAnchor && nowMs <= maintAnchor + ATTENDANCE_WINDOW_MS;
+    let best: { eventId: string; anchorMs: number } | null = null;
+    for (const a of anchors) {
+      const cappedEnd = (maintAnchor !== null && a.anchorMs < maintAnchor)
+        ? Math.min(a.anchorMs + ATTENDANCE_WINDOW_MS, maintAnchor)
+        : a.anchorMs + ATTENDANCE_WINDOW_MS;
+      if (nowMs >= a.anchorMs && nowMs <= cappedEnd && (!best || a.anchorMs > best.anchorMs)) best = a;
     }
-    return !eligible;
-  });
 
-  return blocked.length ? { ok: false, blocked } : { ok: true };
+    // Fallback: no dedicated event for this boss at all, but a Maintenance
+    // just ended — treat its end as a substitute anchor (unchanged from
+    // before). Library Boss/Siege never use this; they have their own
+    // fixed schedule above.
+    if (!best && maintAnchor !== null && maintEventId && boss !== 'Library Boss' && boss !== 'Siege') {
+      if (nowMs >= maintAnchor && nowMs <= maintAnchor + ATTENDANCE_WINDOW_MS) best = { eventId: maintEventId, anchorMs: maintAnchor };
+    }
+
+    if (best) eventIdByBoss[boss] = best.eventId;
+    else blocked.push(boss);
+  }
+
+  return blocked.length ? { ok: false, blocked } : { ok: true, eventIdByBoss };
 }
 
 async function submitAttendance(supabase: ReturnType<typeof db>, email: string, charId: string, bosses: string[]) {
@@ -963,37 +993,22 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
 
   const nowIso = now.toISOString();
 
-  // Same char + same boss within the last GROUP_WINDOW_MS = a resubmission,
-  // not a second kill (double-tap, refresh-and-resubmit, etc.). Skip it
-  // before it ever creates a duplicate row and double-credits points. This
-  // approximates "same run window" by anchoring to now rather than
-  // replicating the full run-chain grouping logic from getGroupedRuns.
-  //
-  // Exception: an admin-triggered window reset (see resetWindow()) is the
-  // one case this block should NOT apply to. It exists specifically for
-  // emergency maintenance/respawns, where the same char legitimately needs
-  // to log the same boss again well inside the normal window. So if a
-  // reset happened more recently than the window would otherwise start,
-  // raise the floor to the reset time — anything submitted before the
-  // reset no longer counts as "already this window".
-  const windowFloorMs = now.getTime() - GROUP_WINDOW_MS;
-  await _applyDueScheduledReset(supabase);
-  const { data: resetRow } = await supabase.from('window_resets').select('reset_at').eq('id', 1).maybeSingle();
-  const resetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
-  const effectiveFloorMs = (resetMs != null && resetMs > windowFloorMs) ? resetMs : windowFloorMs;
-  const windowFloor = new Date(effectiveFloorMs).toISOString();
+  // A submission is a duplicate if this character already has an
+  // attendance row tied to the SAME event — not "within some rolling time
+  // window" like before. Each real boss kill is its own scheduled event
+  // (confirmed: an event gets created for every boss/mini spawn), so
+  // "already submitted for this event" is the correct, unambiguous
+  // definition of a dupe — and it's what makes a late straggler for one
+  // kill structurally unable to bleed into the next kill's run, which is
+  // exactly the bug this replaces.
   const dedupeCheckBosses = bosses.filter(b => !NO_COOLDOWN_BOSSES.has(b));
-  const { data: recent } = dedupeCheckBosses.length
-    ? await supabase
-        .from('attendance')
-        .select('boss')
-        .eq('char_id', charId)
-        .in('boss', dedupeCheckBosses)
-        .gte('ts', windowFloor)
-    : { data: [] as Array<{ boss: string }> };
-  const alreadyThisWindow = new Set((recent || []).map(r => r.boss));
-  const duplicateBosses = bosses.filter(b => alreadyThisWindow.has(b));
-  const newBosses = bosses.filter(b => !alreadyThisWindow.has(b));
+  const eventIdsToCheck = dedupeCheckBosses.map(b => eligibility.eventIdByBoss[b]).filter(Boolean);
+  const { data: recent } = eventIdsToCheck.length
+    ? await supabase.from('attendance').select('event_id').eq('char_id', charId).in('event_id', eventIdsToCheck)
+    : { data: [] as Array<{ event_id: string }> };
+  const alreadySubmittedEventIds = new Set((recent || []).map(r => r.event_id));
+  const duplicateBosses = dedupeCheckBosses.filter(b => alreadySubmittedEventIds.has(eligibility.eventIdByBoss[b]));
+  const newBosses = bosses.filter(b => !duplicateBosses.includes(b));
 
   if (!newBosses.length) {
     return {
@@ -1006,10 +1021,14 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   const rows = newBosses.map(boss => {
     const pts = BOSS_POINTS[boss] || 0;
     totalPoints += pts;
-    return { ts: nowIso, email, char_id: charId, ign: char.ign, boss, points: pts, run_id: '' };
+    // NO_COOLDOWN_BOSSES (Kooby Dic) are intentionally never tied to an
+    // event — they fall back to the legacy rolling-gap grouping in
+    // getGroupedRuns instead, which is actually the right behavior for a
+    // boss that legitimately spawns several times in quick succession.
+    return { ts: nowIso, email, char_id: charId, ign: char.ign, boss, points: pts, run_id: '', event_id: eligibility.eventIdByBoss[boss] || '' };
   });
 
-  const { data: inserted, error: ae } = await supabase.from('attendance').insert(rows).select('id, boss, ts');
+  const { data: inserted, error: ae } = await supabase.from('attendance').insert(rows).select('id, boss, ts, event_id');
   if (ae) throw ae;
 
   // lifetime_points only ever goes up (mirrors every point gain, never
@@ -1048,46 +1067,50 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
 // items from that run split to include them. Already-sold items in
 // that run are not retroactively re-split; see deleteAttendance for
 // the corresponding undo path.
-async function linkLateSubmissions(supabase: ReturnType<typeof db>, charId: string, rows: Array<{ id: string; boss: string; ts: string }>) {
+async function linkLateSubmissions(supabase: ReturnType<typeof db>, charId: string, rows: Array<{ id: string; boss: string; ts: string; event_id: string }>) {
   if (!rows.length) return;
 
   const bosses = [...new Set(rows.map(r => r.boss))];
   const { data: confirmedRuns } = await supabase
     .from('runs')
-    .select('run_id, boss, window_start')
+    .select('run_id, boss, window_start, event_id')
     .eq('status', 'Confirmed')
     .in('boss', bosses);
   if (!confirmedRuns || !confirmedRuns.length) return;
 
-  // A confirmed run's stored window_end is a fixed windowStart+4h, set
-  // once at confirm time and never moved. Matching new submissions
-  // against that fixed end meant a confirmed run stayed "open" to
-  // absorb new attendance for the full 4h regardless of when the boss
-  // was actually killed again — so a genuinely new kill 1-2h after
-  // confirmation (same-day fast respawn) got silently merged into the
-  // old confirmed run instead of ever reaching getGroupedRuns to become
-  // its own run. Fix: use a rolling cutoff — GROUP_WINDOW_MS after the
-  // LATEST attendance timestamp actually linked to that run so far —
-  // same rolling-gap principle as the getGroupedRuns fix, just applied
-  // post-confirmation.
-  const runIds = confirmedRuns.map(r => r.run_id);
-  const { data: linkedRows } = runIds.length
-    ? await supabase.from('attendance').select('run_id, ts').in('run_id', runIds)
-    : { data: [] as Array<{ run_id: string; ts: string }> };
+  // Legacy rolling-gap fallback data — only needed for rows with no
+  // event_id (NO_COOLDOWN_BOSSES / Kooby Dic, or pre-migration history).
+  // Every normal boss submission now carries an event_id and matches
+  // exactly below, no gap math involved.
+  const needsLegacy = rows.some(r => !r.event_id);
   const lastTsByRun: Record<string, number> = {};
-  (linkedRows || []).forEach(r => {
-    const t = new Date(r.ts).getTime();
-    if (!lastTsByRun[r.run_id] || t > lastTsByRun[r.run_id]) lastTsByRun[r.run_id] = t;
-  });
+  if (needsLegacy) {
+    const runIds = confirmedRuns.map(r => r.run_id);
+    const { data: linkedRows } = runIds.length
+      ? await supabase.from('attendance').select('run_id, ts').in('run_id', runIds)
+      : { data: [] as Array<{ run_id: string; ts: string }> };
+    (linkedRows || []).forEach(r => {
+      const t = new Date(r.ts).getTime();
+      if (!lastTsByRun[r.run_id] || t > lastTsByRun[r.run_id]) lastTsByRun[r.run_id] = t;
+    });
+  }
 
   for (const row of rows) {
-    const ts = new Date(row.ts).getTime();
-    const match = confirmedRuns.find(r => {
-      if (r.boss !== row.boss) return false;
-      const startMs = new Date(r.window_start).getTime();
-      const lastMs  = lastTsByRun[r.run_id] ?? startMs;
-      return ts >= startMs && ts - lastMs <= GROUP_WINDOW_MS;
-    });
+    let match: { run_id: string; boss: string; window_start: string; event_id: string | null } | undefined;
+    if (row.event_id) {
+      // Authoritative: this row's event IS the run boundary — exact match,
+      // no gap heuristics needed, and no risk of crossing into a
+      // different real kill's run.
+      match = confirmedRuns.find(r => r.event_id === row.event_id);
+    } else {
+      const ts = new Date(row.ts).getTime();
+      match = confirmedRuns.find(r => {
+        if (r.boss !== row.boss || r.event_id) return false; // never gap-match into an event-anchored run
+        const startMs = new Date(r.window_start).getTime();
+        const lastMs  = lastTsByRun[r.run_id] ?? startMs;
+        return ts >= startMs && ts - lastMs <= GROUP_WINDOW_MS;
+      });
+    }
     if (!match) continue;
 
     await supabase.from('attendance').update({ run_id: match.run_id, late_linked: true }).eq('id', row.id);
@@ -1256,11 +1279,11 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   // it, not a substitute for it.
   const groupedRunsCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const PAGE_SIZE = 1000;
-  const attRows: Array<{ id: string; ts: string; char_id: string; ign: string; email: string; boss: string; manually_added: boolean; run_id: string }> = [];
+  const attRows: Array<{ id: string; ts: string; char_id: string; ign: string; email: string; boss: string; manually_added: boolean; run_id: string; event_id: string }> = [];
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error: ae } = await supabase
       .from('attendance')
-      .select('id, ts, char_id, ign, email, boss, manually_added, run_id')
+      .select('id, ts, char_id, ign, email, boss, manually_added, run_id, event_id')
       .gte('ts', groupedRunsCutoff)
       .order('ts', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
@@ -1300,47 +1323,44 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
     });
   });
 
-  // A manual window reset (see resetWindow()) forces a hard break in the
-  // grouping chain for every boss, even if the next submission would
-  // otherwise land inside the normal 2h window — e.g. after an emergency
-  // maintenance respawn. It's intentionally global: if one boss needed a
-  // reset, assume the whole alliance's schedule just got disrupted.
-  const { data: resetRow } = await supabase.from('window_resets').select('reset_at').eq('id', 1).maybeSingle();
-  const globalResetMs = resetRow ? new Date(resetRow.reset_at).getTime() : null;
-
-  // Group attendance into run windows (mirrors GAS logic)
-  const bossGroups: Record<string, Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string }>> = {};
+  // Group attendance into runs. Two paths:
+  //  - Rows with an event_id (the normal case now — every real boss/mini
+  //    kill gets a dedicated scheduled event) group by that event_id
+  //    directly. The event itself is the authoritative run boundary, so
+  //    there's no gap-threshold heuristic left to get wrong: a late
+  //    straggler for one kill can never bleed into the next kill's run,
+  //    because they're tied to different events regardless of how close
+  //    their timestamps land.
+  //  - Rows with no event_id (NO_COOLDOWN_BOSSES / Kooby Dic — always —
+  //    plus any pre-migration history) fall back to the old rolling-gap
+  //    clustering, unchanged.
+  const bossGroups: Record<string, Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string; eventId: string }>> = {};
   (attRows || []).forEach(r => {
     if (!bossGroups[r.boss]) bossGroups[r.boss] = [];
-    bossGroups[r.boss].push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id, ign: r.ign, email: r.email, manuallyAdded: !!r.manually_added, runId: r.run_id || '' });
+    bossGroups[r.boss].push({ id: r.id, ts: new Date(r.ts).getTime(), charId: r.char_id, ign: r.ign, email: r.email, manuallyAdded: !!r.manually_added, runId: r.run_id || '', eventId: r.event_id || '' });
   });
 
-  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; linkedRunId: string; participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }>; submissions: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean; ts: string }> }> = [];
+  const runs: Array<{ boss: string; windowStart: number; windowEnd: number; linkedRunId: string; eventId: string; participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }>; submissions: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean; ts: string }> }> = [];
   Object.keys(bossGroups).forEach(boss => {
     const entries = bossGroups[boss].sort((a, b) => a.ts - b.ts);
+
+    const eventGroups: Record<string, typeof entries> = {};
+    const legacyEntries: typeof entries = [];
+    entries.forEach(e => { if (e.eventId) (eventGroups[e.eventId] ||= []).push(e); else legacyEntries.push(e); });
+
+    Object.values(eventGroups).forEach(group => {
+      const windowStart = Math.min(...group.map(e => e.ts));
+      runs.push(buildRun(boss, windowStart, group));
+    });
+
+    // Legacy rolling-gap fallback, same algorithm as before.
     let windowStart: number | null = null;
     let lastTs: number | null = null;
     let windowEntries: typeof entries = [];
-    entries.forEach(e => {
-      // A reset forces a break if it falls strictly between the current
-      // window's start and this entry — regardless of the 4h threshold.
-      const crossesReset = globalResetMs != null && windowStart !== null && windowStart < globalResetMs && e.ts >= globalResetMs;
+    legacyEntries.forEach(e => {
       if (windowStart === null) { windowStart = e.ts; lastTs = e.ts; windowEntries = [e]; }
-      // Gap check anchors to the LAST entry folded into this window, not
-      // the window's original start. Anchoring to windowStart made this a
-      // fixed 4h bucket from the first kill, so any boss that respawns
-      // faster than 4h would have its second (genuinely separate) kill
-      // silently absorbed into the first run instead of starting a new
-      // one — while a kill landing >4h after the *first* kill (but soon
-      // after the second) would split off on its own. Anchoring to the
-      // most recent entry makes this a real rolling gap: a new run only
-      // starts once GROUP_WINDOW_MS has actually elapsed since the last
-      // recorded kill of that boss.
-      else if (!crossesReset && e.ts - lastTs! <= GROUP_WINDOW_MS) { windowEntries.push(e); lastTs = e.ts; }
-      else {
-        runs.push(buildRun(boss, windowStart!, windowEntries));
-        windowStart = e.ts; lastTs = e.ts; windowEntries = [e];
-      }
+      else if (e.ts - lastTs! <= GROUP_WINDOW_MS) { windowEntries.push(e); lastTs = e.ts; }
+      else { runs.push(buildRun(boss, windowStart!, windowEntries)); windowStart = e.ts; lastTs = e.ts; windowEntries = [e]; }
     });
     if (windowEntries.length > 0) runs.push(buildRun(boss, windowStart!, windowEntries));
   });
@@ -1358,12 +1378,16 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
 
   return runs.map(run => {
     // Prefer the run_id actually stamped on this window's attendance rows
-    // (ground truth, immune to windowStart drift). Only fall back to the
-    // old boss+windowStart proximity match for rows that predate run_id
-    // being reliably set (or a window with zero linked rows, e.g. a purely
-    // manually-added run whose insert didn't carry a runId yet).
+    // (ground truth, immune to windowStart drift). Next, an exact event_id
+    // match — equally authoritative, and the only option for a run that's
+    // event-anchored but hasn't had any of its rows' run_id set yet (e.g.
+    // just-confirmed before linkAttendanceToRun's update lands). Only fall
+    // back to the old boss+windowStart proximity match for legacy rows
+    // that predate both run_id and event_id being reliably set.
     const saved = run.linkedRunId
       ? (savedRuns || []).find(r => r.run_id === run.linkedRunId)
+      : run.eventId
+      ? (savedRuns || []).find(r => r.event_id === run.eventId)
       : (savedRuns || []).find(r =>
           r.boss === run.boss && Math.abs(new Date(r.window_start).getTime() - run.windowStart) < 60000
         );
@@ -1385,6 +1409,7 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
     return {
       runId:            saved ? saved.run_id : null,
       boss:             run.boss,
+      eventId:          run.eventId || null,
       windowStart:      new Date(run.windowStart).toISOString(),
       windowEnd:        new Date(run.windowEnd).toISOString(),
       participants,
@@ -1399,7 +1424,7 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   });
 }
 
-function buildRun(boss: string, windowStart: number, entries: Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string }>) {
+function buildRun(boss: string, windowStart: number, entries: Array<{ id: string; ts: number; charId: string; ign: string; email: string; manuallyAdded: boolean; runId: string; eventId: string }>) {
   const seen = new Set<string>();
   const participants: Array<{ charId: string; ign: string; email: string; attendanceId: string; manuallyAdded: boolean }> = [];
   entries.forEach(e => { if (!seen.has(e.charId)) { seen.add(e.charId); participants.push({ charId: e.charId, ign: e.ign, email: e.email, attendanceId: e.id, manuallyAdded: e.manuallyAdded }); } });
@@ -1411,6 +1436,10 @@ function buildRun(boss: string, windowStart: number, entries: Array<{ id: string
   const submissions = [...entries]
     .sort((a, b) => b.ts - a.ts)
     .map(e => ({ charId: e.charId, ign: e.ign, email: e.email, attendanceId: e.id, manuallyAdded: e.manuallyAdded, ts: new Date(e.ts).toISOString() }));
+
+  // Every entry in a group shares the same eventId by construction (they
+  // were partitioned by it) — '' for the legacy/gap-clustered path.
+  const eventId = entries[0]?.eventId || '';
 
   // Which confirmed run (if any) this window is actually linked to — read
   // directly off the attendance rows' own run_id rather than re-derived
@@ -1430,7 +1459,7 @@ function buildRun(boss: string, windowStart: number, entries: Array<{ id: string
   let bestCount = 0;
   Object.keys(runIdCounts).forEach(id => { if (runIdCounts[id] > bestCount) { bestCount = runIdCounts[id]; linkedRunId = id; } });
 
-  return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, linkedRunId, participants, submissions };
+  return { boss, windowStart, windowEnd: windowStart + GROUP_WINDOW_MS, linkedRunId, eventId, participants, submissions };
 }
 
 // ============================================================
@@ -1617,114 +1646,6 @@ async function repairRunLinks(supabase: ReturnType<typeof db>, email: string) {
 }
 
 // ============================================================
-//  WINDOW RESETS (emergency maintenance handling)
-// ============================================================
-// Forces a hard break in every boss's grouping chain as of "now", so
-// any attendance submitted after this point starts a brand new run
-// window instead of merging into whatever window was open before —
-// even if it's submitted less than GROUP_WINDOW_MS after the last
-// kill. Global on purpose: an emergency maintenance disrupts the
-// whole alliance's schedule, not just one boss.
-// Does NOT touch already-confirmed runs or attendance rows; it only
-// affects how *future* get_grouped_runs calls bucket new submissions.
-// If a scheduled reset's time has arrived, applies it — moves reset_at
-// up to the ORIGINALLY SCHEDULED time (not now()) and clears the pending
-// fields. Stamping the scheduled time rather than the moment this happens
-// to run means a late trigger still honors exactly the cutoff that was
-// announced, instead of drifting later and blocking legitimate resubmissions
-// that land between the announced time and whenever this actually fires.
-//
-// Called opportunistically from submitAttendance — the highest-traffic
-// path that actually needs a fresh reset_at, since members submitting
-// attendance right as a boss respawns are far more likely to be "present"
-// at the scheduled moment than an admin idly watching the Drops page.
-async function _applyDueScheduledReset(supabase: ReturnType<typeof db>): Promise<boolean> {
-  const { data: row } = await supabase.from('window_resets').select('pending_reset_at, pending_reset_by').eq('id', 1).maybeSingle();
-  if (!row?.pending_reset_at) return false;
-  if (new Date(row.pending_reset_at).getTime() > Date.now()) return false;
-
-  const { error } = await supabase.from('window_resets').upsert({
-    id: 1, reset_at: row.pending_reset_at, reset_by: row.pending_reset_by,
-    pending_reset_at: null, pending_reset_by: null,
-  });
-  if (error) throw error;
-  return true;
-}
-
-async function resetWindow(supabase: ReturnType<typeof db>, email: string) {
-  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
-
-  const resetAt = new Date().toISOString();
-  const { error } = await supabase.from('window_resets').upsert({
-    id: 1, reset_at: resetAt, reset_by: email,
-  });
-  if (error) throw error;
-
-  return { success: true, resetAt };
-}
-
-async function getWindowResets(supabase: ReturnType<typeof db>, email: string) {
-  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
-  const { data, error } = await supabase.from('window_resets')
-    .select('reset_at, reset_by, pending_reset_at, pending_reset_by').eq('id', 1).maybeSingle();
-  if (error) throw error;
-  return data ? {
-    resetAt: data.reset_at, resetBy: data.reset_by,
-    pendingResetAt: data.pending_reset_at || null,
-    pendingResetBy: data.pending_reset_by || null,
-  } : null;
-}
-
-// ── SCHEDULED WINDOW RESET ──────────────────────────────────────
-// Reset Window no longer fires immediately — an admin sets a future
-// time, which is stored as a "pending" reset on the same window_resets
-// row. The button is disabled client-side while a pending reset exists.
-// An announcement is posted immediately (not at execution time) so the
-// alliance gets advance notice.
-//
-// NOTE: there is no server-side cron wired up for this yet, so the
-// pending reset only actually executes when some admin's Drops page
-// polls executeScheduledResetIfDue() past the target time — it is not
-// a guaranteed background job. If Kris wants this to fire even with
-// nobody online, this should move to a Supabase pg_cron job / scheduled
-// Edge Function invoke instead.
-async function scheduleWindowReset(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
-  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
-  const scheduledFor = data.scheduledFor as string;
-  if (!scheduledFor || isNaN(new Date(scheduledFor).getTime())) return { error: 'A valid scheduled time is required.' };
-  if (new Date(scheduledFor).getTime() <= Date.now()) return { error: 'Scheduled time must be in the future.' };
-
-  const { data: existing } = await supabase.from('window_resets').select('pending_reset_at').eq('id', 1).maybeSingle();
-  if (existing?.pending_reset_at) return { error: 'A window reset is already scheduled. Wait for it to run first.' };
-
-  const { error } = await supabase.from('window_resets').upsert({
-    id: 1, pending_reset_at: scheduledFor, pending_reset_by: email,
-  });
-  if (error) throw error;
-
-  const when = new Date(scheduledFor).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
-  const initiatorDisplay = (await resolveDisplayNames(supabase, [email]))[email]?.display || 'an admin';
-  await _postSystemAnnouncement(
-    supabase,
-    '🔄 Boss Window Reset Scheduled',
-    `The submission window will reset at ${when}. Initiated by ${initiatorDisplay}.`,
-  );
-
-  return { success: true, scheduledFor };
-}
-
-// Called opportunistically (e.g. on Drops page load) by any admin client
-// as a secondary trigger — the primary one is now inside submitAttendance
-// itself (see _applyDueScheduledReset). This is what powers the Drops-page
-// "Scheduled window reset executed" toast; it's a no-op if submitAttendance
-// already applied it first.
-async function executeScheduledResetIfDue(supabase: ReturnType<typeof db>, email: string) {
-  if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
-  const executed = await _applyDueScheduledReset(supabase);
-  return { executed };
-}
-
-// ============================================================
 //  ATTENDANCE — admin cleanup of mistake submissions
 // ============================================================
 async function getAttendanceForChar(supabase: ReturnType<typeof db>, email: string, charId: string) {
@@ -1861,6 +1782,7 @@ async function addRunParticipant(supabase: ReturnType<typeof db>, email: string,
 
   const boss        = data.boss as string;
   const windowStart = data.windowStart as string;
+  const eventId      = (data.eventId as string) || '';
   const runId        = (data.runId as string) || '';
   const charId       = data.charId as string;
   if (!boss || !windowStart || !charId) return { error: 'boss, windowStart, and charId are required.' };
@@ -1869,27 +1791,31 @@ async function addRunParticipant(supabase: ReturnType<typeof db>, email: string,
   if (ce) throw ce;
   if (!char) return { error: 'Character not found.' };
 
-  // Already a participant (via attendance) for this boss+window? Don't
-  // double-credit points if an admin clicks add twice.
-  //
-  // This used to bound the check to a FIXED windowStart..windowStart+4h
-  // span, same class of bug already fixed in getGroupedRuns/buildRun and
-  // linkLateSubmissions: a fixed anchor treats the window as a rigid 4h
-  // bucket from the run's first kill, so it can both false-negative (miss
-  // a genuine dupe landing just past the fixed end) and false-positive
-  // relative to how the run was actually grouped. Reuse the same
-  // rolling-gap check instead — walk this boss's rows chronologically
-  // from windowStart and see whether the charId shows up before a gap
-  // longer than GROUP_WINDOW_MS ever occurs.
+  // Already a participant (via attendance) for this run? Don't double-
+  // credit points if an admin clicks add twice. Event-anchored runs check
+  // exactly (this char + this event_id); legacy/no-event runs (Kooby Dic,
+  // pre-migration history) fall back to the rolling-gap chain check.
   const windowStartMs = new Date(windowStart).getTime();
-  const { data: existingRows } = await supabase
-    .from('attendance')
-    .select('id, ts, char_id')
-    .eq('boss', boss)
-    .gte('ts', windowStart)
-    .order('ts', { ascending: true });
-  const existingRowsTyped: Array<{ id: string; ts: string; char_id: string }> = existingRows || [];
-  const alreadyIn = _charInRollingWindow(existingRowsTyped, windowStartMs, charId);
+  let alreadyIn: boolean;
+  if (eventId) {
+    const { data: existingRows } = await supabase
+      .from('attendance')
+      .select('id')
+      .eq('char_id', charId)
+      .eq('event_id', eventId)
+      .limit(1);
+    alreadyIn = !!(existingRows && existingRows.length);
+  } else {
+    const { data: existingRows } = await supabase
+      .from('attendance')
+      .select('id, ts, char_id')
+      .eq('boss', boss)
+      .eq('event_id', '')
+      .gte('ts', windowStart)
+      .order('ts', { ascending: true });
+    const existingRowsTyped: Array<{ id: string; ts: string; char_id: string }> = existingRows || [];
+    alreadyIn = _charInRollingWindow(existingRowsTyped, windowStartMs, charId);
+  }
   if (alreadyIn) return { error: `${char.ign} is already recorded for this run.` };
 
   const points = BOSS_POINTS[boss] || 0;
@@ -1900,7 +1826,7 @@ async function addRunParticipant(supabase: ReturnType<typeof db>, email: string,
 
   const { data: inserted, error: ie } = await supabase.from('attendance').insert({
     ts, email: char.email, char_id: charId, ign: char.ign, boss, points,
-    run_id: runId, manually_added: true, added_by: email,
+    run_id: runId, event_id: eventId, manually_added: true, added_by: email,
   }).select('id').single();
   if (ie) throw ie;
 
@@ -1931,6 +1857,7 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
   const drops    = runData.drops as Array<{ itemName: string; qty: number }>;
   const participants = runData.participants as Array<{ charId: string }>;
   const windowStart  = runData.windowStart as string;
+  const eventId  = (runData.eventId as string) || '';
   const notes    = (runData.notes as string) || '';
 
   // Editing drops on an already-confirmed run used to require super admin.
@@ -1955,14 +1882,15 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
     finalRunId = 'RUN_' + crypto.randomUUID();
     const { error } = await supabase.from('runs').insert({
       run_id: finalRunId, boss, window_start: windowStart, window_end: windowEnd,
-      participant_ids: participantStr, drops: dropsStr, status: 'Confirmed',
+      event_id: eventId || null, participant_ids: participantStr, drops: dropsStr, status: 'Confirmed',
       notes, confirmed_at: now, confirmed_by: email,
     });
     if (error) {
       // 23505 = Postgres unique_violation. Means another admin's confirm_run
-      // for this exact boss + window already landed a moment earlier — the
-      // DB-level constraint (see migration) is what actually stops the race,
-      // this just turns it into a clean error instead of a duplicate run +
+      // for this exact boss + window (or, for an event-anchored run, the
+      // same event_id) already landed a moment earlier — the DB-level
+      // constraint (see migration) is what actually stops the race, this
+      // just turns it into a clean error instead of a duplicate run +
       // duplicate inventory rows.
       if (error.code === '23505') {
         return { error: 'This run was just confirmed by another admin. Refresh to see it.' };
@@ -1979,7 +1907,7 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
   // whole chain of awaits here is what occasionally added up to a timeout.
   const [, linkedCharIds] = await Promise.all([
     isEdit ? diffInventory(supabase, runId!, boss, drops, now) : writeToInventory(supabase, finalRunId!, boss, drops, now),
-    linkAttendanceToRun(supabase, finalRunId!, boss, windowStart, participants.map(p => p.charId)),
+    linkAttendanceToRun(supabase, finalRunId!, boss, windowStart, eventId, participants.map(p => p.charId)),
   ]);
 
   // run_participants is the payout source of truth (see sellItem).
@@ -2024,9 +1952,7 @@ async function confirmRun(supabase: ReturnType<typeof db>, email: string, runDat
   return { success: true, runId: finalRunId };
 }
 
-async function linkAttendanceToRun(supabase: ReturnType<typeof db>, runId: string, boss: string, windowStart: string, charIds: string[]) {
-  const windowStartMs = new Date(windowStart).getTime();
-
+async function linkAttendanceToRun(supabase: ReturnType<typeof db>, runId: string, boss: string, windowStart: string, eventId: string, charIds: string[]) {
   // Intentionally NOT filtered by charIds. charIds is just the frontend's
   // snapshot of who was checked when the confirm modal was opened — if
   // anyone submits attendance for this boss/window between that snapshot
@@ -2037,32 +1963,39 @@ async function linkAttendanceToRun(supabase: ReturnType<typeof db>, runId: strin
   // is only used by the caller (confirmRun) to seed run_participants —
   // this function tells it who it actually linked so late arrivals get
   // folded in too.
-  //
-  // The match window used to be a FIXED windowStart..windowStart+4h span.
-  // That's the same fixed-anchor bug already fixed in getGroupedRuns and
-  // linkLateSubmissions: unlinked rows sitting just past the fixed end
-  // (but still within a true rolling gap of the run's last kill) got
-  // skipped, while — worse — an unrelated later kill within the fixed 4h
-  // span but AFTER a real >4h gap had already started a new run got
-  // wrongly linked to this old one. Reuse the exact rolling-gap grouping
-  // instead, so this only ever links rows that the real algorithm would
-  // also consider part of the same run.
-  // Fetch the FULL chain (linked + unlinked) so the rolling-gap walk sees
-  // real chronological continuity — filtering to run_id='' up front would
-  // silently drop the window's own anchor row on a re-confirm/edit (its
-  // rows already got linked on the first confirm), making the chain
-  // start from the wrong row. Only the still-unlinked rows within the
-  // correctly-identified group actually get updated below.
-  const { data: linkRows } = await supabase
-    .from('attendance')
-    .select('id, ts, char_id, run_id')
-    .eq('boss', boss)
-    .gte('ts', windowStart)
-    .order('ts', { ascending: true });
-  const rows: Array<{ id: string; ts: string; char_id: string; run_id: string }> = linkRows || [];
+  let rows: Array<{ id: string; char_id: string; run_id: string }>;
 
-  const group = _rollingGroupStartingAt(rows, windowStartMs);
-  const toLink = group.filter(r => !r.run_id);
+  if (eventId) {
+    // Authoritative path: every unlinked row tied to this exact event
+    // belongs to this run — exact match, no gap heuristics, no risk of
+    // crossing into a different real kill's window.
+    const { data } = await supabase
+      .from('attendance')
+      .select('id, char_id, run_id')
+      .eq('event_id', eventId);
+    rows = data || [];
+  } else {
+    // Legacy fallback (NO_COOLDOWN_BOSSES / pre-migration rows with no
+    // event_id) — same rolling-gap grouping as getGroupedRuns/
+    // linkLateSubmissions use for the same case. Fetch the FULL chain
+    // (linked + unlinked) so the walk sees real chronological continuity —
+    // filtering to run_id='' up front would silently drop the window's
+    // own anchor row on a re-confirm/edit (its rows already got linked on
+    // the first confirm), making the chain start from the wrong row. Only
+    // the still-unlinked rows within the correctly-identified group
+    // actually get updated below.
+    const windowStartMs = new Date(windowStart).getTime();
+    const { data: linkRows } = await supabase
+      .from('attendance')
+      .select('id, ts, char_id, run_id')
+      .eq('boss', boss)
+      .eq('event_id', '')
+      .gte('ts', windowStart)
+      .order('ts', { ascending: true });
+    rows = _rollingGroupStartingAt((linkRows || []) as Array<{ id: string; ts: string; char_id: string; run_id: string }>, windowStartMs);
+  }
+
+  const toLink = rows.filter(r => !r.run_id);
 
   if (toLink.length > 0) {
     const { error: linkErr } = await supabase.from('attendance').update({ run_id: runId }).in('id', toLink.map(r => r.id));
@@ -2862,8 +2795,15 @@ async function getEvents(supabase: ReturnType<typeof db>, email: string) {
 async function createEvent(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
   // Opened up to every signed-in member (was isAdmin-only) — editing/deleting
   // an event is still admin-only, see updateEvent/deleteEvent below.
+  // Maintenance is the exception: its end time now acts as the global
+  // eligibility cutoff for every boss (see checkAttendanceEligibility), so
+  // letting any member create one would let anyone reset the whole
+  // alliance's submission windows. Gated to admin-or-above.
   if (!email) return { error: 'No email provided' };
   const boss = (data.boss as string || '').trim();
+  if (boss === 'Maintenance' && !(await isAdmin(supabase, email))) {
+    return { error: 'Only an Admin, Drops Handler, or Super Admin can create a Maintenance event.' };
+  }
   const scheduledAt = data.scheduledAt as string;
   const durationMinutes = resolveEventDuration(boss, data.durationMinutes);
   const notes = (data.notes as string) || '';
