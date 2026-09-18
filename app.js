@@ -107,20 +107,20 @@ const BOSS_SPRITES = {
 // Sephia, Kooby Dic) fall back to their config emoji wherever these are
 // used. Files live in /sprites/boss_sprites/.
 const BOSS_HEADSHOTS = {
-  'BIGMAMA':     '/sprites/boss_sprites/bigmama_headshot.png',
-  'Ukpana':      '/sprites/boss_sprites/ukpana_headshot.png',
-  'Barslaf':     '/sprites/boss_sprites/barslaf_headshot.png',
-  'Illust':      '/sprites/boss_sprites/illust_headshot.png',
-  'Aiyo':        '/sprites/boss_sprites/aiyo_headshot.png',
-  'Sephia':      '/sprites/boss_sprites/sephia_headshot.png',
-  'Darlene':     '/sprites/boss_sprites/darlene_headshot.png',
-  'Caligo':      '/sprites/boss_sprites/caligo_headshot.png',
-  'Platanista':  '/sprites/boss_sprites/platanista_headshot.png',
-  'Faith':       '/sprites/boss_sprites/faith_headshot.png',
-  'Billiard':    '/sprites/boss_sprites/billiard_headshot.png',
-  'Actaemon':    '/sprites/boss_sprites/actaemon_headshot.png',
-  'Soul Lich':   '/sprites/boss_sprites/soul_lich_headshot.png',
-  'Devilang':    '/sprites/boss_sprites/devilang_headshot.png',
+  'BIGMAMA':     '/sprites/boss sprites/bigmama_headshot.png',
+  'Ukpana':      '/sprites/boss sprites/ukpana_headshot.png',
+  'Barslaf':     '/sprites/boss sprites/barslaf_headshot.png',
+  'Illust':      '/sprites/boss sprites/illust_headshot.png',
+  'Aiyo':        '/sprites/boss sprites/aiyo_headshot.png',
+  'Sephia':      '/sprites/boss sprites/sephia_headshot.png',
+  'Darlene':     '/sprites/boss sprites/darlene_headshot.png',
+  'Caligo':      '/sprites/boss sprites/caligo_headshot.png',
+  'Platanista':  '/sprites/boss sprites/platanista_headshot.png',
+  'Faith':       '/sprites/boss sprites/faith_headshot.png',
+  'Billiard':    '/sprites/boss sprites/billiard_headshot.png',
+  'Actaemon':    '/sprites/boss sprites/actaemon_headshot.png',
+  'Soul Lich':   '/sprites/boss sprites/soul_lich_headshot.png',
+  'Devilang':    '/sprites/boss sprites/devilang_headshot.png',
 };
 
 // Calendar days that spawn one of these bosses get their blue event-dot
