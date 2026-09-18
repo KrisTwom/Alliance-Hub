@@ -896,11 +896,53 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
   background: var(--gold);
   box-shadow: 0 0 4px var(--gold);
 }
+/* Replaces .cal-event-dot on days that spawn Ukpana/Illust/Caligo (see
+   CALENDAR_DOT_BOSS_OVERRIDES in app.js) — a tiny round headshot instead
+   of the plain dot. */
+.cal-event-boss-icon {
+  width: 16px; height: 16px; border-radius: 50%;
+  object-fit: cover; border: 1px solid var(--border-mid);
+}
 @keyframes cal-pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
 
 @media (max-width: 640px) {
   .cal-cell { height: 44px; }
 }
+
+/* ============================================================
+   ICON SELECT — boss/mini dropdown with a small headshot/emoji per
+   option (Create/Edit Event modals). A native <select> can't reliably
+   show images across browsers, so this renders a button + custom list
+   backed by a hidden real <select> (see _renderIconSelect in app.js).
+   ============================================================ */
+.icon-select { position: relative; }
+.icon-select-btn {
+  width: 100%; display: flex; align-items: center; gap: .6rem;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-primary);
+  font-family: var(--font-body); font-size: .95rem;
+  padding: .55rem .85rem; cursor: pointer; text-align: left;
+  transition: border-color var(--transition);
+}
+.icon-select-btn:hover, .icon-select-btn:focus { border-color: var(--gold); outline: none; }
+.icon-select-btn-label { flex: 1; }
+.icon-select-caret { color: var(--text-secondary); font-size: .8rem; }
+.icon-select-menu {
+  position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px;
+  background: var(--bg-card); border: 1px solid var(--border-mid);
+  border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  z-index: 50; max-height: 260px; overflow-y: auto;
+}
+.icon-select-menu.hidden { display: none; }
+.icon-select-option {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .55rem .75rem; font-size: .88rem; color: var(--text-primary);
+  cursor: pointer;
+}
+.icon-select-option:hover { background: var(--bg-hover); }
+.icon-select-option.selected { color: var(--gold); }
+.icon-opt-img { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.icon-opt-emoji { font-size: 1.1rem; width: 22px; text-align: center; flex-shrink: 0; }
 
 /* ============================================================
    DAY VIEW — fullscreen single-day agenda list (in a modal-box-full)

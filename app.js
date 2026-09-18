@@ -100,6 +100,58 @@ const BOSS_SPRITES = {
   'Library Boss': '/sprites/boss sprites/primal knowledge.png'
 };
 
+// Small "headshot" icons — a separate, purpose-made icon set (distinct
+// from the full BOSS_SPRITES art above) used for compact UI: the boss
+// dropdown in the event-creation modals, and the 3 calendar-dot
+// overrides below. Bosses not listed here (Siege, Library Boss, Summer
+// Sephia, Kooby Dic) fall back to their config emoji wherever these are
+// used. Files live in /sprites/boss_sprites/.
+const BOSS_HEADSHOTS = {
+  'BIGMAMA':     '/sprites/boss_sprites/bigmama_headshot.png',
+  'Ukpana':      '/sprites/boss_sprites/ukpana_headshot.png',
+  'Barslaf':     '/sprites/boss_sprites/barslaf_headshot.png',
+  'Illust':      '/sprites/boss_sprites/illust_headshot.png',
+  'Aiyo':        '/sprites/boss_sprites/aiyo_headshot.png',
+  'Sephia':      '/sprites/boss_sprites/sephia_headshot.png',
+  'Darlene':     '/sprites/boss_sprites/darlene_headshot.png',
+  'Caligo':      '/sprites/boss_sprites/caligo_headshot.png',
+  'Platanista':  '/sprites/boss_sprites/platanista_headshot.png',
+  'Faith':       '/sprites/boss_sprites/faith_headshot.png',
+  'Billiard':    '/sprites/boss_sprites/billiard_headshot.png',
+  'Actaemon':    '/sprites/boss_sprites/actaemon_headshot.png',
+  'Soul Lich':   '/sprites/boss_sprites/soul_lich_headshot.png',
+  'Devilang':    '/sprites/boss_sprites/devilang_headshot.png',
+};
+
+// Calendar days that spawn one of these bosses get their blue event-dot
+// replaced with that boss's headshot instead (see _renderCalendarGrid).
+const CALENDAR_DOT_BOSS_OVERRIDES = {
+  'Ukpana': BOSS_HEADSHOTS['Ukpana'],
+  'Illust': BOSS_HEADSHOTS['Illust'],
+  'Caligo': BOSS_HEADSHOTS['Caligo'],
+};
+
+// Respawn timer (ms) for bosses whose Create/Edit Event modal shows the
+// "Enter Death Time" helper field (see _evtBossChanged/_applyDeathTime).
+// Bosses with no entry here (Siege, Library Boss, Summer Sephia, Kooby
+// Dic, Maintenance) don't get the field — no fixed respawn to compute.
+const RESPAWN_MS = {
+  'BIGMAMA':    2 * 24 * 60 * 60 * 1000,
+  'Ukpana':     2 * 24 * 60 * 60 * 1000,
+  'Barslaf':    2 * 24 * 60 * 60 * 1000,
+  'Illust':     3 * 24 * 60 * 60 * 1000,
+  'Sephia':     3 * 24 * 60 * 60 * 1000,
+  'Aiyo':       3 * 24 * 60 * 60 * 1000,
+  'Darlene':    3 * 24 * 60 * 60 * 1000,
+  'Caligo':     7 * 24 * 60 * 60 * 1000,
+  'Platanista': 7 * 24 * 60 * 60 * 1000,
+  'Actaemon':   6 * 60 * 60 * 1000,
+  'Faith':      (5 * 60 + 53) * 60 * 1000,
+  'Billiard':   (7 * 60 + 55) * 60 * 1000,
+  'Devilang':   (5 * 60 + 33) * 60 * 1000,
+  'Soul Lich':  12 * 60 * 60 * 1000,
+};
+
 // Item sprites live in /sprites/item sprites/ — same folder convention as
 // BOSS_SPRITES above. Several items intentionally share one icon (e.g. all
 // three raid treasures, the four class runes reused across two boss tiers).
@@ -2390,12 +2442,20 @@ function _renderCalendarGrid() {
         if (d === null) return `<div class="cal-cell cal-cell-empty"></div>`;
         const key = year + '-' + month + '-' + d;
         const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-        const hasEvents = !!(byDay[key] || []).length;
+        const dayEvents = byDay[key] || [];
+        const hasEvents = !!dayEvents.length;
         const isToday = key === todayKey;
+        // If any of this day's events is one of the 3 overridden bosses,
+        // show that boss's headshot instead of the plain dot (first match
+        // wins if a day somehow has more than one — rare).
+        const dotBoss = dayEvents.map(ev => ev.boss).find(b => CALENDAR_DOT_BOSS_OVERRIDES[b]);
+        const dotHtml = !hasEvents ? '' : dotBoss
+          ? `<img src="${CALENDAR_DOT_BOSS_OVERRIDES[dotBoss]}" class="cal-event-boss-icon" alt="${escHtml(dotBoss)}" onerror="this.outerHTML='<div class=&quot;cal-event-dot&quot;></div>'">`
+          : `<div class="cal-event-dot"></div>`;
         return `
           <div class="cal-cell${isToday ? ' cal-cell-today' : ''}" onclick="openDayView('${dateStr}')">
             <div class="cal-daynum">${d}</div>
-            ${hasEvents ? `<div class="cal-event-dot"></div>` : ''}
+            ${dotHtml}
           </div>`;
       }).join('')}
     </div>
@@ -2466,6 +2526,67 @@ function _allBossNames() {
 function _eventBossOptions() {
   return _allBossNames().filter(b => b !== 'Siege' && b !== 'Library Boss').concat(['Maintenance']);
 }
+
+// ── ICON SELECT ──────────────────────────────────────────────
+// A small headshot/emoji icon per option, since a native <select> can't
+// reliably show images across browsers. Used for the Boss/Mini dropdown
+// on the Create/Edit Event modals (see openCreateEventModal/
+// openEventModal). Renders a button + a custom dropdown list, backed by
+// a real (hidden) <select> so every existing bit of code that reads
+// `document.getElementById(id).value` or listens for its `onchange`
+// keeps working unmodified.
+function _iconOptionHtml(name) {
+  if (name === 'Maintenance') return `<span class="icon-opt-emoji">⚠️</span>`;
+  const src = BOSS_HEADSHOTS[name];
+  if (src) return `<img src="${src}" class="icon-opt-img" alt="${escHtml(name)}" onerror="this.outerHTML='<span class=\\'icon-opt-emoji\\'>${_bossEmoji(name)}</span>'">`;
+  return `<span class="icon-opt-emoji">${_bossEmoji(name)}</span>`;
+}
+
+// selectId: id to give the underlying hidden <select> (existing code
+// keeps referencing this id). onchangeAttr: the onchange handler string
+// to keep on that hidden select, e.g. "_evtBossChanged()".
+function _renderIconSelect(selectId, options, selected, onchangeAttr) {
+  const sel = selected && options.includes(selected) ? selected : (options[0] || '');
+  return `
+    <div class="icon-select" id="${selectId}-wrap">
+      <button type="button" class="icon-select-btn" id="${selectId}-btn" onclick="_toggleIconSelect('${selectId}')">
+        ${_iconOptionHtml(sel)}
+        <span class="icon-select-btn-label">${escHtml(sel)}</span>
+        <span class="icon-select-caret">▾</span>
+      </button>
+      <div class="icon-select-menu hidden" id="${selectId}-menu">
+        ${options.map(o => `
+          <div class="icon-select-option${o === sel ? ' selected' : ''}" onclick="_pickIconOption('${selectId}','${o.replace(/'/g, "\\'")}')">
+            ${_iconOptionHtml(o)}<span>${escHtml(o)}</span>
+          </div>`).join('')}
+      </div>
+      <select id="${selectId}" style="display:none" ${onchangeAttr ? `onchange="${onchangeAttr}"` : ''}>
+        ${options.map(o => `<option value="${escHtml(o)}" ${o === sel ? 'selected' : ''}>${escHtml(o)}</option>`).join('')}
+      </select>
+    </div>`;
+}
+
+function _toggleIconSelect(id) {
+  document.querySelectorAll('.icon-select-menu').forEach(m => { if (m.id !== `${id}-menu`) m.classList.add('hidden'); });
+  document.getElementById(`${id}-menu`)?.classList.toggle('hidden');
+}
+
+function _pickIconOption(id, value) {
+  const select = document.getElementById(id);
+  const menu   = document.getElementById(`${id}-menu`);
+  if (!select) return;
+  select.value = value;
+  select.dispatchEvent(new Event('change'));
+  const btn = document.getElementById(`${id}-btn`);
+  if (btn) btn.innerHTML = `${_iconOptionHtml(value)}<span class="icon-select-btn-label">${escHtml(value)}</span><span class="icon-select-caret">▾</span>`;
+  menu?.querySelectorAll('.icon-select-option').forEach(el => el.classList.toggle('selected', el.textContent.trim() === value));
+  menu?.classList.add('hidden');
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.icon-select')) {
+    document.querySelectorAll('.icon-select-menu').forEach(m => m.classList.add('hidden'));
+  }
+});
 
 // ── PERMANENT RECURRING EVENTS ──────────────────────────────────
 // Library Boss and Siege happen on a fixed schedule that never changes,
@@ -2677,9 +2798,12 @@ function openCreateEventModal(prefillDate, returnDate) {
     <div class="modal-title">📅 New Event</div>
     <div class="form-group">
       <label class="form-label">Boss / Mini</label>
-      <select class="form-input" id="evt-boss" onchange="_evtBossChanged()">
-        ${bosses.map(b => `<option value="${escHtml(b)}">${escHtml(b)}</option>`).join('')}
-      </select>
+      ${_renderIconSelect('evt-boss', bosses, bosses[0], '_evtBossChanged()')}
+    </div>
+    <div class="form-group" id="evt-death-group" style="display:none">
+      <label class="form-label">Enter Death Time</label>
+      <input type="datetime-local" class="form-input" id="evt-death-time">
+      <p style="font-size:.75rem;color:var(--text-muted);margin:.35rem 0 0">Sets Date/Time below to this boss's respawn time automatically. You can still edit Date/Time directly instead.</p>
     </div>
     <div class="form-group">
       <label class="form-label">Date</label>
@@ -2704,6 +2828,9 @@ function openCreateEventModal(prefillDate, returnDate) {
       <button class="btn btn-secondary" onclick="${back}">Cancel</button>
       <button class="btn btn-primary" id="evt-submit-btn" onclick="submitCreateEvent(${returnDate ? `'${returnDate}'` : 'null'})">📅 Create</button>
     </div>`);
+  document.getElementById('evt-death-time')?.addEventListener('input', () => _applyDeathTime('evt'));
+  document.getElementById('evt-date')?.addEventListener('input', () => _applyScheduledTimeToDeath('evt'));
+  document.getElementById('evt-time')?.addEventListener('input', () => _applyScheduledTimeToDeath('evt'));
   _evtBossChanged();
 }
 
@@ -2725,16 +2852,89 @@ function _durationForBoss(boss) {
 
 // Toggles the End Time field on/off depending on whether Maintenance is
 // selected — it's the only event type with an admin-set start AND end
-// time instead of a fixed category duration. Handles both the Create
-// and Edit modals (whichever ids are present in the DOM right now).
+// time instead of a fixed category duration. Also toggles the "Enter
+// Death Time" field on/off depending on whether the selected boss has a
+// known respawn timer (see RESPAWN_MS). Handles both the Create and
+// Edit modals (whichever ids are present in the DOM right now).
 function _evtBossChanged() {
-  const bossSel   = document.getElementById('evt-boss') || document.getElementById('evt-edit-boss');
-  const endGroup  = document.getElementById('evt-end-time-group') || document.getElementById('evt-edit-end-time-group');
-  const timeLabel = document.getElementById('evt-time-label') || document.getElementById('evt-edit-time-label');
+  const isCreate  = !!document.getElementById('evt-boss');
+  const prefix    = isCreate ? 'evt' : 'evt-edit';
+  const bossSel   = document.getElementById(`${prefix}-boss`);
+  const endGroup  = document.getElementById(`${prefix}-end-time-group`);
+  const timeLabel = document.getElementById(`${prefix}-time-label`);
+  const deathGroup = document.getElementById(`${prefix}-death-group`);
   if (!bossSel) return;
   const isManual = MANUAL_DURATION_BOSSES.includes(bossSel.value);
   if (endGroup)  endGroup.style.display = isManual ? '' : 'none';
   if (timeLabel) timeLabel.textContent  = isManual ? 'Start Time' : 'Time';
+
+  if (deathGroup) {
+    const respawnMs = RESPAWN_MS[bossSel.value];
+    if (respawnMs) {
+      deathGroup.style.display = '';
+      const deathInput = document.getElementById(`${prefix}-death-time`);
+      if (deathInput) {
+        if (isCreate) {
+          // New event: default Death Time to now and immediately derive
+          // the spawn Date/Time from it, for speed.
+          deathInput.value = _fmtDatetimeLocal(new Date());
+          _applyDeathTime(prefix);
+        } else {
+          // Editing an existing event: derive Death Time FROM the
+          // event's already-set spawn Date/Time instead of resetting.
+          _applyScheduledTimeToDeath(prefix);
+        }
+      }
+    } else {
+      deathGroup.style.display = 'none';
+    }
+  }
+}
+
+// ── Death Time <-> Scheduled Time linking ───────────────────────
+// Lets an admin type when a boss died and have the spawn Date/Time
+// fields fill in automatically (Death Time + this boss's respawn
+// timer), or type/adjust the spawn Date/Time directly and have Death
+// Time update to match (Scheduled Time - respawn timer). Each side only
+// writes the OTHER side's .value directly (no dispatched event), so the
+// two can't loop into each other.
+function _fmtDatetimeLocal(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function _fmtDateOnly(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+function _fmtTimeOnly(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function _applyDeathTime(prefix) {
+  const boss = document.getElementById(`${prefix}-boss`)?.value;
+  const respawnMs = RESPAWN_MS[boss];
+  if (!respawnMs) return;
+  const deathInput = document.getElementById(`${prefix}-death-time`);
+  if (!deathInput || !deathInput.value) return;
+  const deathMs = new Date(deathInput.value).getTime();
+  if (!Number.isFinite(deathMs)) return;
+  const spawnDate = new Date(deathMs + respawnMs);
+  const dateInput = document.getElementById(`${prefix}-date`);
+  const timeInput = document.getElementById(`${prefix}-time`);
+  if (dateInput) dateInput.value = _fmtDateOnly(spawnDate);
+  if (timeInput) timeInput.value = _fmtTimeOnly(spawnDate);
+}
+function _applyScheduledTimeToDeath(prefix) {
+  const boss = document.getElementById(`${prefix}-boss`)?.value;
+  const respawnMs = RESPAWN_MS[boss];
+  if (!respawnMs) return;
+  const dateStr = document.getElementById(`${prefix}-date`)?.value;
+  const timeStr = document.getElementById(`${prefix}-time`)?.value;
+  if (!dateStr || !timeStr) return;
+  const schedMs = new Date(`${dateStr}T${timeStr}:00`).getTime();
+  if (!Number.isFinite(schedMs)) return;
+  const deathInput = document.getElementById(`${prefix}-death-time`);
+  if (deathInput) deathInput.value = _fmtDatetimeLocal(new Date(schedMs - respawnMs));
 }
 
 // For Maintenance (the only MANUAL_DURATION_BOSSES entry), duration is
@@ -2803,9 +3003,12 @@ function openEventModal(eventId, dayViewDate) {
     <div class="modal-title">✏️ Edit Event</div>
     <div class="form-group">
       <label class="form-label">Boss / Mini</label>
-      <select class="form-input" id="evt-edit-boss" onchange="_evtBossChanged()">
-        ${bosses.map(b => `<option value="${escHtml(b)}" ${b===ev.boss?'selected':''}>${escHtml(b)}</option>`).join('')}
-      </select>
+      ${_renderIconSelect('evt-edit-boss', bosses, ev.boss, '_evtBossChanged()')}
+    </div>
+    <div class="form-group" id="evt-edit-death-group" style="display:none">
+      <label class="form-label">Enter Death Time</label>
+      <input type="datetime-local" class="form-input" id="evt-edit-death-time">
+      <p style="font-size:.75rem;color:var(--text-muted);margin:.35rem 0 0">Sets Date/Time below to this boss's respawn time automatically. You can still edit Date/Time directly instead.</p>
     </div>
     <div class="form-group">
       <label class="form-label">Date</label>
@@ -2832,6 +3035,9 @@ function openEventModal(eventId, dayViewDate) {
       <button class="btn btn-secondary" onclick="${back}">Back</button>
       <button class="btn btn-primary" id="evt-edit-submit-btn" onclick="submitEditEvent('${ev.id}','${dayViewDate||''}')">💾 Save</button>
     </div>`);
+  document.getElementById('evt-edit-death-time')?.addEventListener('input', () => _applyDeathTime('evt-edit'));
+  document.getElementById('evt-edit-date')?.addEventListener('input', () => _applyScheduledTimeToDeath('evt-edit'));
+  document.getElementById('evt-edit-time')?.addEventListener('input', () => _applyScheduledTimeToDeath('evt-edit'));
   _evtBossChanged();
 }
 
@@ -2925,7 +3131,6 @@ function renderDrops() {
     el.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
         <div class="section-title" style="margin-bottom:0">💎 Boss Runs</div>
-        <div id="new-run-btn-wrap">${App.user.isDropsHandler ? `<button class="btn btn-secondary" style="font-size:.8rem;padding:.4rem .8rem" onclick="openNewRunModal()">+ New Run</button>` : ''}</div>
       </div>
       <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
       <div class="table-scroll">
@@ -2946,53 +3151,6 @@ function renderDrops() {
         </table>
       </div>`;
   });
-}
-
-// ============================================================
-//  NEW RUN (Drops page) — a "run" is just a scheduled event now (see
-//  event-anchored grouping in get_grouped_runs), so creating one is
-//  exactly createEvent under the hood. This is a trimmed version of the
-//  Create Event modal, surfaced directly on the Drops page so a Drops
-//  Handler never has to leave it to open a boss's run.
-// ============================================================
-function openNewRunModal() {
-  const bossOptions = _allBossNames().filter(b => b !== 'Siege' && b !== 'Library Boss');
-  const now = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  const defaultVal = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  showModal(`
-    <div class="modal-title">+ New Run</div>
-    <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem;line-height:1.5">
-      Creates the scheduled event that opens attendance submissions for this
-      boss — the run itself appears here automatically once people start
-      submitting against it.
-    </p>
-    <div class="form-group">
-      <label class="form-label">Boss</label>
-      <select class="form-input" id="new-run-boss">${bossOptions.map(b => `<option value="${escHtml(b)}">${escHtml(b)}</option>`).join('')}</select>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Time</label>
-      <input class="form-input" id="new-run-time" type="datetime-local" value="${defaultVal}">
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="new-run-submit-btn" onclick="submitNewRun()">Create</button>
-    </div>`);
-}
-
-function submitNewRun() {
-  const boss = document.getElementById('new-run-boss').value;
-  const raw  = document.getElementById('new-run-time').value;
-  if (!raw) { toast('Pick a time first.', 'error'); return; }
-  const btn = document.getElementById('new-run-submit-btn');
-  btn.disabled = true; btn.textContent = 'Creating…';
-
-  API.write('create_event', { boss, scheduledAt: new Date(raw).toISOString() }, ['get_grouped_runs', 'get_events'])
-    .then(res => {
-      if (res.success) { toast(`${boss} run created.`, 'success'); closeModal(); renderDrops(); }
-      else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = 'Create'; }
-    }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = 'Create'; });
 }
 
 function toggleDropQty(cb) {

@@ -117,6 +117,30 @@ const BOSS_DROPS: Record<string, string[]> = {
 const BOSS_POINTS: Record<string, number> = {};
 BOSS_CATEGORIES.forEach(cat => cat.bosses.forEach(b => { BOSS_POINTS[b.name] = b.points; }));
 
+// ── Minimum character level required for attendance credit ─────
+// A flat number applies to every class. An object maps char_class ->
+// its own minimum level, for the few bosses where the requirement
+// differs by class (currently just Platanista: Magicians need less
+// than Warriors/Rangers/Breakers). A boss with no entry here has no
+// level requirement (Siege has its own uniform entry; Summer Sephia,
+// Kooby Dic, Maintenance, and Library Boss's per-instance bosses use
+// the shared 'Library Boss' key below and are intentionally omitted
+// where the alliance doesn't gate them).
+const BOSS_LEVEL_REQ: Record<string, number | Record<string, number>> = {
+  'BIGMAMA': 46, 'Ukpana': 46, 'Barslaf': 46, 'Illust': 46, 'Sephia': 46,
+  'Aiyo': 46, 'Darlene': 46, 'Caligo': 46,
+  'Platanista': { Warrior: 48, Ranger: 48, Breaker: 48, Magician: 40 },
+  'Soul Lich': 46, 'Library Boss': 48,
+  'Faith': 46, 'Billiard': 46, 'Actaemon': 46, 'Devilang': 30,
+  'Siege': 30,
+};
+function levelReqForBoss(boss: string, charClass: string): number {
+  const req = BOSS_LEVEL_REQ[boss];
+  if (req == null) return 0;
+  if (typeof req === 'number') return req;
+  return req[charClass] ?? 0;
+}
+
 // ── Notification grouping — which settings-page toggle a boss falls
 // under. "Mini Bosses" category -> mini notifications; everything else
 // (Raid Bosses, Library Bosses) -> boss notifications.
@@ -974,11 +998,25 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   }
   if (!bosses || !bosses.length) return { success: false, message: 'No bosses selected.' };
 
-  const { data: char } = await supabase.from('characters').select('ign, points').eq('char_id', charId).maybeSingle();
+  const { data: char } = await supabase.from('characters').select('ign, points, level, char_class').eq('char_id', charId).maybeSingle();
   if (!char) return { success: false, message: 'Invalid character.' };
   if (!(await isLinkedToChar(supabase, email, charId))) return { success: false, message: 'You are not linked to this character.' };
 
   const now = new Date();
+
+  // All-or-nothing level gate: every boss has a minimum character level
+  // (a few, like Platanista, vary by class). Same as the schedule gate
+  // below — one under-leveled boss in the batch rejects the WHOLE
+  // submission rather than silently dropping just that boss.
+  const charLevel = Number(char.level) || 0;
+  const underleveled = bosses.filter(b => charLevel < levelReqForBoss(b, char.char_class || ''));
+  if (underleveled.length) {
+    const reqList = underleveled.map(b => `${b} (Lv.${levelReqForBoss(b, char.char_class || '')}+)`).join(', ');
+    return {
+      success: false,
+      message: `${char.ign} is Lv.${charLevel}, which doesn't meet the level requirement for ${reqList}. Nothing in this submission was recorded.`,
+    };
+  }
 
   // All-or-nothing schedule gate: if ANY selected boss has no recent
   // scheduled event backing it, the WHOLE submission is rejected — not
