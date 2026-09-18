@@ -87,7 +87,7 @@ const BOSS_CATEGORIES = [
     category: 'Event Bosses', emoji: '🎉',
     bosses: [
       { name: 'Summer Sephia', points: 1, emoji: '☀️' },
-      { name: 'Kooby Dic',     points: 0, emoji: '🐶' },
+      { name: 'Kooby Dic',     points: 0, emoji: '🐋' },
     ]
   },
 ];
