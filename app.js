@@ -119,7 +119,7 @@ const BOSS_HEADSHOTS = {
   'Faith':       '/sprites/boss sprites/faith_headshot.png',
   'Billiard':    '/sprites/boss sprites/billiard_headshot.png',
   'Actaemon':    '/sprites/boss sprites/actaemon_headshot.png',
-  'Soul Lich':   '/sprites/boss sprites/soul_lich_headshot.png',
+  'Soul Lich':   '/sprites/boss sprites/soul lich_headshot.png',
   'Devilang':    '/sprites/boss sprites/devilang_headshot.png',
 };
 
