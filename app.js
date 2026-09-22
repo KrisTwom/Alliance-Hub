@@ -3126,19 +3126,31 @@ function renderDrops() {
     <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
     ${Skeleton.table('', [20, 18, 28, 15, 12], 6)}`;
 
-  API.read('get_grouped_runs').then(runs => {
+  _loadGroupedRuns(5);
+}
+
+// Fetches and renders the boss-runs table for the last `days` days.
+// Starts at 5 (see renderDrops) and grows 5 days at a time via the
+// "Show more" button below the table — each depth is its own cache key
+// (see Cache.key), so growing the window is a fresh, smaller-than-before
+// backend query rather than re-fetching everything from scratch.
+function _loadGroupedRuns(days) {
+  const el = document.getElementById('view-drops');
+  window._runsDaysLoaded = days;
+
+  API.read('get_grouped_runs', { days }).then(runs => {
     window._runs = runs || [];
     el.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
         <div class="section-title" style="margin-bottom:0">💎 Boss Runs</div>
       </div>
-      <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops.</p>
+      <p style="color:var(--text-secondary);font-size:.85rem;margin-bottom:1rem">Click any row to review, edit participants & confirm drops. Showing the last ${days} day${days===1?'':'s'}.</p>
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Timestamp</th><th>Boss</th><th>Drops</th><th>Participants</th><th>Status</th></tr></thead>
           <tbody>
             ${!(runs||[]).length
-              ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem">No boss runs recorded yet.</td></tr>`
+              ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem">No boss runs recorded in this period.</td></tr>`
               : runs.map((r,i) => `
                 <tr onclick="openRunModal(${i})">
                   <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
@@ -3149,8 +3161,17 @@ function renderDrops() {
                 </tr>`).join('')}
           </tbody>
         </table>
+      </div>
+      <div style="display:flex;justify-content:center;margin-top:1rem">
+        <button class="btn btn-secondary" id="drops-load-more-btn" onclick="_loadMoreRuns()">Show 5 more days</button>
       </div>`;
   });
+}
+
+function _loadMoreRuns() {
+  const btn = document.getElementById('drops-load-more-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+  _loadGroupedRuns((window._runsDaysLoaded || 5) + 5);
 }
 
 function toggleDropQty(cb) {
@@ -3346,11 +3367,16 @@ function removeRunParticipant(idx, attendanceId, ign) {
 // Re-fetches grouped runs after an add/remove and reopens the modal for
 // the same run so the participant list reflects the change immediately.
 function _reopenRunModal(boss, windowStart) {
-  API.read('get_grouped_runs').then(runs => {
+  // Re-fetch at whatever depth is currently loaded (not the default 5
+  // days) so a run further back than that doesn't vanish out from under
+  // an open modal, and so window._runs indices stay in sync with what's
+  // actually rendered behind it.
+  const days = window._runsDaysLoaded || 5;
+  API.read('get_grouped_runs', { days }).then(runs => {
     window._runs = runs || [];
     const newIdx = window._runs.findIndex(r => r.boss === boss && r.windowStart === windowStart);
     if (newIdx >= 0) openRunModal(newIdx); else closeModal();
-    renderDrops();
+    _loadGroupedRuns(days);
   });
 }
 
@@ -3396,7 +3422,7 @@ function submitRunConfirm(idx) {
       ['get_grouped_runs', 'get_inventory']
     );
   }).then(res => {
-    if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); renderDrops(); }
+    if (res.success) { toast('Run confirmed & inventory updated!', 'success'); closeModal(); _loadGroupedRuns(window._runsDaysLoaded || 5); }
     else {
       toast(res.error||'Error', 'error');
       btn.disabled=false; btn.textContent='✓ Confirm Run';
@@ -4018,19 +4044,70 @@ function renderRoster() {
   API.read('get_roster').then(roster => {
     roster = roster || [];
     window._rosterData = roster;
-    const active  = roster.filter(r => r.status === 'active');
-    const pending = roster.filter(r => r.status === 'pending');
-    el.innerHTML = `
-      <div class="section-title">👥 Roster</div>
-      <div class="stats-row">
-        <div class="stat-chip"><div class="stat-chip-label">Active</div><div class="stat-chip-value">${active.length}</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Pending</div><div class="stat-chip-value">${pending.length}</div></div>
-      </div>
-      <button class="btn btn-primary" style="margin-bottom:1.2rem" onclick="openRegisterMemberModal()">+ Register Member</button>
-      ${pending.length ? `<div class="section-title" style="font-size:.95rem">Pending Approval</div>${pending.map(r=>rosterCard(r)).join('')}<div style="margin-top:1rem"></div>` : ''}
-      <div class="section-title" style="font-size:.95rem">Active Members</div>
-      ${!active.length ? `<div class="card"><div class="empty-state"><span class="empty-state-icon">👥</span>No active members yet.</div></div>` : active.map(r=>rosterCard(r)).join('')}`;
+    _renderRosterList(window._rosterSearchQuery || '');
   });
+}
+
+// Renders the roster list filtered by `query` (name/nickname/IGN/email),
+// searched against the already-fetched window._rosterData — no refetch
+// per keystroke. Active/Pending counts in the stat chips always reflect
+// the full roster, not the filtered view, so they don't jump around
+// while someone's typing a search.
+function _renderRosterList(query) {
+  const el = document.getElementById('view-roster');
+  const roster = window._rosterData || [];
+  window._rosterSearchQuery = query;
+
+  const q = (query || '').trim().toLowerCase();
+  const matchesQuery = r => {
+    if (!q) return true;
+    const chars = r.characters || [];
+    const haystack = [r.nickname || '', r.email || '', ...chars.map(c => c.ign || '')]
+      .join(' ').toLowerCase();
+    return haystack.includes(q);
+  };
+
+  const activeAll  = roster.filter(r => r.status === 'active');
+  const pendingAll = roster.filter(r => r.status === 'pending');
+  const active  = activeAll.filter(matchesQuery);
+  const pending = pendingAll.filter(matchesQuery);
+
+  el.innerHTML = `
+    <div class="section-title">👥 Roster</div>
+    <div class="stats-row">
+      <div class="stat-chip"><div class="stat-chip-label">Active</div><div class="stat-chip-value">${activeAll.length}</div></div>
+      <div class="stat-chip"><div class="stat-chip-label">Pending</div><div class="stat-chip-value">${pendingAll.length}</div></div>
+    </div>
+    <button class="btn btn-primary" style="margin-bottom:1.2rem" onclick="openRegisterMemberModal()">+ Register Member</button>
+    <details style="margin-bottom:1.2rem">
+      <summary style="cursor:pointer;font-size:.8rem;color:var(--text-secondary)">🛠 Data repair tools</summary>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
+        <button class="btn btn-sm btn-secondary" id="repair-maint-btn" onclick="runMaintenanceEventRepair()">Fix post-maintenance run mix-ups</button>
+      </div>
+      <p style="font-size:.72rem;color:var(--text-muted);margin-top:.4rem">One-time fix for boss runs that got merged together or auto-confirmed after a maintenance. Safe to click more than once — does nothing if there's nothing left to fix.</p>
+    </details>
+    <div class="form-group" style="position:relative;margin-bottom:1.2rem">
+      <input type="text" class="form-input" id="roster-search" placeholder="🔎 Search by name, character, or email…" autocomplete="off" value="${escHtml(query || '')}" oninput="_onRosterSearchInput(this.value)">
+    </div>
+    ${pending.length ? `<div class="section-title" style="font-size:.95rem">Pending Approval</div>${pending.map(r=>rosterCard(r)).join('')}<div style="margin-top:1rem"></div>` : ''}
+    <div class="section-title" style="font-size:.95rem">Active Members</div>
+    ${!active.length
+      ? `<div class="card"><div class="empty-state"><span class="empty-state-icon">👥</span>${q ? `No members match "${escHtml(query.trim())}".` : 'No active members yet.'}</div></div>`
+      : active.map(r=>rosterCard(r)).join('')}`;
+}
+
+// Re-renders the filtered list on every keystroke, then restores focus
+// and cursor position to the search input (its own innerHTML just got
+// replaced along with the rest of the page, which would otherwise steal
+// focus after each character typed).
+function _onRosterSearchInput(value) {
+  _renderRosterList(value);
+  const input = document.getElementById('roster-search');
+  if (input) {
+    input.focus();
+    const pos = value.length;
+    input.setSelectionRange(pos, pos);
+  }
 }
 
 function rosterCard(r) {
@@ -4085,6 +4162,24 @@ function changeMemberRole(memberEmail, role) {
     if (res.success) { toast(`Role updated to ${label}.`, 'success'); renderRoster(); }
     else { toast(res.error || 'Error', 'error'); renderRoster(); }
   }).catch(() => { toast('Network error', 'error'); renderRoster(); });
+}
+
+// One-time (but safe to re-run) fix for the 2026-09-22 incident where
+// bosses/minis killed shortly after a maintenance all got merged onto one
+// shared identifier — see repairMaintenanceEventContamination on the
+// backend for the full story. Busts get_grouped_runs so the Drops page
+// reflects the correction immediately.
+function runMaintenanceEventRepair() {
+  const btn = document.getElementById('repair-maint-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Fixing…'; }
+  API.write('repair_maintenance_event_contamination', {}, ['get_grouped_runs', 'get_char_attendance', 'get_late_linked_attendance'])
+    .then(res => {
+      if (!res.success) { toast(res.error || 'Error', 'error'); return; }
+      if (!res.contaminatedEventIds) { toast('Nothing to fix — no mixed-up runs found.', 'success'); return; }
+      toast(`Fixed ${res.contaminatedEventIds} mixed-up event(s): ${res.attendanceRowsFixed} attendance rows re-tagged, ${res.wrongLinksCleared} wrong run links cleared, ${res.runsFixed} confirmed run(s) reattached, ${res.participantRowsWritten} participant rows rebuilt.`, 'success');
+    })
+    .catch(() => toast('Network error', 'error'))
+    .finally(() => { if (btn) { btn.disabled = false; btn.textContent = 'Fix post-maintenance run mix-ups'; } });
 }
 
 // Declining a pending request removes their roster row entirely (not a

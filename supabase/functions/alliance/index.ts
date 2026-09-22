@@ -87,7 +87,7 @@ const BOSS_CATEGORIES = [
     category: 'Event Bosses', emoji: '🎉',
     bosses: [
       { name: 'Summer Sephia', points: 1, emoji: '☀️' },
-      { name: 'Kooby Dic',     points: 0, emoji: '🐋' },
+      { name: 'Kooby Dic',     points: 0, emoji: '🐶' },
     ]
   },
 ];
@@ -361,13 +361,18 @@ Deno.serve(async (req) => {
       case 'link_character':      return ok(await linkCharacter(supabase, email, data.memberEmail as string, data.charId as string));
       case 'get_all_characters':  return ok(await getAllCharacters(supabase, email));
       case 'set_member_role':     return ok(await setMemberRole(supabase, email, data));
-      case 'get_grouped_runs':    return ok(await getGroupedRuns(supabase, email));
+      case 'get_grouped_runs':    return ok(await getGroupedRuns(supabase, email, data.days as number | undefined));
       case 'confirm_run':         return ok(await confirmRun(supabase, email, data.runData as Record<string, unknown>));
       // One-time repair for the fixed-window SQL backfill incident — see
       // repairRunLinks() above. Safe to leave wired in; it's idempotent
       // and super-admin gated, but feel free to remove this line (and
       // the function) once you've confirmed the Drops page looks right.
       case 'repair_run_links':    return ok(await repairRunLinks(supabase, email));
+      // One-time repair for the 2026-09-22 post-maintenance event_id
+      // collision incident — see the function's own comment. Safe to
+      // leave wired in; it's idempotent (no-op once nothing's left
+      // contaminated), super-admin gated, and cheap to re-run.
+      case 'repair_maintenance_event_contamination': return ok(await repairMaintenanceEventContamination(supabase, email));
       // Reset Window (get_window_resets / reset_window / schedule_window_reset
       // / execute_scheduled_reset) was removed — Maintenance events now serve
       // as the global cutoff automatically (see checkAttendanceEligibility's
@@ -981,8 +986,28 @@ async function checkAttendanceEligibility(supabase: ReturnType<typeof db>, bosse
     // just ended — treat its end as a substitute anchor (unchanged from
     // before). Library Boss/Siege never use this; they have their own
     // fixed schedule above.
+    //
+    // BUG FIX (2026-09-22): this used to hand out `maintEventId` verbatim
+    // — the Maintenance event's OWN id — to every boss that fell into
+    // this fallback. Since every boss/mini killed in the post-maintenance
+    // window (before its own dedicated event exists) took this same
+    // branch, they all ended up sharing ONE identical event_id across
+    // completely different bosses. event_id is treated as an authoritative,
+    // boss-unique run boundary everywhere downstream (getGroupedRuns'
+    // grouping/status matching, linkLateSubmissions' late-link matching),
+    // so that collision meant: (a) confirming any ONE of those bosses'
+    // runs made every OTHER boss sharing the id display as "Confirmed"
+    // too (getGroupedRuns matches a saved run by event_id alone), and
+    // (b) late submissions for one boss got silently late-linked into a
+    // different boss's confirmed run (linkLateSubmissions matched by
+    // event_id alone). Deriving a per-boss id from the maintenance anchor
+    // keeps every submitter of the SAME boss sharing the same id (so that
+    // boss's own attendance still groups into one run, which is the whole
+    // point of this fallback) while keeping different bosses apart.
     if (!best && maintAnchor !== null && maintEventId && boss !== 'Library Boss' && boss !== 'Siege') {
-      if (nowMs >= maintAnchor && nowMs <= maintAnchor + ATTENDANCE_WINDOW_MS) best = { eventId: maintEventId, anchorMs: maintAnchor };
+      if (nowMs >= maintAnchor && nowMs <= maintAnchor + ATTENDANCE_WINDOW_MS) {
+        best = { eventId: `MAINT_${maintEventId}_${boss.replace(/[^a-zA-Z0-9]/g, '_')}`, anchorMs: maintAnchor };
+      }
     }
 
     if (best) eventIdByBoss[boss] = best.eventId;
@@ -1139,7 +1164,17 @@ async function linkLateSubmissions(supabase: ReturnType<typeof db>, charId: stri
       // Authoritative: this row's event IS the run boundary — exact match,
       // no gap heuristics needed, and no risk of crossing into a
       // different real kill's run.
-      match = confirmedRuns.find(r => r.event_id === row.event_id);
+      //
+      // DEFENSE-IN-DEPTH (2026-09-22): also require r.boss === row.boss.
+      // event_id is supposed to be boss-unique already, but the
+      // post-maintenance eligibility fallback used to hand the SAME
+      // event_id to every boss killed shortly after a Maintenance (see
+      // checkAttendanceEligibility) — which let a late submission for
+      // one boss get silently late-linked into a DIFFERENT boss's
+      // already-confirmed run purely because they shared that id. The
+      // boss check keeps that from ever happening again even if some
+      // other future bug reintroduces a shared event_id.
+      match = confirmedRuns.find(r => r.event_id === row.event_id && r.boss === row.boss);
     } else {
       const ts = new Date(row.ts).getTime();
       match = confirmedRuns.find(r => {
@@ -1296,8 +1331,16 @@ async function editAttendanceRow(supabase: ReturnType<typeof db>, email: string,
 // ============================================================
 //  RUNS
 // ============================================================
-async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
+async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string, days?: number) {
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
+
+  // Drops page pagination: the frontend asks for a small lookback window
+  // first (5 days) and grows it 5 days at a time via "Show more", so a
+  // typical page load only groups a handful of days of attendance instead
+  // of the full 30-day history every time. Callers that don't care about
+  // pagination (the login-time dashboard prefetch) omit `days` and keep
+  // getting the original 30-day window.
+  const lookbackDays = (typeof days === 'number' && days > 0) ? days : 30;
 
   // IMPORTANT: this query used to have no date bound and no explicit
   // .range()/.limit(). Supabase/PostgREST caps unbounded selects at 1000
@@ -1315,7 +1358,7 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
   // is exactly what was still happening here. Paginating with .range()
   // is the actual fix; the date bound is just an optimization on top of
   // it, not a substitute for it.
-  const groupedRunsCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const groupedRunsCutoff = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
   const PAGE_SIZE = 1000;
   const attRows: Array<{ id: string; ts: string; char_id: string; ign: string; email: string; boss: string; manually_added: boolean; run_id: string; event_id: string }> = [];
   for (let from = 0; ; from += PAGE_SIZE) {
@@ -1422,10 +1465,20 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string) {
     // just-confirmed before linkAttendanceToRun's update lands). Only fall
     // back to the old boss+windowStart proximity match for legacy rows
     // that predate both run_id and event_id being reliably set.
+    //
+    // DEFENSE-IN-DEPTH (2026-09-22): also require r.boss === run.boss on
+    // the event_id branch. event_id is *supposed* to be boss-unique, but
+    // the post-maintenance eligibility fallback used to hand out one
+    // shared event_id to every boss (see checkAttendanceEligibility) —
+    // which meant confirming ANY one of those bosses made every other
+    // boss sharing that id display as "Confirmed" too, since this match
+    // ignored boss entirely. Keeping the boss check here means a future
+    // event_id collision (whatever its cause) can never again bleed one
+    // boss's confirmed status/participants/drops onto an unrelated boss.
     const saved = run.linkedRunId
       ? (savedRuns || []).find(r => r.run_id === run.linkedRunId)
       : run.eventId
-      ? (savedRuns || []).find(r => r.event_id === run.eventId)
+      ? (savedRuns || []).find(r => r.event_id === run.eventId && r.boss === run.boss)
       : (savedRuns || []).find(r =>
           r.boss === run.boss && Math.abs(new Date(r.window_start).getTime() - run.windowStart) < 60000
         );
@@ -1683,6 +1736,138 @@ async function repairRunLinks(supabase: ReturnType<typeof db>, email: string) {
   };
 }
 
+// One-time repair for the 2026-09-22 post-maintenance event_id collision
+// incident. checkAttendanceEligibility used to hand out the Maintenance
+// event's OWN event_id, verbatim, to every boss/mini that lacked its own
+// dedicated scheduled event shortly after a Maintenance ended — instead
+// of a boss-specific id (now fixed there; see the comment on that
+// fallback branch). Since event_id is treated everywhere downstream as
+// an authoritative, boss-unique run boundary, that collision let:
+//   - confirming any ONE of the affected bosses make every OTHER boss
+//     sharing the id display as "Confirmed" too (getGroupedRuns matched
+//     a saved run by event_id alone — now also requires matching boss),
+//   - late submissions for one boss get silently linked into a
+//     different boss's confirmed run, and the run's own participant
+//     link pass do the same at confirm time (linkLateSubmissions /
+//     linkAttendanceToRun both matched by event_id alone — now also
+//     require matching boss).
+// This function finds any event_id that (still) spans more than one
+// distinct boss — the exact fingerprint that incident left behind, and
+// the only way this pattern can occur even for older/legacy data — and:
+//   1. splits it into a distinct, boss-scoped id per boss on `attendance`,
+//   2. moves any `runs` row using that event_id onto the matching new id
+//      for ITS OWN boss (so a genuinely-confirmed run keeps its status),
+//   3. clears run_id (and late_linked) on any attendance row that had
+//      been cross-linked into a run belonging to a DIFFERENT boss,
+//   4. rebuilds run_participants from scratch for every run so it
+//      exactly mirrors the corrected attendance.run_id values.
+// Idempotent — running it again with nothing left contaminated is a
+// no-op (returns contaminatedEventIds: 0). Safe to leave wired in.
+async function repairMaintenanceEventContamination(supabase: ReturnType<typeof db>, email: string) {
+  if (!(await isSuperAdmin(supabase, email))) return { error: 'Super Admin only.' };
+
+  const PAGE_SIZE = 1000;
+  const attRows: Array<{ id: string; char_id: string; boss: string; event_id: string; run_id: string }> = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('attendance')
+      .select('id, char_id, boss, event_id, run_id')
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    attRows.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+
+  const bossesByEvent: Record<string, Set<string>> = {};
+  attRows.forEach(r => {
+    if (!r.event_id) return;
+    (bossesByEvent[r.event_id] ||= new Set()).add(r.boss);
+  });
+  const contaminatedEventIds = new Set(Object.keys(bossesByEvent).filter(e => bossesByEvent[e].size > 1));
+
+  if (!contaminatedEventIds.size) {
+    return { success: true, contaminatedEventIds: 0, attendanceRowsFixed: 0, runsFixed: 0, wrongLinksCleared: 0, participantRowsWritten: 0 };
+  }
+
+  const CHUNK = 200;
+  const sanitize = (b: string) => b.replace(/[^a-zA-Z0-9]/g, '_');
+  const correctedEventId = (oldId: string, boss: string) => `${oldId}__FIX__${sanitize(boss)}`;
+
+  // 1) Split every contaminated event_id into a distinct id per boss.
+  let attendanceRowsFixed = 0;
+  for (const eventId of contaminatedEventIds) {
+    for (const boss of bossesByEvent[eventId]!) {
+      const idsForBoss = attRows.filter(r => r.event_id === eventId && r.boss === boss).map(r => r.id);
+      const newId = correctedEventId(eventId, boss);
+      for (let i = 0; i < idsForBoss.length; i += CHUNK) {
+        const chunk = idsForBoss.slice(i, i + CHUNK);
+        const { error } = await supabase.from('attendance').update({ event_id: newId }).in('id', chunk);
+        if (error) throw error;
+        attendanceRowsFixed += chunk.length;
+      }
+    }
+  }
+
+  // 2) Move any runs row off a contaminated event_id onto the corrected
+  //    id for its own boss, so a genuinely-confirmed run stays matched.
+  const { data: runsRaw } = await supabase.from('runs').select('run_id, boss, event_id');
+  const runs = (runsRaw || []) as Array<{ run_id: string; boss: string; event_id: string | null }>;
+  let runsFixed = 0;
+  for (const run of runs) {
+    if (!run.event_id || !contaminatedEventIds.has(run.event_id)) continue;
+    const newId = correctedEventId(run.event_id, run.boss);
+    const { error } = await supabase.from('runs').update({ event_id: newId }).eq('run_id', run.run_id);
+    if (error) throw error;
+    runsFixed++;
+  }
+
+  // 3) Clear run_id on any attendance row cross-linked into a run
+  //    belonging to a DIFFERENT boss than the row's own.
+  const runBossById: Record<string, string> = {};
+  runs.forEach(r => { runBossById[r.run_id] = r.boss; });
+  const wrongLinkIds = new Set(
+    attRows.filter(r => r.run_id && runBossById[r.run_id] !== undefined && runBossById[r.run_id] !== r.boss).map(r => r.id)
+  );
+  let wrongLinksCleared = 0;
+  const wrongLinkIdsArr = [...wrongLinkIds];
+  for (let i = 0; i < wrongLinkIdsArr.length; i += CHUNK) {
+    const chunk = wrongLinkIdsArr.slice(i, i + CHUNK);
+    const { error } = await supabase.from('attendance').update({ run_id: '', late_linked: false }).in('id', chunk);
+    if (error) throw error;
+    wrongLinksCleared += chunk.length;
+  }
+
+  // 4) Rebuild run_participants from scratch for every run so it exactly
+  //    mirrors the corrected attendance.run_id values (same approach as
+  //    repairRunLinks above).
+  const rebuiltParticipants: Record<string, Set<string>> = {};
+  attRows.forEach(r => {
+    const finalRunId = wrongLinkIds.has(r.id) ? '' : (r.run_id || '');
+    if (finalRunId) (rebuiltParticipants[finalRunId] ||= new Set()).add(r.char_id);
+  });
+  let participantRowsWritten = 0;
+  for (const run of runs) {
+    await supabase.from('run_participants').delete().eq('run_id', run.run_id);
+    const charIds = [...(rebuiltParticipants[run.run_id] || [])];
+    if (charIds.length) {
+      await supabase.from('run_participants').upsert(
+        charIds.map(charId => ({ run_id: run.run_id, char_id: charId })),
+        { onConflict: 'run_id,char_id', ignoreDuplicates: true }
+      );
+      participantRowsWritten += charIds.length;
+    }
+  }
+
+  return {
+    success: true,
+    contaminatedEventIds: contaminatedEventIds.size,
+    attendanceRowsFixed,
+    runsFixed,
+    wrongLinksCleared,
+    participantRowsWritten,
+  };
+}
+
 // ============================================================
 //  ATTENDANCE — admin cleanup of mistake submissions
 // ============================================================
@@ -1836,11 +2021,17 @@ async function addRunParticipant(supabase: ReturnType<typeof db>, email: string,
   const windowStartMs = new Date(windowStart).getTime();
   let alreadyIn: boolean;
   if (eventId) {
+    // DEFENSE-IN-DEPTH (2026-09-22): also filter by boss — see the same
+    // note in linkAttendanceToRun. Without it, a char who'd attended a
+    // DIFFERENT boss that happened to share this event_id (the
+    // post-maintenance collision bug) would look "already in" this run
+    // and silently block a legitimate manual add.
     const { data: existingRows } = await supabase
       .from('attendance')
       .select('id')
       .eq('char_id', charId)
       .eq('event_id', eventId)
+      .eq('boss', boss)
       .limit(1);
     alreadyIn = !!(existingRows && existingRows.length);
   } else {
@@ -2007,10 +2198,20 @@ async function linkAttendanceToRun(supabase: ReturnType<typeof db>, runId: strin
     // Authoritative path: every unlinked row tied to this exact event
     // belongs to this run — exact match, no gap heuristics, no risk of
     // crossing into a different real kill's window.
+    //
+    // DEFENSE-IN-DEPTH (2026-09-22): also filter by boss. event_id is
+    // supposed to be boss-unique, but the post-maintenance eligibility
+    // fallback used to hand the SAME event_id to every boss killed
+    // shortly after a Maintenance (see checkAttendanceEligibility) — so
+    // confirming ONE of those bosses swept every OTHER boss's unlinked
+    // attendance sharing that id into this run too, with no boss filter
+    // to stop it. Keeping this filter means a future event_id collision
+    // can never again pull an unrelated boss's submissions into this run.
     const { data } = await supabase
       .from('attendance')
       .select('id, char_id, run_id')
-      .eq('event_id', eventId);
+      .eq('event_id', eventId)
+      .eq('boss', boss);
     rows = data || [];
   } else {
     // Legacy fallback (NO_COOLDOWN_BOSSES / pre-migration rows with no
