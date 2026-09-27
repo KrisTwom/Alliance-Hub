@@ -149,7 +149,7 @@ const RESPAWN_MS = {
   'Faith':      (5 * 60 + 53) * 60 * 1000,
   'Billiard':   (7 * 60 + 55) * 60 * 1000,
   'Devilang':   (5 * 60 + 33) * 60 * 1000,
-  'Soul Lich':  12 * 60 * 60 * 1000,
+  'Soul Lich':  (24 * 60 + 15) * 60 * 1000,
 };
 
 // Item sprites live in /sprites/item sprites/ — same folder convention as
