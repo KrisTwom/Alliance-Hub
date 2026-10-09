@@ -194,6 +194,7 @@ const ITEM_SPRITES = {
   'Actaemon Horn':       '/sprites/item sprites/Actaemons-horn.webp',
   'Spartan Shield':      '/sprites/item sprites/Spartan-Shield.webp',
   'Tree Armor':          '/sprites/item sprites/tree_armor.webp',
+  'Legacy of the Steel Wind': '/sprites/item sprites/Legacy-of-the-Steel-Wind.webp',
   'Broken Oath':         '/sprites/item sprites/Broken-Oath.webp',
   'Rune Piece':          '/sprites/item sprites/Rune-Piece.webp',
   'Pure Knowledge':      '/sprites/item sprites/Pure-Knowledge.webp'
