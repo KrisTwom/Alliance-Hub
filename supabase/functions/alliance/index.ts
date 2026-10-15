@@ -256,10 +256,38 @@ async function updateNickname(supabase: ReturnType<typeof db>, email: string, da
 //   restricted     — normal member, EXCEPT cannot submit attendance
 type Role = 'super_admin' | 'drops_handler' | 'admin' | 'restricted' | null;
 
+// Request-scoped memo: db() builds a fresh client for every request, so a
+// WeakMap keyed on that client lives exactly as long as one request. A single
+// admin login runs ~25 role checks (isAdmin/isSuperAdmin/... each call this);
+// without the memo every one is its own `roster?select=role` round trip, each
+// logged and billed. Within one request a role can only change via
+// setMemberRole(), which clears its entry below.
+const roleMemo = new WeakMap<object, Map<string, Role>>();
+
 async function getRole(supabase: ReturnType<typeof db>, email: string): Promise<Role> {
   if (!email) return null;
+  let memo = roleMemo.get(supabase as object);
+  if (!memo) { memo = new Map(); roleMemo.set(supabase as object, memo); }
+  if (memo.has(email)) return memo.get(email) as Role;
   const { data } = await supabase.from('roster').select('role').eq('email', email).maybeSingle();
-  return (data?.role as Role) || null;
+  const role = (data?.role as Role) || null;
+  memo.set(email, role);
+  return role;
+}
+
+// PostgREST silently caps any select at 1000 rows (see the long note in
+// getGroupedRuns). Use this for any query that can legitimately exceed that.
+// `build` must apply a stable .order() so pages never overlap or skip.
+async function fetchAllPages<T>(build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>): Promise<T[]> {
+  const PAGE = 1000;
+  const out: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await build(from, from + PAGE - 1);
+    if (error) throw error;
+    out.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
 }
 
 // "Admin or above" — gates the general run-of-the-mill admin surface
@@ -658,9 +686,12 @@ async function requestAccessWithInfo(supabase: ReturnType<typeof db>, email: str
 async function getRosterAdmin(supabase: ReturnType<typeof db>, email: string) {
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
-  const { data: roster, error: re } = await supabase.from('roster').select('*');
+  const { data: roster, error: re } = await supabase.from('roster')
+    .select('email, nickname, role, status, registered_at, registered_by, pending_ign, pending_level, pending_class, pending_guild');
   if (re) throw re;
-  const { data: chars, error: ce } = await supabase.from('characters').select('*').order('created_at', { ascending: true });
+  const { data: chars, error: ce } = await supabase.from('characters')
+    .select('char_id, ign, level, char_class, guild, faction, points')
+    .order('created_at', { ascending: true });
   if (ce) throw ce;
   const { data: links, error: le } = await supabase.from('character_links').select('char_id, email');
   if (le) throw le;
@@ -718,6 +749,7 @@ async function setMemberRole(supabase: ReturnType<typeof db>, email: string, dat
 
   const { error } = await supabase.from('roster').update({ role }).eq('email', memberEmail);
   if (error) throw error;
+  roleMemo.get(supabase as object)?.delete(memberEmail);
   return { success: true, memberEmail, role };
 }
 
@@ -1373,7 +1405,33 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string, da
     if (!data || data.length < PAGE_SIZE) break;
   }
 
-  const { data: savedRuns } = await supabase.from('runs').select('*');
+  // Saved runs: only the columns this function reads, and only runs that can
+  // matter for the attendance window above. This used to be
+  // `runs.select('*')` with no filter — every run ever confirmed, on every
+  // admin login (and silently truncated at 1000 rows once history grew past
+  // that). A saved run can only be matched to a displayed window three ways:
+  //   - by run_id stamped on an attendance row  -> fetched by id below
+  //   - by event_id / boss                      -> its window_start is inside
+  //   - by boss + window_start proximity           the window (+ GROUP_WINDOW_MS)
+  // so the date bound plus the by-id top-up cover every match path the old
+  // unbounded query could produce.
+  type SavedRunRow = { run_id: string; boss: string; window_start: string; event_id: string | null; drops: string; status: string; notes: string; confirmed_at: string | null; confirmed_by: string | null };
+  const RUN_COLS = 'run_id, boss, window_start, event_id, drops, status, notes, confirmed_at, confirmed_by';
+  const runsCutoff = new Date(new Date(groupedRunsCutoff).getTime() - GROUP_WINDOW_MS).toISOString();
+  const savedRuns = await fetchAllPages<SavedRunRow>((from, to) =>
+    supabase.from('runs').select(RUN_COLS)
+      .gte('window_start', runsCutoff)
+      .order('window_start', { ascending: false }).order('run_id', { ascending: true })
+      .range(from, to));
+  {
+    const haveRunIds = new Set(savedRuns.map(r => r.run_id));
+    const missingRunIds = [...new Set((attRows || []).map(r => r.run_id).filter(id => id && !haveRunIds.has(id)))];
+    for (let i = 0; i < missingRunIds.length; i += 80) {
+      const { data: extra, error: xe } = await supabase.from('runs').select(RUN_COLS).in('run_id', missingRunIds.slice(i, i + 80));
+      if (xe) throw xe;
+      savedRuns.push(...((extra || []) as SavedRunRow[]));
+    }
+  }
 
   // Confirmed runs are authoritative from run_participants (the actual
   // payout-split source of truth, including anyone late-linked after
@@ -2308,7 +2366,7 @@ async function diffInventory(supabase: ReturnType<typeof db>, runId: string, bos
 async function getInventory(supabase: ReturnType<typeof db>, email: string) {
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
 
-  const { data: rows, error: ie } = await supabase.from('inventory').select('*');
+  const { data: rows, error: ie } = await supabase.from('inventory').select('inv_id, run_id, boss, item_name, qty, dropped_at, status');
   if (ie) throw ie;
   const { data: rpRows } = await supabase.from('run_participants').select('run_id');
 
@@ -2543,11 +2601,29 @@ async function getPayoutsPage(supabase: ReturnType<typeof db>, email: string, mo
 
   const { data: payRows }  = await supabase.from('payouts').select('*').eq('month', month);
   const { data: paidRows } = await supabase.from('paid').select('char_id, action').eq('month', month);
-  const { data: saleRows } = await supabase.from('sales').select('*');
+  // Sales used to be `select('*')` over the entire sales table with the month
+  // filtered in JS below — every payouts load re-downloaded all sales ever
+  // (and silently lost rows past PostgREST's 1000-row cap). Bound the query
+  // to the month, with a day of slack on each side so server timezone or
+  // timestamp-format quirks can never drop a row; the exact monthStr() test
+  // below remains the authoritative filter.
+  let saleRows: Array<Record<string, unknown>> = [];
+  if (/^\d{4}-\d{2}$/.test(month)) {
+    const [yy, mo] = month.split('-').map(Number);
+    const DAY = 24 * 60 * 60 * 1000;
+    const salesFrom = new Date(Date.UTC(yy, mo - 1, 1) - DAY).toISOString();
+    const salesTo   = new Date(Date.UTC(yy, mo, 1) + DAY).toISOString();
+    saleRows = await fetchAllPages<Record<string, unknown>>((from, to) =>
+      supabase.from('sales')
+        .select('sale_id, inv_id, run_id, boss, item_name, qty, gold_per, total_gold, winner, sold_at')
+        .gte('sold_at', salesFrom).lt('sold_at', salesTo)
+        .order('sold_at', { ascending: true }).order('sale_id', { ascending: true })
+        .range(from, to));
+  }
 
   // Filter sales by month
   const monthSales = (saleRows || [])
-    .filter(r => monthStr(new Date(r.sold_at)) === month)
+    .filter(r => monthStr(new Date(r.sold_at as string)) === month)
     .map(r => ({
       saleId: r.sale_id, invId: r.inv_id, runId: r.run_id,
       boss: r.boss, itemName: r.item_name, qty: r.qty,
