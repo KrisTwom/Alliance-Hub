@@ -290,6 +290,60 @@ async function fetchAllPages<T>(build: (from: number, to: number) => PromiseLike
   return out;
 }
 
+// BEGIN run-participants helpers
+// run_participants is the biggest table in the app (≈50-60 rows per confirmed
+// run). Reading it row-by-row from here has two failure modes that were both
+// visible in production: (1) `.in('run_id', <every run id>)` builds a URL so
+// long the gateway answers 400, and (2) any result over 1000 rows is silently
+// truncated, so only the first ~20 runs' participants ever came back. Both
+// helpers below ask Postgres to do the grouping instead, through the SQL
+// functions in stage0b_run_participants.sql (ids travel in a POST body, and
+// the result has one row per run, not one per participant).
+//
+// ROLLOUT SAFETY: if the SQL functions haven't been created yet — or the RPC
+// fails for any reason — each helper falls back to the exact query this file
+// used before, so deploying this code before (or without) the SQL can never
+// make a page worse than it was.
+async function getParticipantsByRunLegacy(supabase: ReturnType<typeof db>, runIds: string[]): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  if (!runIds.length) return out;
+  const { data: rpRows } = await supabase.from('run_participants').select('run_id, char_id').in('run_id', runIds);
+  (rpRows || []).forEach((r: { run_id: string; char_id: string }) => { (out[r.run_id] ||= []).push(r.char_id); });
+  return out;
+}
+
+async function getParticipantsByRun(supabase: ReturnType<typeof db>, runIds: string[]): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  if (!runIds.length) return out;
+  const CHUNK = 500; // one result row per id, so each call stays under the 1000-row cap
+  for (let i = 0; i < runIds.length; i += CHUNK) {
+    const { data, error } = await supabase.rpc('get_run_participants', { p_run_ids: runIds.slice(i, i + CHUNK) });
+    if (error) {
+      console.error('get_run_participants RPC failed, using legacy query:', (error as { message?: string }).message);
+      return await getParticipantsByRunLegacy(supabase, runIds);
+    }
+    ((data || []) as Array<{ run_id: string; char_ids: string[] }>).forEach(r => { out[r.run_id] = r.char_ids || []; });
+  }
+  return out;
+}
+
+// Participant count per run, for every run that has inventory (Inventory page).
+async function getParticipantCountsByRun(supabase: ReturnType<typeof db>): Promise<Record<string, number>> {
+  const out: Record<string, number> = {};
+  try {
+    const rows = await fetchAllPages<{ run_id: string; participant_count: number }>((from, to) =>
+      supabase.rpc('get_run_participant_counts').range(from, to));
+    rows.forEach(r => { out[r.run_id] = Number(r.participant_count) || 0; });
+    return out;
+  } catch (e) {
+    console.error('get_run_participant_counts RPC failed, using legacy query:', (e as { message?: string })?.message);
+  }
+  const { data: rpRows } = await supabase.from('run_participants').select('run_id');
+  (rpRows || []).forEach((r: { run_id: string }) => { out[r.run_id] = (out[r.run_id] || 0) + 1; });
+  return out;
+}
+// END run-participants helpers
+
 // "Admin or above" — gates the general run-of-the-mill admin surface
 // (announcements, KOS edits, seeing the Drops page, event edit/delete,
 // roster approvals, etc). Drops Handler counts as admin-or-above too,
@@ -1439,14 +1493,7 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string, da
   // regroup is still used for Not Confirmed runs, which don't have a
   // run_participants row yet.
   const savedRunIds = (savedRuns || []).map(r => r.run_id).filter(Boolean);
-  const { data: rpRows } = savedRunIds.length
-    ? await supabase.from('run_participants').select('run_id, char_id').in('run_id', savedRunIds)
-    : { data: [] as Array<{ run_id: string; char_id: string }> };
-  const participantsByRun: Record<string, string[]> = {};
-  (rpRows || []).forEach(r => {
-    if (!participantsByRun[r.run_id]) participantsByRun[r.run_id] = [];
-    participantsByRun[r.run_id].push(r.char_id);
-  });
+  const participantsByRun = await getParticipantsByRun(supabase, savedRunIds);
 
   // Ground truth for the confirm popup's per-submission list (raw
   // attendance rows, not deduped by charId — a boss like Kooby Dic has no
@@ -2368,13 +2415,9 @@ async function getInventory(supabase: ReturnType<typeof db>, email: string) {
 
   const { data: rows, error: ie } = await supabase.from('inventory').select('inv_id, run_id, boss, item_name, qty, dropped_at, status');
   if (ie) throw ie;
-  const { data: rpRows } = await supabase.from('run_participants').select('run_id');
-
+  const countsByRun = await getParticipantCountsByRun(supabase);
   const runMap: Record<string, { participantCount: number }> = {};
-  (rpRows || []).forEach(r => {
-    if (!runMap[r.run_id]) runMap[r.run_id] = { participantCount: 0 };
-    runMap[r.run_id].participantCount++;
-  });
+  Object.entries(countsByRun).forEach(([runId, n]) => { runMap[runId] = { participantCount: n }; });
 
   const bossItems: Record<string, Record<string, { totalQty: number; available: number; history: unknown[] }>> = {};
   (rows || []).forEach(r => {
