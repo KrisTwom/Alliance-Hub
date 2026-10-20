@@ -226,7 +226,7 @@ const Cache = {
   _store: {},
   TTL: {
     // How long (ms) cached data is considered fresh per action
-    get_leaderboard:      60 * 1000,        // 1 min
+    get_leaderboard:      24 * 60 * 60 * 1000, // 24 h — login seeds it fresh; pull-to-refresh and every points-changing action bust it
     get_my_attendance:    2  * 60 * 1000,   // 2 min
     get_all_attendance:   60 * 1000,        // 1 min — admin full-alliance log
     get_my_payouts:       2  * 60 * 1000,
@@ -237,8 +237,8 @@ const Cache = {
     get_payouts_page:     2  * 60 * 1000,
     get_available_months: 5  * 60 * 1000,
     get_roster:           5  * 60 * 1000,
-    get_announcements:    30 * 1000,
-    get_events:           60 * 1000,
+    get_announcements:    2  * 60 * 1000,
+    get_events:           5  * 60 * 1000,
     DEFAULT:              3  * 60 * 1000,
   },
 
@@ -3409,7 +3409,10 @@ function submitRunConfirm(idx) {
   // same race (see linkAttendanceToRun/confirmRun), so this is just
   // belt-and-suspenders to shrink the window and keep the success toast
   // reflecting who actually got included.
-  API.read('get_grouped_runs').then(freshRuns => {
+  // Same depth the Drops page already has loaded (and cached) — the run being
+  // confirmed is by definition inside it. The old no-argument call meant the
+  // 30-day default, a ~4.6 MB fetch after every cache bust (i.e. every confirm).
+  API.read('get_grouped_runs', { days: window._runsDaysLoaded || 5 }).then(freshRuns => {
     const fresh = (freshRuns || []).find(r => r.boss === run.boss && r.windowStart === run.windowStart);
     if (fresh) {
       fresh.participants.forEach(p => {

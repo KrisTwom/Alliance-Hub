@@ -688,14 +688,18 @@ async function getAllData(supabase: ReturnType<typeof db>, email: string) {
   };
 
   if ((await isAdmin(supabase, email))) {
-    const [roster, groupedRuns, inventory, months] = await Promise.all([
+    // groupedRuns is deliberately NOT bundled here any more. It was ~4.6 MB
+    // of JSON (30 days of runs, every attendee listed twice) — ~95% of this
+    // whole response — and the only thing that ever read the seeded copy was
+    // the confirm-run flow. The Drops page loads its own `{days}` window on
+    // demand (get_grouped_runs). app.js seeds the cache only `if
+    // (payload.groupedRuns)`, so omitting it is safe.
+    const [roster, inventory, months] = await Promise.all([
       getRosterAdmin(supabase, email),
-      getGroupedRuns(supabase, email),
       getInventory(supabase, email),
       getAvailableMonths(supabase, email),
     ]);
     result.roster      = roster;
-    result.groupedRuns = groupedRuns;
     result.inventory   = inventory;
     result.months      = months;
     if (Array.isArray(months) && months.length > 0) {
