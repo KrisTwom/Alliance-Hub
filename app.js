@@ -323,13 +323,28 @@ const API = {
   },
 
   async _fetch(action, params = {}) {
-    const body = { action, email: App.email, ...params };
+    // `session` is the server-signed token from auth_login (see index.html).
+    // Writes to the war-points system require it; the server ignores the
+    // plain `email` whenever a valid session is attached.
+    const session = localStorage.getItem('alliance_session');
+    const body = { action, email: App.email, ...(session ? { session } : {}), ...params };
     const res  = await fetch(SUPABASE_FUNCTION_URL, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(body),
     });
-    return res.json();
+    const json = await res.json();
+    if (json && json.error === 'needs_login') API._onNeedsLogin();
+    return json;
+  },
+
+  // The server says our session is missing/expired. Signing out and back in
+  // mints a fresh one. Guarded so a burst of failing calls only triggers once.
+  _onNeedsLogin() {
+    if (this._needsLoginFired) return;
+    this._needsLoginFired = true;
+    try { toast('Your session expired. Please sign in again.', 'error'); } catch (_) {}
+    setTimeout(() => { if (window.signOut) window.signOut(); }, 1800);
   },
 };
 

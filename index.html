@@ -146,7 +146,7 @@
         localStorage.setItem('alliance_expiry',       Date.now() + SESSION_TTL_MS);
         localStorage.setItem('alliance_auth_type',    'credential');
 
-        launchApp(email, true /*isFreshLogin*/);
+        launchApp(email, true /*isFreshLogin*/, { credential });
       } catch(e) {
         document.getElementById('login-status').textContent = 'Sign-in failed: ' + e.message;
       }
@@ -175,7 +175,7 @@
             localStorage.setItem('alliance_email',        info.email);
             localStorage.setItem('alliance_expiry',       Date.now() + SESSION_TTL_MS);
             localStorage.setItem('alliance_auth_type',    'access_token');
-            launchApp(info.email, true /*isFreshLogin*/);
+            launchApp(info.email, true /*isFreshLogin*/, { access_token: tokenResponse.access_token });
           })
           .catch(e => {
             document.getElementById('login-status').textContent = 'Could not fetch profile: ' + e.message;
@@ -186,10 +186,56 @@
     });
 
     // ── Show loading screen then boot the app ───────────────────
-    function launchApp(email, isFreshLogin = false) {
+    // `tokens` (fresh logins only) is the Google credential / access token. We
+    // trade it for OUR signed session before the app starts, so the very first
+    // requests already carry it. If that fails for any reason, sign-in still
+    // proceeds: the app works as before and only war-point tools will ask the
+    // user to sign in again.
+    async function launchApp(email, isFreshLogin = false, tokens = null) {
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('loading-screen').classList.add('visible');
+      if (tokens) await establishSession(tokens); else maybeRefreshSession();
       setTimeout(() => window.initAllianceTracker(email, isFreshLogin), 100);
+    }
+
+    function _storeSession(j) {
+      localStorage.setItem('alliance_session',    j.session);
+      localStorage.setItem('alliance_session_at', String(Date.now()));
+    }
+
+    async function establishSession(tokens) {
+      try {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 5000);
+        const res = await fetch(SUPABASE_FUNCTION_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'auth_login', ...tokens }), signal: ctl.signal,
+        });
+        clearTimeout(timer);
+        const j = await res.json();
+        if (j && j.session) _storeSession(j);
+        else console.warn('Session not established:', j && j.error);
+      } catch (e) { console.warn('Session not established:', e); }
+    }
+
+    // Returning sessions: quietly renew the server session once a day, so it
+    // slides forward the same way the 7-day sign-in window does.
+    function maybeRefreshSession() {
+      try {
+        const s  = localStorage.getItem('alliance_session');
+        const at = parseInt(localStorage.getItem('alliance_session_at') || '0', 10);
+        if (!s || Date.now() - at < SESSION_SLIDE_MS) return;
+        fetch(SUPABASE_FUNCTION_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'auth_refresh', session: s }),
+        }).then(r => r.json()).then(j => {
+          if (j && j.session) _storeSession(j);
+          else if (j && j.error === 'needs_login') {
+            localStorage.removeItem('alliance_session');
+            localStorage.removeItem('alliance_session_at');
+          }
+        }).catch(() => {});
+      } catch (e) {}
     }
 
     // ── Check for existing valid session on page load ────────────
@@ -223,6 +269,8 @@
       localStorage.removeItem('alliance_access_token');
       localStorage.removeItem('alliance_expiry');
       localStorage.removeItem('alliance_auth_type');
+      localStorage.removeItem('alliance_session');
+      localStorage.removeItem('alliance_session_at');
       if (window.google) google.accounts.id.disableAutoSelect();
       location.reload();
     };

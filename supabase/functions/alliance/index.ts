@@ -386,6 +386,313 @@ function db() {
 }
 
 // ============================================================
+//  VERIFIED SESSIONS
+//
+//  Until now every request was identified by the bare `email` field in the
+//  request body, which anyone can type. The war-points endpoints need real
+//  proof of who is calling, so:
+//    1. At sign-in the browser sends its Google token to `auth_login`.
+//       We ask Google to confirm it (right app, verified email, not expired).
+//    2. We answer with OUR OWN signed session token (HMAC-SHA256, 7 days).
+//    3. War endpoints require that token and use the email inside it.
+//       The token can't be forged without SESSION_SECRET, which only exists
+//       as a server secret.
+//  Existing endpoints are untouched unless ENFORCE_SESSIONS=true (see the
+//  top of the request handler). Secrets to set:
+//    SESSION_SECRET      32+ random characters (REQUIRED for sessions)
+//    GOOGLE_CLIENT_ID    optional; defaults to the app's public client id
+//    ENFORCE_SESSIONS    leave unset for now; "true" later (see handler)
+// ============================================================
+// BEGIN session helpers
+const GOOGLE_CLIENT_ID = Deno.env.get('GOOGLE_CLIENT_ID') || '465273345673-7mdusmgk0bppo6clk5pr3pensgfmq637.apps.googleusercontent.com';
+const SESSION_SECRET   = Deno.env.get('SESSION_SECRET') || '';
+const ENFORCE_SESSIONS = (Deno.env.get('ENFORCE_SESSIONS') || '').toLowerCase() === 'true';
+const SESSION_TTL_MS   = 7 * 24 * 60 * 60 * 1000;
+// Actions that never carry a user session: the login calls themselves, and
+// the cron tick (authorized by its own shared-secret header instead).
+const SESSION_EXEMPT_ACTIONS = new Set(['auth_login', 'auth_refresh', 'notify_tick']);
+
+const _enc = new TextEncoder();
+
+function b64urlEncode(bytes: Uint8Array): string {
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64urlDecode(str: string) {   // return type inferred: Uint8Array<ArrayBuffer>, which WebCrypto accepts as BufferSource
+  const pad = str.length % 4 === 0 ? '' : '='.repeat(4 - (str.length % 4));
+  const bin = atob(str.replace(/-/g, '+').replace(/_/g, '/') + pad);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function hmacKey(secret: string) {
+  return crypto.subtle.importKey('raw', _enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+async function signSession(secret: string, email: string, now = Date.now()): Promise<{ token: string; expiresAt: number }> {
+  if (!secret || secret.length < 32) throw new Error('Sessions are not configured on the server (SESSION_SECRET missing or too short)');
+  const expiresAt = now + SESSION_TTL_MS;
+  const payload = b64urlEncode(_enc.encode(JSON.stringify({ v: 1, sub: email, iat: now, exp: expiresAt })));
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret), _enc.encode(payload)));
+  return { token: payload + '.' + b64urlEncode(sig), expiresAt };
+}
+
+// Returns the verified email, or null for ANY problem (missing, malformed,
+// tampered, expired, wrong secret). Never throws.
+async function verifySession(secret: string, token: unknown, now = Date.now()): Promise<string | null> {
+  if (!secret || secret.length < 32 || typeof token !== 'string' || token.length === 0 || token.length > 2048) return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  try {
+    // crypto.subtle.verify compares in constant time
+    const valid = await crypto.subtle.verify('HMAC', await hmacKey(secret), b64urlDecode(parts[1]), _enc.encode(parts[0]));
+    if (!valid) return null;
+    const p = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[0])));
+    if (p.v !== 1 || typeof p.sub !== 'string' || !p.sub || typeof p.exp !== 'number' || p.exp <= now) return null;
+    return p.sub;
+  } catch {
+    return null;
+  }
+}
+
+// Ask Google whether this token is genuine and was issued to OUR app.
+// tokeninfo works for both token types the sign-in page can produce
+// (ID token from the One Tap prompt, access token from the button).
+type FetchLike = (url: string) => Promise<{ ok: boolean; json(): Promise<any> }>;
+async function verifyGoogleLogin(fetchFn: FetchLike, clientId: string, body: Record<string, unknown>, now = Date.now()): Promise<string> {
+  const idToken     = typeof body.credential   === 'string' ? body.credential   : '';
+  const accessToken = typeof body.access_token === 'string' ? body.access_token : '';
+  if (!idToken && !accessToken) throw new Error('Missing Google sign-in token');
+  const url = 'https://oauth2.googleapis.com/tokeninfo?' + (idToken
+    ? 'id_token=' + encodeURIComponent(idToken)
+    : 'access_token=' + encodeURIComponent(accessToken));
+  const res = await fetchFn(url);
+  if (!res.ok) throw new Error('Google did not accept this sign-in token');
+  const info = await res.json();
+  if (info.aud !== clientId && info.azp !== clientId) throw new Error('This sign-in token was not issued for this app');
+  if (!(info.email_verified === true || info.email_verified === 'true')) throw new Error('Google email is not verified');
+  if (info.exp && Number(info.exp) * 1000 <= now) throw new Error('Sign-in token has expired');
+  const email = typeof info.email === 'string' ? info.email.toLowerCase().trim() : '';
+  if (!email) throw new Error('Google did not return an email');
+  return email;
+}
+
+async function authLogin(data: Record<string, unknown>) {
+  if (!SESSION_SECRET) return { error: 'Sessions are not configured on the server yet' };
+  const email = await verifyGoogleLogin(fetch as unknown as FetchLike, GOOGLE_CLIENT_ID, data);
+  const { token, expiresAt } = await signSession(SESSION_SECRET, email);
+  return { session: token, email, expiresAt };
+}
+
+// Sliding renewal: trade a still-valid session for a fresh 7-day one.
+async function authRefresh(data: Record<string, unknown>) {
+  const email = await verifySession(SESSION_SECRET, data.session);
+  if (!email) return { error: 'needs_login' };
+  const { token, expiresAt } = await signSession(SESSION_SECRET, email);
+  return { session: token, email, expiresAt };
+}
+// END session helpers
+
+// ============================================================
+//  WAR POINTS  (data lives in a SECOND Supabase project)
+//
+//  The Hub never touches that project's tables directly: every ledger/balance
+//  change goes through the war_* SQL functions in war_schema.sql, called here
+//  with the war project's service-role key. Secrets to set:
+//    WAR_SUPABASE_URL        https://<war-project-ref>.supabase.co
+//    WAR_SERVICE_ROLE_KEY    that project's service_role key
+//  Permission levels:
+//    member  any signed-in member (reads only, own history)
+//    admin   moderators: roster role admin / drops_handler / super_admin
+//    super   super admin only
+//  Mass awards additionally need the caller to be a super admin OR listed in
+//  war_config 'mass_award_emails' (managed by a super admin).
+// ============================================================
+// BEGIN war handlers
+let _warClient: any = null;
+function warDb() {
+  const url = Deno.env.get('WAR_SUPABASE_URL');
+  const key = Deno.env.get('WAR_SERVICE_ROLE_KEY');
+  if (!url || !key) throw new Error('War points are not configured on the server yet');
+  if (!_warClient) _warClient = createClient(url, key, { auth: { persistSession: false } });
+  return _warClient;
+}
+async function warRpc(fn: string, args: Record<string, unknown> = {}): Promise<any> {
+  const { data, error } = await warDb().rpc(fn, args);
+  if (error) throw error;
+  return data;
+}
+
+type WarLevel = 'member' | 'admin' | 'super';
+// Proves WHO is calling (valid signed session) and that they hold the level.
+// Throws 'needs_login' (the app reacts by asking the user to sign in again).
+async function requireWar(supabase: ReturnType<typeof db>, data: Record<string, unknown>, level: WarLevel): Promise<string> {
+  const verified = await verifySession(SESSION_SECRET, data.session);
+  if (!verified) throw new Error('needs_login');
+  const email = verified.toLowerCase().trim();
+  if (level === 'admin' && !(await isAdmin(supabase, email))) throw new Error('Not authorized');
+  if (level === 'super' && !(await isSuperAdmin(supabase, email))) throw new Error('Not authorized');
+  return email;
+}
+
+async function ownsCharacter(supabase: ReturnType<typeof db>, email: string, charId: string): Promise<boolean> {
+  const { data } = await supabase.from('character_links').select('char_id').eq('email', email).eq('char_id', charId).maybeSingle();
+  return !!data;
+}
+
+async function warMassAwardEmails(): Promise<string[]> {
+  const { data } = await warDb().from('war_config').select('value').eq('key', 'mass_award_emails').maybeSingle();
+  const v = data?.value;
+  return Array.isArray(v) ? v.filter((x: unknown) => typeof x === 'string').map((x: string) => x.toLowerCase().trim()) : [];
+}
+
+const DISCORD_ID_RE = /^\d{15,25}$/;
+
+async function handleWar(supabase: ReturnType<typeof db>, action: string, data: Record<string, unknown>): Promise<unknown> {
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const int = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) ? v : (typeof v === 'string' && /^-?\d+$/.test(v.trim()) ? parseInt(v, 10) : NaN));
+  const discordIds = (v: unknown): string[] | null => {
+    if (!Array.isArray(v)) return [];
+    const ids = v.map(x => str(x)).filter(Boolean);
+    return ids.every(x => DISCORD_ID_RE.test(x)) ? [...new Set(ids)] : null;
+  };
+
+  switch (action) {
+    // ── reads (same openness as the existing leaderboard) ──────────
+    case 'war_get_queues':
+      return await warRpc('war_get_queues');
+
+    case 'war_get_summaries': {
+      const ids = (Array.isArray(data.charIds) ? data.charIds : []).filter((x: unknown) => typeof x === 'string').slice(0, 300);
+      return await warRpc('war_get_character_summaries', { p_char_ids: ids });
+    }
+
+    // Own characters' history, or any character for admins.
+    case 'war_get_history': {
+      const actor = await requireWar(supabase, data, 'member');
+      const charId = str(data.charId);
+      if (!charId) return { error: 'charId required' };
+      if (!(await isAdmin(supabase, actor)) && !(await ownsCharacter(supabase, actor, charId))) return { error: 'Not authorized' };
+      const limit = Math.min(Math.max(Number.isFinite(Number(data.limit)) ? Number(data.limit) : 50, 1), 200);
+      return await warRpc('war_get_history', { p_char_id: charId, p_limit: limit });
+    }
+
+    // ── moderator (admin) ──────────────────────────────────────────
+    case 'war_get_recent_ledger': {
+      await requireWar(supabase, data, 'admin');
+      const limit = Math.min(Math.max(Number.isFinite(Number(data.limit)) ? Number(data.limit) : 100, 1), 300);
+      const { data: rows, error } = await warDb().from('war_ledger')
+        .select('id, char_id, kind, balance_delta, lifetime_delta, reason, actor, mass_event_id, reverses_id, created_at, war_characters(ign)')
+        .order('id', { ascending: false }).limit(limit);
+      if (error) throw error;
+      return rows;
+    }
+
+    case 'war_get_mass_events': {
+      await requireWar(supabase, data, 'admin');
+      const { data: rows, error } = await warDb().from('war_mass_events').select('*').order('id', { ascending: false }).limit(50);
+      if (error) throw error;
+      return rows;
+    }
+
+    case 'war_reverse_entry': {
+      const actor = await requireWar(supabase, data, 'admin');
+      const ledgerId = int(data.ledgerId);
+      if (!Number.isInteger(ledgerId)) return { error: 'ledgerId required' };
+      return await warRpc('war_reverse_entry', { p_ledger_id: ledgerId, p_reason: str(data.reason), p_actor: 'hub:' + actor });
+    }
+
+    case 'war_mass_award': {
+      const actor = await requireWar(supabase, data, 'admin');
+      if (!(await isSuperAdmin(supabase, actor)) && !(await warMassAwardEmails()).includes(actor)) {
+        return { error: 'You are not authorized to run mass awards' };
+      }
+      const items = (Array.isArray(data.items) ? data.items : []).map((i: any) => ({ char_id: str(i?.charId), points: int(i?.points) }));
+      if (!items.length) return { error: 'Select at least one recipient' };
+      if (items.some((i: { char_id: string; points: number }) => !i.char_id || !Number.isInteger(i.points) || i.points <= 0)) {
+        return { error: 'Every recipient needs a character and a positive whole number of points' };
+      }
+      return await warRpc('war_mass_award', { p_reason: str(data.reason), p_actor: 'hub:' + actor, p_items: items });
+    }
+
+    // ── super admin ────────────────────────────────────────────────
+    case 'war_get_config': {
+      await requireWar(supabase, data, 'super');
+      const w = warDb();
+      const [cfg, enemies, maps] = await Promise.all([
+        w.from('war_config').select('*'), w.from('war_enemies').select('*').order('enemy_key'), w.from('war_maps').select('*').order('map_key'),
+      ]);
+      for (const r of [cfg, enemies, maps]) if (r.error) throw r.error;
+      return { config: cfg.data, enemies: enemies.data, maps: maps.data, massAwardEmails: await warMassAwardEmails() };
+    }
+
+    case 'war_enroll_character': {
+      const actor = await requireWar(supabase, data, 'super');
+      const charId = str(data.charId);
+      if (!charId) return { error: 'charId required' };
+      const ids = discordIds(data.discordIds);
+      if (ids === null) return { error: 'Discord IDs must be numeric user IDs (17-20 digits)' };
+      // The in-game name always comes from the main app's character record.
+      const { data: ch, error } = await supabase.from('characters').select('ign').eq('char_id', charId).maybeSingle();
+      if (error) throw error;
+      if (!ch) return { error: 'Character not found' };
+      return await warRpc('war_enroll_character', { p_char_id: charId, p_ign: ch.ign, p_queue: str(data.queue), p_discord_ids: ids, p_actor: 'hub:' + actor });
+    }
+
+    case 'war_set_discord_links': {
+      const actor = await requireWar(supabase, data, 'super');
+      const ids = discordIds(data.discordIds);
+      if (ids === null) return { error: 'Discord IDs must be numeric user IDs (17-20 digits)' };
+      return await warRpc('war_set_discord_links', { p_char_id: str(data.charId), p_discord_ids: ids, p_actor: 'hub:' + actor });
+    }
+
+    case 'war_deactivate_character': {
+      const actor = await requireWar(supabase, data, 'super');
+      return await warRpc('war_deactivate_character', { p_char_id: str(data.charId), p_reason: str(data.reason), p_actor: 'hub:' + actor });
+    }
+
+    case 'war_adjust': {
+      const actor = await requireWar(supabase, data, 'super');
+      const points = int(data.points);
+      if (!Number.isInteger(points) || points === 0) return { error: 'points must be a non-zero whole number' };
+      return await warRpc('war_adjust', { p_char_id: str(data.charId), p_points: points, p_reason: str(data.reason), p_actor: 'hub:' + actor });
+    }
+
+    case 'war_award_item': {
+      const actor = await requireWar(supabase, data, 'super');
+      const next = str(data.nextQueue);
+      return await warRpc('war_award_item', {
+        p_char_id: str(data.charId), p_next_queue: next || null, p_reason: str(data.reason),
+        p_actor: 'hub:' + actor, p_force: data.force === true,
+      });
+    }
+
+    case 'war_reverse_mass_event': {
+      const actor = await requireWar(supabase, data, 'super');
+      const eventId = int(data.eventId);
+      if (!Number.isInteger(eventId)) return { error: 'eventId required' };
+      return await warRpc('war_reverse_mass_event', { p_event_id: eventId, p_reason: str(data.reason), p_actor: 'hub:' + actor });
+    }
+
+    case 'war_set_mass_award_emails': {
+      const actor = await requireWar(supabase, data, 'super');
+      const emails = [...new Set((Array.isArray(data.emails) ? data.emails : []).map(str).map((e: string) => e.toLowerCase()).filter(Boolean))];
+      if (emails.some((e: string) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) return { error: 'One of those emails looks invalid' };
+      const w = warDb();
+      const { error } = await w.from('war_config').upsert({ key: 'mass_award_emails', value: emails, updated_at: new Date().toISOString(), updated_by: 'hub:' + actor }, { onConflict: 'key' });
+      if (error) throw error;
+      await warRpc('war_log_audit', { p_actor: 'hub:' + actor, p_action: 'set_mass_award_emails', p_target_type: 'config', p_target_id: 'mass_award_emails', p_details: { emails } });
+      return { ok: true, emails };
+    }
+
+    default:
+      return { error: 'Unknown war action: ' + action };
+  }
+}
+// END war handlers
+
+// ============================================================
 //  ENTRY POINT
 // ============================================================
 Deno.serve(async (req) => {
@@ -408,12 +715,23 @@ Deno.serve(async (req) => {
   }
 
   const action = data.action as string;
-  const email  = (data.email as string || '').toLowerCase().trim();
+  let email    = (data.email as string || '').toLowerCase().trim();
+
+  // Verified sessions (see "VERIFIED SESSIONS"). A valid session ALWAYS wins
+  // over whatever email the browser claims. With ENFORCE_SESSIONS=true, every
+  // action except the login calls and the cron tick must carry one; leave it
+  // off until members have signed in again (so nobody gets locked out).
+  const sessionEmail = data.session ? await verifySession(SESSION_SECRET, data.session) : null;
+  if (sessionEmail) email = sessionEmail.toLowerCase().trim();
+  if (ENFORCE_SESSIONS && !sessionEmail && !SESSION_EXEMPT_ACTIONS.has(action)) return err('needs_login');
+
   const supabase = db();
 
   try {
     switch (action) {
       // ── Public ──────────────────────────────────────────────
+      case 'auth_login':         return ok(await authLogin(data));
+      case 'auth_refresh':       return ok(await authRefresh(data));
       case 'get_config':          return ok(await getConfig(supabase));
       case 'set_event_boss_visibility': return ok(await setEventBossVisibility(supabase, email, data));
       case 'get_leaderboard':     return ok(await getLeaderboard(supabase));
@@ -499,7 +817,9 @@ Deno.serve(async (req) => {
         return ok(await notifyTick(supabase));
       }
 
-      default: return err('Unknown action: ' + action);
+      default:
+        if (typeof action === 'string' && action.startsWith('war_')) return ok(await handleWar(supabase, action, data));
+        return err('Unknown action: ' + action);
     }
   } catch (e: unknown) {
     // Supabase/Postgrest errors are plain objects with a `.message` (not
