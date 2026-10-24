@@ -239,6 +239,8 @@ const Cache = {
     get_roster:           5  * 60 * 1000,
     get_announcements:    2  * 60 * 1000,
     get_events:           5  * 60 * 1000,
+    war_get_queues:       60 * 1000,        // war data lives in a separate project
+    war_get_summaries:    60 * 1000,
     DEFAULT:              3  * 60 * 1000,
   },
 
@@ -508,6 +510,7 @@ function _buildShell() {
       <div id="view-announcements" class="view"></div>
       <div id="view-schedule"    class="view"></div>
       <div id="view-kos"         class="view"></div>
+      <div id="view-war"         class="view"></div>
       <div id="view-drops"       class="view"></div>
       <div id="view-inventory"   class="view"></div>
       <div id="view-drop-history" class="view"></div>
@@ -540,6 +543,7 @@ function _buildShell() {
         <button class="dsb-link" data-view="announcements" title="Announcements"><span class="dsb-icon">📢</span><span class="dsb-label">Announcements</span></button>
         <button class="dsb-link" data-view="schedule" title="Schedule"><span class="dsb-icon">📅</span><span class="dsb-label">Schedule</span></button>
         <button class="dsb-link" data-view="kos" title="KOS List"><span class="dsb-icon">☠️</span><span class="dsb-label">KOS List</span></button>
+        <button class="dsb-link" data-view="war" title="War Points"><span class="dsb-icon">⚔️</span><span class="dsb-label">War Points</span></button>
         ${App.user.isAdmin ? `
         <div class="dsb-section-label"><span>Admin Pages</span></div>
         <button class="dsb-link" data-view="drops" title="Drops"><span class="dsb-icon">💎</span><span class="dsb-label">Drops</span></button>
@@ -587,6 +591,7 @@ function _buildShell() {
         <button class="sidebar-link" data-view="announcements">📢 Announcements</button>
         <button class="sidebar-link" data-view="schedule">📅 Schedule</button>
         <button class="sidebar-link" data-view="kos">☠️ KOS List</button>
+        <button class="sidebar-link" data-view="war">⚔️ War Points</button>
         ${App.user.isAdmin ? `
         <div class="sidebar-group-header" id="sidebar-admin-group-header">
           <span>⚙ Admin Pages</span><span class="sidebar-group-arrow">▼</span>
@@ -934,6 +939,7 @@ function showView(name, fromPopState) {
     announcements:     renderAnnouncements,
     schedule:          renderSchedule,
     kos:               renderKos,
+    war:               renderWar,
     drops:             renderDrops,
     inventory:         renderInventory,
     'drop-history':    renderDropHistory,
@@ -1802,6 +1808,7 @@ function openCharProfile(charId) {
           <div class="stat-chip-value">${p.lifetimePoints.toLocaleString()}</div>
         </div>
       </div>
+      <div id="char-profile-war"></div>
       <div style="font-size:.8rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary);margin-bottom:.5rem">Point Deductions</div>
       ${!p.deductions.length
         ? `<div class="empty-state" style="padding:1rem"><span class="empty-state-icon">✅</span>No deductions on record.</div>`
@@ -1817,6 +1824,7 @@ function openCharProfile(charId) {
               </tbody>
             </table>
           </div>`}`;
+    _warAppendProfile(charId);
   }).catch(() => {
     const box = document.getElementById('char-profile-body');
     if (box) box.innerHTML = `<div class="empty-state"><span class="empty-state-icon">⚠️</span>Network error.</div>`;
@@ -4844,4 +4852,477 @@ function escHtml(s)    { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;'
 // ============================================================
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(console.error);
+}
+
+// ============================================================
+//  WAR POINTS  (page, profile popup, super-admin / moderator tools)
+//  Data lives in a separate Supabase project; the server proxies it.
+//  Permissions are enforced on the server — buttons here are only hints.
+// ============================================================
+const WAR_QUEUE_LABELS = { illust_weapon: 'Illust Weapon', passionate_cloak: 'Passionate Cloak', sephia_hat: 'Sephia Hat', barslaf_neck: 'Barslaf Neck' };
+const WAR_KIND_LABELS  = { award: 'Screenshot award', mass_award: 'Mass award', adjustment: 'Adjustment', reversal: 'Reversal', item_win: 'Item win' };
+let _warQueues = [];
+let _warCfg = null;
+let _warMA = null; // mass-award draft
+
+const _wq = s => `<div style="font-size:.8rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary);margin:1rem 0 .5rem">${s}</div>`;
+const _wFmtDT = raw => { const d = new Date(raw); return isNaN(d) ? '—' : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
+const _wSigned = n => (n > 0 ? '+' : '') + Number(n).toLocaleString();
+const _wBust = () => Cache.bust('war_get_queues', 'war_get_summaries', 'war_get_history');
+
+// Live call that shows server errors as a toast. Returns null on error.
+async function _warCall(action, params = {}) {
+  try {
+    const res = await API._fetch(action, params);
+    if (res && res.error) { if (res.error !== 'needs_login') toast(String(res.error), 'error'); return null; }
+    return res;
+  } catch (e) { toast('Network error. Try again.', 'error'); return null; }
+}
+
+function _warFind(charId) {
+  for (const q of _warQueues) for (const r of q.rows) if (r.char_id === charId) return { row: r, queue: q };
+  return null;
+}
+
+// ── Page ─────────────────────────────────────────────────────
+function renderWar() {
+  const el = document.getElementById('view-war');
+  if (!el) return;
+  el.innerHTML = Skeleton.spinner('⚔️ War Points');
+  API.read('war_get_queues').then(q => {
+    if (!Array.isArray(q)) {
+      el.innerHTML = `<div class="section-title">⚔️ War Points</div><div class="empty-state"><span class="empty-state-icon">⚠️</span>${escHtml((q && q.error) || 'War Points are not available yet.')}</div>`;
+      return;
+    }
+    _warQueues = q;
+    el.innerHTML = _warPageHtml(q);
+  }).catch(() => { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">⚠️</span>Network error.</div>`; });
+}
+
+function _warPageHtml(queues) {
+  const mine = new Set((App.user.characters || []).map(c => c.charId));
+  const sup = !!App.user.isSuperAdmin, adm = !!App.user.isAdmin;
+  const tiers = [...new Set(queues.map(q => q.tier))].sort((a, b) => b - a); // top tier first
+  const card = q => `
+    <div style="flex:1;min-width:260px;background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:var(--radius);padding:.9rem">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.5rem">
+        <div style="font-family:var(--font-display);color:var(--gold);font-size:1.05rem">${escHtml(q.label)}</div>
+        <div style="font-size:.78rem;color:var(--text-muted)">${q.rows.length} in queue</div>
+      </div>
+      ${!q.rows.length ? `<div style="padding:.8rem 0;color:var(--text-muted);font-size:.85rem">Nobody in this queue.</div>` : `
+      <div class="table-scroll"><table class="data-table">
+        <thead><tr><th>#</th><th>Character</th><th style="text-align:right">War Pts</th><th style="text-align:right">Lifetime</th>${sup ? '<th></th>' : ''}</tr></thead>
+        <tbody>${q.rows.map(r => `
+          <tr style="${mine.has(r.char_id) ? 'background:var(--gold-glow)' : ''}">
+            <td>${r.rank}</td>
+            <td><a href="#" style="color:var(--text-primary)" onclick="openCharProfile('${escHtml(r.char_id)}');return false">${escHtml(r.ign)}</a></td>
+            <td style="text-align:right;color:var(--gold);font-weight:600">${Number(r.balance).toLocaleString()}</td>
+            <td style="text-align:right;color:var(--text-secondary)">${Number(r.lifetime).toLocaleString()}</td>
+            ${sup ? `<td><button class="btn btn-sm btn-secondary" title="Manage" onclick="warManageChar('${escHtml(r.char_id)}')">⚙</button></td>` : ''}
+          </tr>`).join('')}
+        </tbody></table></div>`}
+    </div>`;
+  return `
+    <div class="section-title">⚔️ War Points</div>
+    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.9rem">Ranked by current war points; ties go to whoever reached the score first. Winning the item resets current points to 0 and moves a character up one tier. Lifetime points never go down.</div>
+    ${adm ? `<div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
+      ${sup ? `<button class="btn btn-sm btn-primary" onclick="warEnrollModal()">➕ Enroll character</button>` : ''}
+      <button class="btn btn-sm btn-secondary" onclick="warMassAwardModal()">🎁 Mass award</button>
+      <button class="btn btn-sm btn-secondary" onclick="warLedgerModal()">📒 Recent activity</button>
+      ${sup ? `<button class="btn btn-sm btn-secondary" onclick="warSettingsModal()">⚙️ Settings</button>` : ''}
+    </div>` : ''}
+    ${tiers.map((t, i) => `
+      ${i ? `<div style="text-align:center;color:var(--text-muted);font-size:.8rem;margin:.4rem 0">▲ item win moves up one tier ▲</div>` : ''}
+      <div style="display:flex;gap:.75rem;flex-wrap:wrap">${queues.filter(q => q.tier === t).map(card).join('')}</div>`).join('')}`;
+}
+
+// ── Profile popup (leaderboard) ──────────────────────────────
+function _warAppendProfile(charId) {
+  const box = document.getElementById('char-profile-war');
+  if (!box) return;
+  API.read('war_get_summaries', { charIds: [charId] }).then(res => {
+    const s = Array.isArray(res) ? res.find(x => x.char_id === charId) : null;
+    const target = document.getElementById('char-profile-war');
+    if (!s || !target) return; // not enrolled / modal closed
+    target.innerHTML = `
+      <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.25rem">
+        <div class="stat-chip" style="flex:1;min-width:120px"><div class="stat-chip-label">War Points</div><div class="stat-chip-value">${Number(s.balance).toLocaleString()}</div></div>
+        <div class="stat-chip" style="flex:1;min-width:120px"><div class="stat-chip-label">Lifetime War Points</div><div class="stat-chip-value">${Number(s.lifetime).toLocaleString()}</div></div>
+      </div>
+      <div style="font-size:.8rem;color:var(--text-secondary);margin:-.75rem 0 1.25rem">${s.queue ? `⚔️ ${escHtml(WAR_QUEUE_LABELS[s.queue] || s.queue)} queue · rank #${s.rank}` : '⚔️ Finished all war queues'}</div>`;
+  }).catch(() => {});
+}
+
+// ── Enroll (super) ───────────────────────────────────────────
+let _warEnrollPick = null;
+function warEnrollModal() {
+  _warEnrollPick = null;
+  showModal(`
+    <div class="modal-title">➕ Enroll character</div>
+    <div class="form-group"><label class="form-label">Find character</label>
+      <input class="form-input" id="we-search" placeholder="Type an IGN…" autocomplete="off" oninput="_warEnrollSearch()">
+      <div id="we-results" style="max-height:160px;overflow-y:auto"></div>
+      <div id="we-picked" style="margin-top:.4rem;font-size:.9rem;color:var(--gold)">No character selected.</div></div>
+    <div class="form-group"><label class="form-label">Starting queue</label>
+      <select class="form-input" id="we-queue">${_warQueues.map(q => `<option value="${escHtml(q.key)}">${escHtml(q.label)}</option>`).join('')}</select></div>
+    <div class="form-group"><label class="form-label">Discord user IDs (optional, separate with spaces or commas)</label>
+      <textarea class="form-textarea" id="we-discord" style="min-height:70px" placeholder="e.g. 123456789012345678"></textarea></div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="we-go" onclick="_warEnrollGo()">Enroll</button></div>`);
+}
+function _warEnrollSearch() {
+  const q = document.getElementById('we-search').value.trim().toLowerCase();
+  const box = document.getElementById('we-results');
+  if (!q) { box.innerHTML = ''; return; }
+  const enrolled = new Set(_warQueues.flatMap(x => x.rows.map(r => r.char_id)));
+  _allCharactersFlat().then(flat => {
+    const m = flat.filter(c => !enrolled.has(c.charId) && String(c.ign).toLowerCase().includes(q)).slice(0, 8);
+    box.innerHTML = m.length ? m.map((c, i) => `<div style="padding:.5rem .75rem;cursor:pointer;border-bottom:1px solid var(--border)" data-i="${i}">${escHtml(c.ign)}</div>`).join('')
+      : `<div style="padding:.5rem .75rem;color:var(--text-muted)">No match (or already enrolled)</div>`;
+    box.querySelectorAll('[data-i]').forEach(d => d.onclick = () => {
+      _warEnrollPick = m[+d.dataset.i];
+      document.getElementById('we-picked').textContent = 'Selected: ' + _warEnrollPick.ign;
+      box.innerHTML = '';
+    });
+  });
+}
+const _warParseIds = t => String(t || '').split(/[\s,;]+/).filter(Boolean);
+async function _warEnrollGo() {
+  if (!_warEnrollPick) { toast('Pick a character first.', 'warn'); return; }
+  const btn = document.getElementById('we-go'); btn.disabled = true;
+  const res = await _warCall('war_enroll_character', { charId: _warEnrollPick.charId, queue: document.getElementById('we-queue').value, discordIds: _warParseIds(document.getElementById('we-discord').value) });
+  btn.disabled = false;
+  if (!res) return;
+  _wBust(); closeModal(); toast(`${_warEnrollPick.ign} enrolled.`, 'success'); renderWar();
+}
+
+// ── Manage one character (super) ─────────────────────────────
+function warManageChar(charId) {
+  const f = _warFind(charId);
+  if (!f) { toast('Character not found.', 'error'); return; }
+  const id = escHtml(charId);
+  showModal(`
+    <div class="modal-title">⚙ ${escHtml(f.row.ign)}</div>
+    <div style="font-size:.88rem;color:var(--text-secondary);margin-bottom:1rem">${escHtml(f.queue.label)} · rank #${f.row.rank} · ${Number(f.row.balance).toLocaleString()} current · ${Number(f.row.lifetime).toLocaleString()} lifetime</div>
+    <div style="display:flex;flex-direction:column;gap:.5rem">
+      <button class="btn btn-secondary" onclick="warAdjustModal('${id}')">➕➖ Adjust points</button>
+      <button class="btn btn-primary" onclick="warItemModal('${id}')">🏆 Award item (move up a tier)</button>
+      <button class="btn btn-secondary" onclick="warDiscordModal('${id}')">💬 Discord IDs</button>
+      <button class="btn btn-secondary" onclick="warHistoryModal('${id}')">📒 History</button>
+      <button class="btn btn-danger" onclick="warRemoveModal('${id}')">🗑 Remove from war points</button>
+    </div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+}
+const _warBackBtn = id => `<button class="btn btn-secondary" onclick="warManageChar('${id}')">Back</button>`;
+const _warReasonField = (id = 'wr-reason') => `<div class="form-group"><label class="form-label">Reason (required)</label><textarea class="form-textarea" id="${id}" style="min-height:70px" maxlength="300"></textarea></div>`;
+const _warReason = (id = 'wr-reason') => document.getElementById(id).value.trim();
+
+function warAdjustModal(charId) {
+  const f = _warFind(charId), id = escHtml(charId);
+  showModal(`
+    <div class="modal-title">➕➖ Adjust — ${escHtml(f.row.ign)}</div>
+    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">Changes current AND lifetime points. Use a negative number to remove points.</div>
+    <div class="form-group"><label class="form-label">Points</label><input class="form-input" id="wa-pts" type="number" step="1" placeholder="e.g. 5 or -3"></div>
+    ${_warReasonField()}
+    <div class="modal-actions">${_warBackBtn(id)}<button class="btn btn-primary" id="wa-go" onclick="_warAdjustGo('${id}')">Apply</button></div>`);
+}
+async function _warAdjustGo(charId) {
+  const points = parseInt(document.getElementById('wa-pts').value, 10), reason = _warReason();
+  if (!Number.isInteger(points) || points === 0) { toast('Enter a non-zero whole number.', 'warn'); return; }
+  if (!reason) { toast('A reason is required.', 'warn'); return; }
+  const b = document.getElementById('wa-go'); b.disabled = true;
+  const res = await _warCall('war_adjust', { charId, points, reason });
+  b.disabled = false;
+  if (!res) return;
+  _wBust(); closeModal(); toast('Adjustment applied.', 'success'); renderWar();
+}
+
+function warItemModal(charId) {
+  const f = _warFind(charId), id = escHtml(charId), tier = f.queue.tier, maxTier = Math.max(..._warQueues.map(q => q.tier));
+  const next = _warQueues.filter(q => q.tier === tier + 1);
+  showModal(`
+    <div class="modal-title">🏆 Award item — ${escHtml(f.row.ign)}</div>
+    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">Current points (${Number(f.row.balance).toLocaleString()}) reset to 0. Lifetime points stay. Currently in <b>${escHtml(f.queue.label)}</b>.</div>
+    <div class="form-group"><label class="form-label">Moves to</label>
+      <select class="form-input" id="wi-next">
+        ${tier >= maxTier ? `<option value="">Finished — leaves all queues</option>` : next.map(q => `<option value="${escHtml(q.key)}">${escHtml(q.label)}</option>`).join('')}
+      </select></div>
+    <label style="display:flex;gap:.5rem;align-items:center;font-size:.85rem;margin-bottom:.75rem"><input type="checkbox" id="wi-force" onchange="_warItemForce()"> Correction mode: allow any destination</label>
+    ${_warReasonField()}
+    <div class="modal-actions">${_warBackBtn(id)}<button class="btn btn-primary" id="wi-go" onclick="_warItemGo('${id}')">Award item</button></div>`);
+}
+function _warItemForce() {
+  const sel = document.getElementById('wi-next');
+  if (document.getElementById('wi-force').checked) {
+    sel.innerHTML = `<option value="">Finished — leaves all queues</option>` + _warQueues.map(q => `<option value="${escHtml(q.key)}">${escHtml(q.label)}</option>`).join('');
+  }
+}
+async function _warItemGo(charId) {
+  const reason = _warReason(), nextQueue = document.getElementById('wi-next').value, force = document.getElementById('wi-force').checked;
+  if (!reason) { toast('A reason is required.', 'warn'); return; }
+  const f = _warFind(charId);
+  if (!confirm(`Award the item to ${f.row.ign}? Their current points reset to 0.`)) return;
+  const b = document.getElementById('wi-go'); b.disabled = true;
+  const res = await _warCall('war_award_item', { charId, nextQueue, reason, force });
+  b.disabled = false;
+  if (!res) return;
+  _wBust(); closeModal(); toast('Item awarded.', 'success'); renderWar();
+}
+
+async function warDiscordModal(charId) {
+  const id = escHtml(charId);
+  showModal(`<div class="modal-title">💬 Discord IDs</div><div id="wd-body">${Skeleton.spinner()}</div>`);
+  const ids = await _warCall('war_get_discord_links', { charId });
+  const body = document.getElementById('wd-body');
+  if (!body) return;
+  if (!ids) { body.innerHTML = `<div class="modal-actions">${_warBackBtn(id)}</div>`; return; }
+  body.innerHTML = `
+    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.5rem">Discord users allowed to submit screenshots for this character. Numeric IDs only (Discord → Developer Mode → right-click user → Copy User ID).</div>
+    <textarea class="form-textarea" id="wd-ids" style="min-height:90px">${escHtml(ids.join('\n'))}</textarea>
+    <div class="modal-actions">${_warBackBtn(id)}<button class="btn btn-primary" id="wd-go" onclick="_warDiscordGo('${id}')">Save</button></div>`;
+}
+async function _warDiscordGo(charId) {
+  const b = document.getElementById('wd-go'); b.disabled = true;
+  const res = await _warCall('war_set_discord_links', { charId, discordIds: _warParseIds(document.getElementById('wd-ids').value) });
+  b.disabled = false;
+  if (res) { toast('Discord IDs saved.', 'success'); warManageChar(charId); }
+}
+
+function warRemoveModal(charId) {
+  const f = _warFind(charId), id = escHtml(charId);
+  showModal(`
+    <div class="modal-title">🗑 Remove — ${escHtml(f.row.ign)}</div>
+    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">Stops them earning war points and hides them from the queues. Their ledger history is kept, and enrolling them again later is possible.</div>
+    ${_warReasonField()}
+    <div class="modal-actions">${_warBackBtn(id)}<button class="btn btn-danger" id="wx-go" onclick="_warRemoveGo('${id}')">Remove</button></div>`);
+}
+async function _warRemoveGo(charId) {
+  const reason = _warReason();
+  if (!reason) { toast('A reason is required.', 'warn'); return; }
+  const b = document.getElementById('wx-go'); b.disabled = true;
+  const res = await _warCall('war_deactivate_character', { charId, reason });
+  b.disabled = false;
+  if (!res) return;
+  _wBust(); closeModal(); toast('Removed.', 'success'); renderWar();
+}
+
+// ── Ledger rows (history + recent activity) ──────────────────
+function _warLedgerTable(rows, withChar, canReverse) {
+  const reversed = new Set(rows.filter(r => r.reverses_id).map(r => r.reverses_id));
+  return `<div class="table-scroll" style="max-height:55vh;overflow-y:auto"><table class="data-table">
+    <thead><tr><th>When</th>${withChar ? '<th>Character</th>' : ''}<th>Type</th><th style="text-align:right">Current</th><th style="text-align:right">Lifetime</th><th>Reason / by</th>${canReverse ? '<th></th>' : ''}</tr></thead>
+    <tbody>${rows.map(r => {
+      const rev = reversed.has(r.id), can = canReverse && ['award', 'mass_award', 'adjustment'].includes(r.kind) && !rev;
+      const ign = r.war_characters?.ign || r.char_id;
+      return `<tr style="${rev ? 'opacity:.55' : ''}">
+        <td style="white-space:nowrap;font-size:.78rem;color:var(--text-secondary)">${_wFmtDT(r.created_at)}</td>
+        ${withChar ? `<td>${escHtml(ign)}</td>` : ''}
+        <td>${escHtml(WAR_KIND_LABELS[r.kind] || r.kind)}${rev ? ' <span style="color:var(--text-muted)">(reversed)</span>' : ''}</td>
+        <td style="text-align:right;color:${r.balance_delta < 0 ? 'var(--danger)' : 'inherit'}">${_wSigned(r.balance_delta)}</td>
+        <td style="text-align:right;color:${r.lifetime_delta < 0 ? 'var(--danger)' : 'inherit'}">${_wSigned(r.lifetime_delta)}</td>
+        <td style="font-size:.8rem">${escHtml(r.reason || '')}<div style="color:var(--text-muted)">${escHtml(String(r.actor || '').replace(/^hub:/, ''))}</div></td>
+        ${canReverse ? `<td>${can ? `<button class="btn btn-sm btn-danger" onclick="warReverseModal(${Number(r.id)})">Reverse</button>` : ''}</td>` : ''}
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+async function warHistoryModal(charId) {
+  const id = escHtml(charId), f = _warFind(charId);
+  showModal(`<div class="modal-title">📒 ${escHtml(f ? f.row.ign : 'History')}</div><div id="wh-body">${Skeleton.spinner()}</div>`, { fullscreenMobile: true });
+  const rows = await _warCall('war_get_history', { charId, limit: 100 });
+  const body = document.getElementById('wh-body');
+  if (!body) return;
+  body.innerHTML = (rows && rows.length ? _warLedgerTable(rows, false, false) : `<div class="empty-state" style="padding:1rem">No entries yet.</div>`)
+    + `<div class="modal-actions">${_warBackBtn(id)}</div>`;
+}
+
+// ── Recent activity + reversals (moderators) ─────────────────
+async function warLedgerModal() {
+  showModal(`<div class="modal-title">📒 Recent activity</div><div id="wl-body">${Skeleton.spinner()}</div>`, { fullscreenMobile: true });
+  const [rows, events] = await Promise.all([_warCall('war_get_recent_ledger', { limit: 100 }), _warCall('war_get_mass_events')]);
+  const body = document.getElementById('wl-body');
+  if (!body) return;
+  if (!rows) { body.innerHTML = `<div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`; return; }
+  const sup = !!App.user.isSuperAdmin;
+  body.innerHTML = `
+    ${_wq('Latest 100 entries')}
+    ${rows.length ? _warLedgerTable(rows, true, true) : `<div class="empty-state" style="padding:1rem">Nothing yet.</div>`}
+    ${_wq('Mass award events')}
+    ${events && events.length ? `<div class="table-scroll" style="max-height:30vh;overflow-y:auto"><table class="data-table">
+      <thead><tr><th>#</th><th>When</th><th>Reason</th><th>People</th><th>By</th><th></th></tr></thead>
+      <tbody>${events.map(e => `<tr style="${e.reversed_at ? 'opacity:.55' : ''}">
+        <td>${e.id}</td><td style="white-space:nowrap;font-size:.78rem">${_wFmtDT(e.created_at)}</td>
+        <td style="font-size:.8rem">${escHtml(e.reason)}${e.reversed_at ? `<div style="color:var(--text-muted)">Reversed: ${escHtml(e.reverse_reason || '')}</div>` : ''}</td>
+        <td>${e.recipient_count}</td><td style="font-size:.8rem">${escHtml(String(e.created_by).replace(/^hub:/, ''))}</td>
+        <td>${sup && !e.reversed_at ? `<button class="btn btn-sm btn-danger" onclick="warReverseEventModal(${Number(e.id)})">Reverse all</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>` : `<div style="color:var(--text-muted);font-size:.85rem">No mass awards yet.</div>`}
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`;
+}
+function warReverseModal(ledgerId) {
+  showModal(`
+    <div class="modal-title">Reverse entry #${ledgerId}</div>
+    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">The original entry stays on record; a reversal entry is added.</div>
+    ${_warReasonField()}
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="warLedgerModal()">Back</button><button class="btn btn-danger" id="wv-go" onclick="_warReverseGo(${ledgerId})">Reverse</button></div>`);
+}
+async function _warReverseGo(ledgerId) {
+  const reason = _warReason();
+  if (!reason) { toast('A reason is required.', 'warn'); return; }
+  const b = document.getElementById('wv-go'); b.disabled = true;
+  const res = await _warCall('war_reverse_entry', { ledgerId, reason });
+  b.disabled = false;
+  if (!res) return;
+  _wBust(); toast(res.already ? 'Already reversed.' : 'Reversed.', 'success'); renderWar(); warLedgerModal();
+}
+function warReverseEventModal(eventId) {
+  showModal(`
+    <div class="modal-title">Reverse mass event #${eventId}</div>
+    <div style="font-size:.85rem;color:var(--text-secondary);margin-bottom:.75rem">Reverses every entry in this event. It fails as a whole (nothing changes) if any character would go negative.</div>
+    ${_warReasonField()}
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="warLedgerModal()">Back</button><button class="btn btn-danger" id="wv-go" onclick="_warReverseEventGo(${eventId})">Reverse all</button></div>`);
+}
+async function _warReverseEventGo(eventId) {
+  const reason = _warReason();
+  if (!reason) { toast('A reason is required.', 'warn'); return; }
+  const b = document.getElementById('wv-go'); b.disabled = true;
+  const res = await _warCall('war_reverse_mass_event', { eventId, reason });
+  b.disabled = false;
+  if (!res) return;
+  _wBust(); toast('Mass event reversed.', 'success'); renderWar(); warLedgerModal();
+}
+
+// ── Mass award (super admin, or moderators on the allowed list) ──
+function warMassAwardModal() {
+  _warMA = { sel: new Map(), reason: '', def: 1, filter: '' };
+  _warMAStep1();
+}
+function _warMAStep1() {
+  const s = _warMA;
+  showModal(`
+    <div class="modal-title">🎁 Mass award</div>
+    <div class="form-group"><label class="form-label">Reason (required, shown in the ledger)</label>
+      <input class="form-input" id="wm-reason" maxlength="200" value="${escHtml(s.reason)}" oninput="_warMA.reason=this.value"></div>
+    <div style="display:flex;gap:.5rem;align-items:flex-end;margin-bottom:.5rem">
+      <div style="flex:1"><label class="form-label">Find character</label><input class="form-input" id="wm-search" value="${escHtml(s.filter)}" placeholder="Filter by IGN…" oninput="_warMA.filter=this.value;_warMAList()"></div>
+      <div style="width:90px"><label class="form-label">Default pts</label><input class="form-input" id="wm-def" type="number" min="1" step="1" value="${s.def}" oninput="_warMA.def=parseInt(this.value,10)||1"></div>
+    </div>
+    <div id="wm-list" style="max-height:38vh;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)"></div>
+    <div id="wm-count" style="font-size:.85rem;color:var(--text-secondary);margin-top:.4rem"></div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="_warMAReview()">Review →</button></div>`, { fullscreenMobile: true });
+  _warMAList();
+}
+function _warMAList() {
+  const s = _warMA, q = s.filter.trim().toLowerCase();
+  const all = _warQueues.flatMap(x => x.rows.map(r => ({ ...r, queue: x.label }))).sort((a, b) => a.ign.localeCompare(b.ign));
+  const rows = all.filter(r => !q || r.ign.toLowerCase().includes(q));
+  const box = document.getElementById('wm-list');
+  if (!box) return;
+  box.innerHTML = rows.length ? rows.map(r => {
+    const on = s.sel.has(r.char_id);
+    return `<div style="display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;border-bottom:1px solid var(--border)">
+      <input type="checkbox" ${on ? 'checked' : ''} onchange="_warMAToggle('${escHtml(r.char_id)}',this.checked,this)">
+      <div style="flex:1;min-width:0"><div>${escHtml(r.ign)}</div><div style="font-size:.72rem;color:var(--text-muted)">${escHtml(r.queue)}</div></div>
+      <input class="form-input" type="number" min="1" step="1" style="width:80px;${on ? '' : 'visibility:hidden'}" value="${on ? s.sel.get(r.char_id) : ''}" oninput="_warMASet('${escHtml(r.char_id)}',this.value)"></div>`;
+  }).join('') : `<div style="padding:.8rem;color:var(--text-muted)">No enrolled characters match.</div>`;
+  _warMACount();
+}
+function _warMAToggle(id, on, cb) {
+  if (on) _warMA.sel.set(id, _warMA.def || 1); else _warMA.sel.delete(id);
+  const inp = cb.parentNode.lastElementChild; // keeps the list's scroll position
+  inp.style.visibility = on ? 'visible' : 'hidden';
+  inp.value = on ? _warMA.sel.get(id) : '';
+  _warMACount();
+}
+function _warMASet(id, v) { _warMA.sel.set(id, parseInt(v, 10) || 0); _warMACount(); }
+function _warMACount() {
+  const el = document.getElementById('wm-count');
+  if (el) el.textContent = `${_warMA.sel.size} selected · ${[..._warMA.sel.values()].reduce((a, b) => a + b, 0)} points in total`;
+}
+function _warMAReview() {
+  const s = _warMA, reason = s.reason.trim();
+  if (!reason) { toast('A reason is required.', 'warn'); return; }
+  if (!s.sel.size) { toast('Select at least one character.', 'warn'); return; }
+  if ([...s.sel.values()].some(p => !Number.isInteger(p) || p <= 0)) { toast('Every selected character needs 1 or more points.', 'warn'); return; }
+  const names = {};
+  _warQueues.forEach(q => q.rows.forEach(r => { names[r.char_id] = r.ign; }));
+  const items = [...s.sel.entries()];
+  const total = items.reduce((a, [, p]) => a + p, 0);
+  showModal(`
+    <div class="modal-title">🎁 Review mass award</div>
+    <div style="margin-bottom:.6rem"><b>Reason:</b> ${escHtml(reason)}</div>
+    <div class="table-scroll" style="max-height:40vh;overflow-y:auto"><table class="data-table"><thead><tr><th>Character</th><th style="text-align:right">Points</th></tr></thead>
+      <tbody>${items.map(([id, p]) => `<tr><td>${escHtml(names[id] || id)}</td><td style="text-align:right">+${p}</td></tr>`).join('')}</tbody></table></div>
+    <div style="margin:.6rem 0;font-weight:600">${items.length} character${items.length === 1 ? '' : 's'} · ${total} points in total</div>
+    <label style="display:flex;gap:.5rem;align-items:center;font-size:.85rem"><input type="checkbox" id="wm-ok" onchange="document.getElementById('wm-go').disabled=!this.checked"> I checked the list above and want to award these points.</label>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="_warMAStep1()">← Back</button><button class="btn btn-primary" id="wm-go" disabled onclick="_warMAGo()">Award points</button></div>`, { fullscreenMobile: true });
+}
+async function _warMAGo() {
+  const s = _warMA, b = document.getElementById('wm-go');
+  b.disabled = true;
+  const res = await _warCall('war_mass_award', { reason: s.reason.trim(), items: [...s.sel.entries()].map(([charId, points]) => ({ charId, points })) });
+  if (!res) { b.disabled = false; return; }
+  _warMA = null; _wBust(); closeModal(); toast(`Mass award #${res.event_id} done (${res.recipients} characters).`, 'success'); renderWar();
+}
+
+// ── Settings (super admin): mass-award moderators, enemies, maps, config ──
+async function warSettingsModal() {
+  showModal(`<div class="modal-title">⚙️ War Points settings</div><div id="ws-body">${Skeleton.spinner()}</div>`, { fullscreenMobile: true });
+  const cfg = await _warCall('war_get_config');
+  const body = document.getElementById('ws-body');
+  if (!body) return;
+  if (!cfg) { body.innerHTML = `<div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`; return; }
+  _warCfg = cfg;
+  const val = k => { const r = cfg.config.find(c => c.key === k); return r && r.value !== null ? r.value : ''; };
+  const list = (rows, keyCol, kind) => `<div class="table-scroll"><table class="data-table"><thead><tr><th>Name</th>${kind === 'enemy' ? '<th>Pts</th>' : ''}<th>Aliases</th><th></th></tr></thead><tbody>
+    ${rows.map(r => `<tr style="${r.active ? '' : 'opacity:.5'}"><td>${escHtml(r.display)} <span style="color:var(--text-muted);font-size:.75rem">(${escHtml(r[keyCol])})</span></td>${kind === 'enemy' ? `<td>${r.points}</td>` : ''}<td style="font-size:.8rem">${escHtml((r.aliases || []).join(', '))}</td>
+      <td><button class="btn btn-sm btn-secondary" onclick="warEntityModal('${kind}','${escHtml(r[keyCol])}')">Edit</button></td></tr>`).join('')}</tbody></table></div>
+    <button class="btn btn-sm btn-secondary" style="margin-top:.4rem" onclick="warEntityModal('${kind}',null)">➕ Add ${kind}</button>`;
+  body.innerHTML = `
+    ${_wq('Moderators allowed to run mass awards')}
+    <div style="font-size:.82rem;color:var(--text-secondary);margin-bottom:.4rem">Super admins can always run them. One email per line.</div>
+    <textarea class="form-textarea" id="ws-emails" style="min-height:70px">${escHtml(cfg.massAwardEmails.join('\n'))}</textarea>
+    <button class="btn btn-sm btn-primary" style="margin-top:.4rem" onclick="_warSaveEmails()">Save list</button>
+    ${_wq('Enemies')}${list(cfg.enemies, 'enemy_key', 'enemy')}
+    ${_wq('Maps')}${list(cfg.maps, 'map_key', 'map')}
+    ${_wq('Bot rules')}
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+      <div><label class="form-label">Callout window (min)</label><input class="form-input" id="wc-win" type="number" style="width:120px" value="${escHtml(String(val('callout_window_minutes')))}"></div>
+      <div><label class="form-label">Keep evidence (days)</label><input class="form-input" id="wc-ret" type="number" style="width:120px" value="${escHtml(String(val('evidence_retention_days')))}"></div>
+      <div><label class="form-label">Daily cap / character (blank = none)</label><input class="form-input" id="wc-cap" type="number" style="width:160px" value="${escHtml(String(val('daily_cap_per_character')))}"></div>
+    </div>
+    <button class="btn btn-sm btn-primary" style="margin-top:.4rem" onclick="_warSaveCfg()">Save rules</button>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`;
+}
+async function _warSaveEmails() {
+  const emails = String(document.getElementById('ws-emails').value).split(/[\s,;]+/).filter(Boolean);
+  const res = await _warCall('war_set_mass_award_emails', { emails });
+  if (res) toast('Saved.', 'success');
+}
+async function _warSaveCfg() {
+  const v = id => document.getElementById(id).value.trim();
+  for (const [key, value] of [['callout_window_minutes', v('wc-win')], ['evidence_retention_days', v('wc-ret')], ['daily_cap_per_character', v('wc-cap') || null]]) {
+    if (!(await _warCall('war_set_config', { key, value }))) return;
+  }
+  toast('Saved.', 'success');
+}
+function warEntityModal(kind, key) {
+  const isEnemy = kind === 'enemy';
+  const r = key ? (isEnemy ? _warCfg.enemies : _warCfg.maps).find(x => x[isEnemy ? 'enemy_key' : 'map_key'] === key) : null;
+  showModal(`
+    <div class="modal-title">${r ? 'Edit' : 'Add'} ${kind}</div>
+    <div class="form-group"><label class="form-label">Key (lowercase, no spaces${r ? ', fixed' : ''})</label><input class="form-input" id="we2-key" maxlength="24" value="${escHtml(key || '')}" ${r ? 'disabled' : ''}></div>
+    <div class="form-group"><label class="form-label">Display name</label><input class="form-input" id="we2-disp" maxlength="40" value="${escHtml(r ? r.display : '')}"></div>
+    ${isEnemy ? `<div class="form-group"><label class="form-label">Points per kill</label><input class="form-input" id="we2-pts" type="number" min="1" step="1" value="${r ? r.points : ''}"></div>` : ''}
+    <div class="form-group"><label class="form-label">Aliases (single words, separated by spaces or commas)</label><input class="form-input" id="we2-alias" value="${escHtml(r ? (r.aliases || []).join(' ') : '')}"></div>
+    <label style="display:flex;gap:.5rem;align-items:center;font-size:.85rem"><input type="checkbox" id="we2-act" ${!r || r.active ? 'checked' : ''}> Active</label>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="warSettingsModal()">Back</button><button class="btn btn-primary" id="we2-go" onclick="_warEntityGo('${kind}')">Save</button></div>`);
+}
+async function _warEntityGo(kind) {
+  const b = document.getElementById('we2-go'); b.disabled = true;
+  const params = { key: document.getElementById('we2-key').value.trim(), display: document.getElementById('we2-disp').value.trim(),
+    aliases: _warParseIds(document.getElementById('we2-alias').value), active: document.getElementById('we2-act').checked };
+  if (kind === 'enemy') params.points = document.getElementById('we2-pts').value;
+  const res = await _warCall(kind === 'enemy' ? 'war_save_enemy' : 'war_save_map', params);
+  b.disabled = false;
+  if (res) { toast('Saved.', 'success'); warSettingsModal(); }
 }

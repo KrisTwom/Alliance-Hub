@@ -686,6 +686,69 @@ async function handleWar(supabase: ReturnType<typeof db>, action: string, data: 
       return { ok: true, emails };
     }
 
+    case 'war_get_discord_links': {
+      await requireWar(supabase, data, 'super');
+      const charId = str(data.charId);
+      if (!charId) return { error: 'charId required' };
+      const { data: rows, error } = await warDb().from('war_character_discord').select('discord_id').eq('char_id', charId);
+      if (error) throw error;
+      return (rows || []).map((r: { discord_id: string }) => r.discord_id);
+    }
+
+    // Enemies and maps share the same shape (key, display, aliases, active); enemies also have points.
+    case 'war_save_enemy':
+    case 'war_save_map': {
+      const actor = await requireWar(supabase, data, 'super');
+      const isEnemy = action === 'war_save_enemy';
+      const table = isEnemy ? 'war_enemies' : 'war_maps';
+      const keyCol = isEnemy ? 'enemy_key' : 'map_key';
+      const key = str(data.key).toLowerCase();
+      if (!/^[a-z0-9_]{1,24}$/.test(key)) return { error: 'Key must be 1-24 letters, numbers or underscores' };
+      const display = str(data.display);
+      if (!display || display.length > 40) return { error: 'A display name (up to 40 characters) is required' };
+      const aliases = [...new Set((Array.isArray(data.aliases) ? data.aliases : []).map(str).map((a: string) => a.toLowerCase()).filter(Boolean))];
+      if (aliases.length > 12 || aliases.some((a: string) => a.length > 30 || /\s/.test(a))) return { error: 'Aliases must be single words (max 12, 30 characters each)' };
+      const row: Record<string, unknown> = { [keyCol]: key, display, aliases, active: data.active !== false };
+      if (isEnemy) {
+        const points = int(data.points);
+        if (!Number.isInteger(points) || points <= 0 || points > 1000) return { error: 'Points must be a whole number from 1 to 1000' };
+        row.points = points;
+        row.updated_at = new Date().toISOString();
+        row.updated_by = 'hub:' + actor;
+      }
+      const w = warDb();
+      // A name or alias may only point at ONE enemy/map, otherwise callouts become ambiguous.
+      const { data: others, error: e1 } = await w.from(table).select(keyCol + ', aliases').neq(keyCol, key);
+      if (e1) throw e1;
+      const mine = new Set([key, ...aliases]);
+      for (const o of (others || []) as any[]) {
+        for (const n of [o[keyCol], ...(o.aliases || [])]) if (mine.has(String(n).toLowerCase())) return { error: `"${n}" is already used by ${o[keyCol]}` };
+      }
+      const { error } = await w.from(table).upsert(row, { onConflict: keyCol });
+      if (error) throw error;
+      await warRpc('war_log_audit', { p_actor: 'hub:' + actor, p_action: isEnemy ? 'save_enemy' : 'save_map', p_target_type: isEnemy ? 'enemy' : 'map', p_target_id: key, p_details: row });
+      return { ok: true };
+    }
+
+    case 'war_set_config': {
+      const actor = await requireWar(supabase, data, 'super');
+      const key = str(data.key);
+      const raw = data.value;
+      let value: number | null;
+      if (key === 'daily_cap_per_character' && (raw === null || raw === '' || raw === undefined)) value = null;
+      else {
+        const n = int(raw);
+        const range: Record<string, [number, number]> = { callout_window_minutes: [1, 120], evidence_retention_days: [7, 365], daily_cap_per_character: [1, 100000] };
+        if (!range[key]) return { error: 'Unknown setting' };
+        if (!Number.isInteger(n) || n < range[key][0] || n > range[key][1]) return { error: `Value must be a whole number from ${range[key][0]} to ${range[key][1]}` };
+        value = n;
+      }
+      const { error } = await warDb().from('war_config').upsert({ key, value, updated_at: new Date().toISOString(), updated_by: 'hub:' + actor }, { onConflict: 'key' });
+      if (error) throw error;
+      await warRpc('war_log_audit', { p_actor: 'hub:' + actor, p_action: 'set_config', p_target_type: 'config', p_target_id: key, p_details: { value } });
+      return { ok: true };
+    }
+
     default:
       return { error: 'Unknown war action: ' + action };
   }
