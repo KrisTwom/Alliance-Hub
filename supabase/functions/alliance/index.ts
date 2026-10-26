@@ -558,6 +558,12 @@ async function handleWar(supabase: ReturnType<typeof db>, action: string, data: 
     return ids.every(x => DISCORD_ID_RE.test(x)) ? [...new Set(ids)] : null;
   };
 
+  // Testing phase: until the WAR_PUBLIC secret is 'true', even the open reads are super-admin only.
+  if (Deno.env.get('WAR_PUBLIC') !== 'true' && ['war_get_queues', 'war_get_summaries', 'war_get_history'].includes(action)) {
+    const who = await verifySession(SESSION_SECRET, data.session);
+    if (!who || !(await isSuperAdmin(supabase, who.toLowerCase().trim()))) return { error: 'War Points are not available yet' };
+  }
+
   switch (action) {
     // ── reads (same openness as the existing leaderboard) ──────────
     case 'war_get_queues':

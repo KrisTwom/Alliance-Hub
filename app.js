@@ -543,7 +543,7 @@ function _buildShell() {
         <button class="dsb-link" data-view="announcements" title="Announcements"><span class="dsb-icon">📢</span><span class="dsb-label">Announcements</span></button>
         <button class="dsb-link" data-view="schedule" title="Schedule"><span class="dsb-icon">📅</span><span class="dsb-label">Schedule</span></button>
         <button class="dsb-link" data-view="kos" title="KOS List"><span class="dsb-icon">☠️</span><span class="dsb-label">KOS List</span></button>
-        <button class="dsb-link" data-view="war" title="War Points"><span class="dsb-icon">⚔️</span><span class="dsb-label">War Points</span></button>
+        ${_warVisible() ? `<button class="dsb-link" data-view="war" title="War Points"><span class="dsb-icon">⚔️</span><span class="dsb-label">War Points</span></button>` : ''}
         ${App.user.isAdmin ? `
         <div class="dsb-section-label"><span>Admin Pages</span></div>
         <button class="dsb-link" data-view="drops" title="Drops"><span class="dsb-icon">💎</span><span class="dsb-label">Drops</span></button>
@@ -591,7 +591,7 @@ function _buildShell() {
         <button class="sidebar-link" data-view="announcements">📢 Announcements</button>
         <button class="sidebar-link" data-view="schedule">📅 Schedule</button>
         <button class="sidebar-link" data-view="kos">☠️ KOS List</button>
-        <button class="sidebar-link" data-view="war">⚔️ War Points</button>
+        ${_warVisible() ? `<button class="sidebar-link" data-view="war">⚔️ War Points</button>` : ''}
         ${App.user.isAdmin ? `
         <div class="sidebar-group-header" id="sidebar-admin-group-header">
           <span>⚙ Admin Pages</span><span class="sidebar-group-arrow">▼</span>
@@ -4859,6 +4859,10 @@ if ('serviceWorker' in navigator) {
 //  Data lives in a separate Supabase project; the server proxies it.
 //  Permissions are enforced on the server — buttons here are only hints.
 // ============================================================
+// Testing phase: only super admins see War Points. To release it to everyone,
+// set WAR_PUBLIC to true here AND set the WAR_PUBLIC secret to true on the server.
+const WAR_PUBLIC = false;
+function _warVisible() { return WAR_PUBLIC || !!(App.user && App.user.isSuperAdmin); }
 const WAR_QUEUE_LABELS = { illust_weapon: 'Illust Weapon', passionate_cloak: 'Passionate Cloak', sephia_hat: 'Sephia Hat', barslaf_neck: 'Barslaf Neck' };
 const WAR_KIND_LABELS  = { award: 'Screenshot award', mass_award: 'Mass award', adjustment: 'Adjustment', reversal: 'Reversal', item_win: 'Item win' };
 let _warQueues = [];
@@ -4888,6 +4892,7 @@ function _warFind(charId) {
 function renderWar() {
   const el = document.getElementById('view-war');
   if (!el) return;
+  if (!_warVisible()) { el.innerHTML = `<div class="empty-state"><span class="empty-state-icon">⚔️</span>War Points are not available yet.</div>`; return; }
   el.innerHTML = Skeleton.spinner('⚔️ War Points');
   API.read('war_get_queues').then(q => {
     if (!Array.isArray(q)) {
@@ -4939,7 +4944,7 @@ function _warPageHtml(queues) {
 // ── Profile popup (leaderboard) ──────────────────────────────
 function _warAppendProfile(charId) {
   const box = document.getElementById('char-profile-war');
-  if (!box) return;
+  if (!box || !_warVisible()) return;
   API.read('war_get_summaries', { charIds: [charId] }).then(res => {
     const s = Array.isArray(res) ? res.find(x => x.char_id === charId) : null;
     const target = document.getElementById('char-profile-war');
@@ -4976,7 +4981,11 @@ function _warEnrollSearch() {
   if (!q) { box.innerHTML = ''; return; }
   const enrolled = new Set(_warQueues.flatMap(x => x.rows.map(r => r.char_id)));
   _allCharactersFlat().then(flat => {
-    const m = flat.filter(c => !enrolled.has(c.charId) && String(c.ign).toLowerCase().includes(q)).slice(0, 8);
+    const seen = new Set(); // a shared character appears once per member in the roster
+    const m = flat.filter(c => {
+      if (enrolled.has(c.charId) || seen.has(c.charId) || !String(c.ign).toLowerCase().includes(q)) return false;
+      seen.add(c.charId); return true;
+    }).slice(0, 8);
     box.innerHTML = m.length ? m.map((c, i) => `<div style="padding:.5rem .75rem;cursor:pointer;border-bottom:1px solid var(--border)" data-i="${i}">${escHtml(c.ign)}</div>`).join('')
       : `<div style="padding:.5rem .75rem;color:var(--text-muted)">No match (or already enrolled)</div>`;
     box.querySelectorAll('[data-i]').forEach(d => d.onclick = () => {
@@ -5128,7 +5137,7 @@ function _warLedgerTable(rows, withChar, canReverse) {
 
 async function warHistoryModal(charId) {
   const id = escHtml(charId), f = _warFind(charId);
-  showModal(`<div class="modal-title">📒 ${escHtml(f ? f.row.ign : 'History')}</div><div id="wh-body">${Skeleton.spinner()}</div>`, { fullscreenMobile: true });
+  showModal(`<div class="modal-title">📒 ${escHtml(f ? f.row.ign : 'History')}</div><div id="wh-body">${Skeleton.spinner()}</div>`);
   const rows = await _warCall('war_get_history', { charId, limit: 100 });
   const body = document.getElementById('wh-body');
   if (!body) return;
@@ -5138,7 +5147,7 @@ async function warHistoryModal(charId) {
 
 // ── Recent activity + reversals (moderators) ─────────────────
 async function warLedgerModal() {
-  showModal(`<div class="modal-title">📒 Recent activity</div><div id="wl-body">${Skeleton.spinner()}</div>`, { fullscreenMobile: true });
+  showModal(`<div class="modal-title">📒 Recent activity</div><div id="wl-body">${Skeleton.spinner()}</div>`);
   const [rows, events] = await Promise.all([_warCall('war_get_recent_ledger', { limit: 100 }), _warCall('war_get_mass_events')]);
   const body = document.getElementById('wl-body');
   if (!body) return;
@@ -5208,7 +5217,7 @@ function _warMAStep1() {
     </div>
     <div id="wm-list" style="max-height:38vh;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)"></div>
     <div id="wm-count" style="font-size:.85rem;color:var(--text-secondary);margin-top:.4rem"></div>
-    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="_warMAReview()">Review →</button></div>`, { fullscreenMobile: true });
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="_warMAReview()">Review →</button></div>`);
   _warMAList();
 }
 function _warMAList() {
@@ -5254,7 +5263,7 @@ function _warMAReview() {
       <tbody>${items.map(([id, p]) => `<tr><td>${escHtml(names[id] || id)}</td><td style="text-align:right">+${p}</td></tr>`).join('')}</tbody></table></div>
     <div style="margin:.6rem 0;font-weight:600">${items.length} character${items.length === 1 ? '' : 's'} · ${total} points in total</div>
     <label style="display:flex;gap:.5rem;align-items:center;font-size:.85rem"><input type="checkbox" id="wm-ok" onchange="document.getElementById('wm-go').disabled=!this.checked"> I checked the list above and want to award these points.</label>
-    <div class="modal-actions"><button class="btn btn-secondary" onclick="_warMAStep1()">← Back</button><button class="btn btn-primary" id="wm-go" disabled onclick="_warMAGo()">Award points</button></div>`, { fullscreenMobile: true });
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="_warMAStep1()">← Back</button><button class="btn btn-primary" id="wm-go" disabled onclick="_warMAGo()">Award points</button></div>`);
 }
 async function _warMAGo() {
   const s = _warMA, b = document.getElementById('wm-go');
@@ -5266,7 +5275,7 @@ async function _warMAGo() {
 
 // ── Settings (super admin): mass-award moderators, enemies, maps, config ──
 async function warSettingsModal() {
-  showModal(`<div class="modal-title">⚙️ War Points settings</div><div id="ws-body">${Skeleton.spinner()}</div>`, { fullscreenMobile: true });
+  showModal(`<div class="modal-title">⚙️ War Points settings</div><div id="ws-body">${Skeleton.spinner()}</div>`);
   const cfg = await _warCall('war_get_config');
   const body = document.getElementById('ws-body');
   if (!body) return;
