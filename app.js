@@ -238,7 +238,8 @@ const Cache = {
     get_available_months: 5  * 60 * 1000,
     get_roster:           5  * 60 * 1000,
     get_announcements:    2  * 60 * 1000,
-    get_events:           5  * 60 * 1000,
+    get_events:           60 * 1000,          // small windowed reads; creator's own writes bust it instantly
+    get_schedule:         60 * 1000,
     war_get_queues:       60 * 1000,        // war data lives in a separate project
     war_get_summaries:    60 * 1000,
     DEFAULT:              3  * 60 * 1000,
@@ -957,6 +958,9 @@ function _showPending() {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-home').classList.add('active');
   document.getElementById('view-home').innerHTML = `
+    <div style="position:fixed;top:calc(var(--safe-top, 0px) + .75rem);right:.9rem;z-index:50">
+      <button class="btn btn-secondary btn-sm" onclick="window.signOut()">Sign out</button>
+    </div>
     <div class="pending-screen">
       <div class="pending-icon">⏳</div>
       <div class="pending-title">Awaiting Approval</div>
@@ -992,7 +996,7 @@ function renderHome() {
     const pays       = paysRes?.payouts || [];
     const totalGold  = pays.reduce((s, p) => s + (Number(p.goldShare)||0), 0);
     const charPoints = char?.points || 0;
-    events = _setEvents(events);
+    events = _setEvents(events, Date.now() - 12 * 3600000, Date.now() + 48 * 3600000).filter(e => !e.isStub);
     el.innerHTML = _homeShell(char, { rankNum, topPct, bossCount, totalGold, charPoints }, att || [], events);
     _sizeSelectToContent(document.getElementById('home-char-select'));
     _startHomeCountdownTicker();
@@ -2420,10 +2424,7 @@ function renderSchedule() {
     </div>
     <div id="schedule-calendar">${Skeleton.spinner()}</div>`;
 
-  API.read('get_events').then(events => {
-    _setEvents(events);
-    _renderCalendarGrid();
-  });
+  _loadSchedule(true).then(() => _renderCalendarGrid());
 }
 
 function _renderCalendarGrid() {
@@ -2494,7 +2495,7 @@ function _renderCalendarGrid() {
 
 function _renderUpcomingList(events, now) {
   const upcoming = events
-    .filter(ev => new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes)||240)*60000 >= now)
+    .filter(ev => !ev.isStub && new Date(ev.scheduledAt).getTime() + (Number(ev.durationMinutes)||240)*60000 >= now)
     .sort((a,b) => new Date(a.scheduledAt) - new Date(b.scheduledAt))
     .slice(0, 6);
   if (!upcoming.length) return `<div class="card"><div class="empty-state"><span class="empty-state-icon">📅</span>Nothing scheduled.</div></div>`;
@@ -2519,6 +2520,7 @@ function _renderUpcomingList(events, now) {
 function _scheduleShiftMonth(delta) {
   _scheduleMonth = new Date(_scheduleMonth.getFullYear(), _scheduleMonth.getMonth() + delta, 1);
   _renderCalendarGrid();
+  _loadSchedule(false).then(ok => { if (ok) _renderCalendarGrid(); });
 }
 
 // timezone select: converts a date+time input into a UTC ISO string.
@@ -2663,12 +2665,90 @@ function _generateRecurringEvents(rangeStartMs, rangeEndMs) {
 // real event rows the server returned. Returns the merged array too, so
 // callers that pass `events` straight into a render function can just
 // reassign it: `events = _setEvents(events);`
-function _setEvents(rawEvents) {
+function _setEvents(rawEvents, fromMs, toMs) {
   const DAY = 24 * 60 * 60 * 1000;
   const now = Date.now();
-  const merged = [...(rawEvents || []), ..._generateRecurringEvents(now - 365 * DAY, now + 365 * DAY)];
-  window._events = merged;
-  return merged;
+  const store = _evStore();
+  // A windowed fetch is authoritative for its own window: forget what we held there first, so
+  // events deleted by someone else don't linger.
+  if (fromMs != null) {
+    for (const [id, ev] of store) { const t = Date.parse(ev.scheduledAt); if (t >= fromMs && t < toMs) store.delete(id); }
+  }
+  (Array.isArray(rawEvents) ? rawEvents : []).forEach(ev => store.set(ev.id, ev));
+  window._events = [...store.values(), ..._generateRecurringEvents(now - 365 * DAY, now + 365 * DAY)];
+  return window._events;
+}
+
+// ── Schedule data loading ─────────────────────────────────────
+// The server never sends "all events". Schedule asks for (a) compact [time, boss] pairs for the
+// visible month — enough to draw the dots / boss heads — and (b) full details only for roughly
+// this week and next. Any other day is fetched when somebody taps it. Pairs are stored as "stub"
+// events (isStub) so the calendar grid can treat everything the same way.
+function _evStore() { if (!window._evMap) window._evMap = new Map(); return window._evMap; }
+const _evLoadedDays = new Set();          // 'YYYY-MM-DD' days whose full details we hold
+window._evDetail = null;                  // { from, to } ms — window we hold full details for
+window._evHeads = null;                   // { from, to } ms — last month range loaded as pairs
+
+function _localDayBounds(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return [new Date(y, m - 1, d).getTime(), new Date(y, m - 1, d + 1).getTime()];
+}
+
+function _loadSchedule(withDetail) {
+  if (!_scheduleMonth) { const n = new Date(); _scheduleMonth = new Date(n.getFullYear(), n.getMonth(), 1); }
+  const DAY = 24 * 60 * 60 * 1000, m = _scheduleMonth;
+  const from = new Date(m.getFullYear(), m.getMonth(), 1).getTime() - DAY;     // ±1 day covers timezone edges
+  const to   = new Date(m.getFullYear(), m.getMonth() + 1, 1).getTime() + DAY;
+  const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+  const dFrom = t0.getTime() - DAY, dTo = t0.getTime() + 15 * DAY;
+  const params = { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+  if (withDetail) { params.detailFrom = new Date(dFrom).toISOString(); params.detailTo = new Date(dTo).toISOString(); }
+  return API.read('get_schedule', params).then(res => {
+    if (!res || res.error || !Array.isArray(res.heads)) return false;
+    const store = _evStore(), inRange = (ev, a, b) => { const t = Date.parse(ev.scheduledAt); return t >= a && t < b; };
+    for (const [id, ev] of store) if (ev.isStub && inRange(ev, from, to)) store.delete(id);          // old pairs for this month
+    if (withDetail) {
+      for (const [id, ev] of store) if (inRange(ev, dFrom, dTo)) store.delete(id);                   // refresh the detail window
+      (res.detail || []).forEach(ev => store.set(ev.id, ev));
+      window._evDetail = { from: dFrom, to: dTo };
+    }
+    res.heads.forEach(([iso, boss]) => {
+      const ms = Date.parse(iso), dt = new Date(ms);
+      const dayStr = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+      const d = window._evDetail;
+      if ((d && ms >= d.from && ms < d.to) || _evLoadedDays.has(dayStr)) return;                    // real events already cover it
+      const id = 'HEAD_' + iso + '_' + boss;
+      store.set(id, { id, boss, scheduledAt: iso, durationMinutes: 0, notes: '', source: 'head', createdBy: '', createdAt: null, isStub: true });
+    });
+    window._evHeads = { from, to };
+    _setEvents(null);
+    return true;
+  }).catch(() => false);
+}
+
+// Does tapping this day need a small fetch for the full events?
+function _dayNeedsLoad(dateStr) {
+  if (_evLoadedDays.has(dateStr)) return false;
+  const [s, e] = _localDayBounds(dateStr), d = window._evDetail, h = window._evHeads;
+  if (d && s >= d.from && e <= d.to) return false;
+  const hasStub = (window._events || []).some(ev => ev.isStub && Date.parse(ev.scheduledAt) >= s && Date.parse(ev.scheduledAt) < e);
+  return hasStub || !h || s < h.from || e > h.to;
+}
+
+function _loadDay(dateStr) {
+  const [s, e] = _localDayBounds(dateStr);
+  return API.read('get_events', { from: new Date(s).toISOString(), to: new Date(e).toISOString() }).then(rows => {
+    if (!Array.isArray(rows)) return false;
+    _setEvents(rows, s, e);
+    _evLoadedDays.add(dateStr);
+    return true;
+  }).catch(() => false);
+}
+
+// After a create / edit / delete: drop everything we hold and reload this month + the detail window.
+function _afterEventWrite() {
+  _evStore().clear(); _evLoadedDays.clear(); window._evDetail = null; window._evHeads = null;
+  return _loadSchedule(true);
 }
 
 // ── DAY VIEW — fullscreen single-day agenda list ──────────────
@@ -2681,6 +2761,7 @@ function _dayEventsFor(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   return (window._events || [])
     .filter(ev => {
+      if (ev.isStub) return false;
       const dt = new Date(ev.scheduledAt);
       return dt.getFullYear() === y && (dt.getMonth() + 1) === m && dt.getDate() === d;
     })
@@ -2698,6 +2779,14 @@ function _isEventLive(ev, now) {
 // centered card (see .modal-box-full-mobile in style.css).
 function openDayView(dateStr) {
   _dayViewDate = dateStr;
+  if (_dayNeedsLoad(dateStr)) {
+    showModal(`<div style="padding:2rem 1rem">${Skeleton.spinner()}</div>`, { fullscreenMobile: true });
+    _loadDay(dateStr).then(ok => {
+      if (!ok) toast('Could not load that day. Try again.', 'error');
+      if (_dayViewDate === dateStr) showModal(_dayViewHtml(dateStr), { fullscreenMobile: true });
+    });
+    return;
+  }
   showModal(_dayViewHtml(dateStr), { fullscreenMobile: true });
 }
 
@@ -2991,11 +3080,10 @@ function submitCreateEvent(returnDate) {
   const btn = document.getElementById('evt-submit-btn');
   btn.disabled = true; btn.textContent = 'Creating…';
 
-  API.write('create_event', { boss, scheduledAt, durationMinutes, notes }, ['get_events']).then(res => {
+  API.write('create_event', { boss, scheduledAt, durationMinutes, notes }, ['get_events', 'get_schedule']).then(res => {
     if (res.success) {
       toast('Event created.', 'success');
-      API.read('get_events').then(events => {
-        _setEvents(events);
+      _afterEventWrite().then(() => {
         _renderCalendarGrid();
         if (returnDate) openDayView(returnDate); else closeModal();
       });
@@ -3080,11 +3168,10 @@ function submitEditEvent(eventId, dayViewDate) {
   const btn = document.getElementById('evt-edit-submit-btn');
   btn.disabled = true; btn.textContent = 'Saving…';
 
-  API.write('update_event', { eventId, boss, scheduledAt, durationMinutes, notes }, ['get_events']).then(res => {
+  API.write('update_event', { eventId, boss, scheduledAt, durationMinutes, notes }, ['get_events', 'get_schedule']).then(res => {
     if (res.success) {
       toast('Event updated.', 'success');
-      API.read('get_events').then(events => {
-        _setEvents(events);
+      _afterEventWrite().then(() => {
         _renderCalendarGrid();
         if (dayViewDate) openDayView(dayViewDate); else closeModal();
       });
@@ -3094,11 +3181,10 @@ function submitEditEvent(eventId, dayViewDate) {
 
 function deleteEvent(eventId, dayViewDate) {
   if (!confirm('Delete this event?')) return;
-  API.write('delete_event', { eventId }, ['get_events']).then(res => {
+  API.write('delete_event', { eventId }, ['get_events', 'get_schedule']).then(res => {
     if (res.success) {
       toast('Event deleted.', 'success');
-      API.read('get_events').then(events => {
-        _setEvents(events);
+      _afterEventWrite().then(() => {
         _renderCalendarGrid();
         if (dayViewDate) openDayView(dayViewDate); else closeModal();
       });

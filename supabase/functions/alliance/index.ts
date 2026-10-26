@@ -864,7 +864,8 @@ Deno.serve(async (req) => {
       case 'mark_announcements_read': return ok(await markAnnouncementsRead(supabase, email, data.announcementIds as string[]));
 
       // ── Schedule / Calendar ──────────────────────────────────
-      case 'get_events':          return ok(await getEvents(supabase, email));
+      case 'get_events':          return ok(await getEvents(supabase, email, data));
+      case 'get_schedule':        return ok(await getSchedule(supabase, email, data));
       case 'create_event':        return ok(await createEvent(supabase, email, data));
       case 'update_event':        return ok(await updateEvent(supabase, email, data));
       case 'delete_event':        return ok(await deleteEvent(supabase, email, data.eventId as string));
@@ -3526,21 +3527,75 @@ async function notifyTick(supabase: ReturnType<typeof db>) {
 //  created events will set source:'discord_bot' instead of 'manual',
 //  everything else about them is identical.
 // ============================================================
-async function getEvents(supabase: ReturnType<typeof db>, email: string) {
-  if (!email) return { error: 'No email provided' };
-  const { data: rows, error } = await supabase
-    .from('events')
-    .select('event_id, boss, scheduled_at, duration_minutes, notes, source, created_by, created_at')
-    .order('scheduled_at', { ascending: true });
-  if (error) throw error;
+// ── Events: small, windowed reads ───────────────────────────────
+// History: one unbounded select used to return EVERY event (heavy egress/log ingestion, and
+// PostgREST silently caps a select at 1000 rows, which hid the newest events). Now every read
+// is bounded by a date window and paged until a short page comes back.
+const EVENT_FULL_COLS = 'event_id, boss, scheduled_at, duration_minutes, notes, source, created_by, created_at';
 
-  const displayByEmail = await resolveDisplayNames(supabase, (rows || []).map(r => r.created_by));
+function _eventIso(v: unknown): string | null {
+  return typeof v === 'string' && !isNaN(Date.parse(v)) ? new Date(v).toISOString() : null;
+}
 
-  return (rows || []).map(r => ({
+async function _fetchEventRows(supabase: ReturnType<typeof db>, cols: string, fromIso: string, toIso: string) {
+  const PAGE_SIZE = 1000;
+  const rows: Array<Record<string, any>> = [];
+  for (let start = 0; start < 20000; start += PAGE_SIZE) {
+    const { data: page, error } = await supabase.from('events').select(cols)
+      .gte('scheduled_at', fromIso).lt('scheduled_at', toIso)
+      .order('scheduled_at', { ascending: true }).order('event_id', { ascending: true })
+      .range(start, start + PAGE_SIZE - 1);
+    if (error) throw error;
+    rows.push(...(page || []));
+    if (!page || page.length < PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function _shapeEvents(supabase: ReturnType<typeof db>, rows: Array<Record<string, any>>) {
+  const displayByEmail = await resolveDisplayNames(supabase, rows.map(r => r.created_by));
+  return rows.map(r => ({
     id: r.event_id, boss: r.boss, scheduledAt: r.scheduled_at,
     durationMinutes: r.duration_minutes, notes: r.notes || '',
     source: r.source, createdBy: displayByEmail[r.created_by]?.display || 'Unknown Member', createdAt: r.created_at,
   }));
+}
+
+// Full events for a date window ({from, to}, at most 45 days). With no window: what Home needs
+// (anything live or starting in the next 48 hours).
+async function getEvents(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown> = {}) {
+  if (!email) return { error: 'No email provided' };
+  let from = _eventIso(data.from), to = _eventIso(data.to);
+  if (!from || !to) {
+    from = new Date(Date.now() - 12 * 3600000).toISOString();
+    to = new Date(Date.now() + 48 * 3600000).toISOString();
+  } else if (Date.parse(to) - Date.parse(from) > 45 * 86400000 || Date.parse(to) <= Date.parse(from)) {
+    return { error: 'Invalid date range' };
+  }
+  return await _shapeEvents(supabase, await _fetchEventRows(supabase, EVENT_FULL_COLS, from, to));
+}
+
+// Everything the Schedule page needs in ONE request:
+//   heads  = compact [scheduledAt, boss] pairs for the visible month (the calendar dots / boss heads)
+//   detail = full events for an optional short window (default use: yesterday .. 14 days ahead)
+// Heads inside the detail window are left out because the detail rows already cover them.
+async function getSchedule(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown> = {}) {
+  if (!email) return { error: 'No email provided' };
+  const from = _eventIso(data.from), to = _eventIso(data.to);
+  if (!from || !to || Date.parse(to) <= Date.parse(from) || Date.parse(to) - Date.parse(from) > 62 * 86400000) {
+    return { error: 'Invalid date range' };
+  }
+  const dFrom = _eventIso(data.detailFrom), dTo = _eventIso(data.detailTo);
+  const wantDetail = !!(dFrom && dTo);
+  if (wantDetail && (Date.parse(dTo!) <= Date.parse(dFrom!) || Date.parse(dTo!) - Date.parse(dFrom!) > 21 * 86400000)) {
+    return { error: 'Invalid detail range' };
+  }
+  const headRows = await _fetchEventRows(supabase, 'scheduled_at, boss', from, to);
+  const heads = headRows
+    .filter(r => { const ms = Date.parse(r.scheduled_at); return !(wantDetail && ms >= Date.parse(dFrom!) && ms < Date.parse(dTo!)); })
+    .map(r => [new Date(r.scheduled_at).toISOString(), r.boss]);
+  const detail = wantDetail ? await _shapeEvents(supabase, await _fetchEventRows(supabase, EVENT_FULL_COLS, dFrom!, dTo!)) : [];
+  return { heads, detail };
 }
 
 async function createEvent(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
