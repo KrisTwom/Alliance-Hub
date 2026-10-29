@@ -32,6 +32,28 @@ const GROUP_WINDOW_MS = 4 * 60 * 60 * 1000;
 // ms ago — see checkAttendanceEligibility() below.
 const ATTENDANCE_WINDOW_MS = 3 * 60 * 60 * 1000;
 
+// ── Summoned bosses ────────────────────────────────────────────
+// A summoned boss is a player-triggered extra spawn of one of the bosses
+// below. It is stored as its own event whose event_id starts with
+// SUM_ (real events are EVT_...), so every downstream consumer that already
+// groups by event_id (runs, late-linking, dedupe, loot splits) keeps a
+// summon completely separate from the real boss of the same name.
+// Members pick the exact summon they attended on the Attendance page
+// (see get_active_summons), so a real spawn and a summon (or two quick
+// summons) can never be confused for each other.
+const SUMMON_ID_PREFIX = 'SUM_';
+const SUMMON_WINDOW_MS = 60 * 60 * 1000;              // attendance open for 1h after the summon
+const SUMMON_DUPLICATE_GUARD_MS = 5 * 60 * 1000;      // same boss summoned again within 5 min -> ask "separate summon?"
+// Points multiplier for summoned attendance. 0 = summons are loot-split
+// only (no points), 1 = same points as the real boss. Player-triggered
+// spawns can be repeated at will, so default 0 keeps the points economy
+// from being farmed. Change to 1 to award full points.
+const SUMMON_POINT_MULTIPLIER = 0;
+const SUMMONABLE_BOSSES = new Set(['Illust', 'Barslaf', 'BIGMAMA', 'Ukpana', 'Darlene', 'Sephia', 'Faith', 'Billiard', 'Devilang']);
+function isSummonEventId(id: unknown): boolean {
+  return typeof id === 'string' && id.startsWith(SUMMON_ID_PREFIX);
+}
+
 // ── Web Push config (see push_subscriptions/notification_prefs below) ──
 // VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY: generate once with
 //   npx web-push generate-vapid-keys
@@ -811,7 +833,7 @@ Deno.serve(async (req) => {
       case 'request_access':      return ok(await requestAccess(supabase, email));
       case 'update_nickname':     return ok(await updateNickname(supabase, email, data));
       case 'request_access_with_info': return ok(await requestAccessWithInfo(supabase, email, data));
-      case 'submit_attendance':   return ok(await submitAttendance(supabase, email, data.charId as string, data.bosses as string[]));
+      case 'submit_attendance':   return ok(await submitAttendance(supabase, email, data.charId as string, data.bosses as string[], data.summonedEventIds as string[] | undefined));
       case 'get_my_attendance':   return ok(await getMyAttendance(supabase, email, data.charId as string));
       case 'get_all_attendance':  return ok(await getAllAttendance(supabase, email));
       case 'get_runs_for_boss':   return ok(await getRunsForBoss(supabase, email, data.boss as string));
@@ -866,6 +888,7 @@ Deno.serve(async (req) => {
       // ── Schedule / Calendar ──────────────────────────────────
       case 'get_events':          return ok(await getEvents(supabase, email, data));
       case 'get_schedule':        return ok(await getSchedule(supabase, email, data));
+      case 'get_active_summons':  return ok(await getActiveSummons(supabase, email));
       case 'create_event':        return ok(await createEvent(supabase, email, data));
       case 'update_event':        return ok(await updateEvent(supabase, email, data));
       case 'delete_event':        return ok(await deleteEvent(supabase, email, data.eventId as string));
@@ -918,10 +941,14 @@ Deno.serve(async (req) => {
 // they can be shown/hidden separately; if both end up hidden, getConfig
 // drops the whole 'Event Bosses' category rather than send an empty one.
 async function getEventBossVisibility(supabase: ReturnType<typeof db>) {
-  const { data } = await supabase.from('event_boss_settings').select('summer_sephia_visible, kooby_dic_visible').eq('id', 1).maybeSingle();
+  // select('*') on purpose: summon_enabled is a newer column, and naming it
+  // explicitly would make this whole query error (and hide Summer Sephia /
+  // Kooby Dic) on a database that hasn't had the ALTER TABLE run yet.
+  const { data } = await supabase.from('event_boss_settings').select('*').eq('id', 1).maybeSingle();
   return {
     summerSephia: !!data?.summer_sephia_visible,
     koobyDic: !!data?.kooby_dic_visible,
+    summonEnabled: !!data?.summon_enabled,
   };
 }
 
@@ -930,6 +957,7 @@ async function setEventBossVisibility(supabase: ReturnType<typeof db>, email: st
   const fields: Record<string, unknown> = { id: 1 };
   if (data.summerSephia !== undefined) fields.summer_sephia_visible = !!data.summerSephia;
   if (data.koobyDic !== undefined) fields.kooby_dic_visible = !!data.koobyDic;
+  if (data.summonEnabled !== undefined) fields.summon_enabled = !!data.summonEnabled;
   const { error } = await supabase.from('event_boss_settings').upsert(fields);
   if (error) throw error;
   return { success: true };
@@ -946,7 +974,7 @@ async function getConfig(supabase: ReturnType<typeof db>) {
     return { ...cat, bosses };
   }).filter(cat => cat.category !== 'Event Bosses' || cat.bosses.length > 0);
 
-  return { bossCategories: categories, bossDrops: BOSS_DROPS, eventBossVisibility: visibility };
+  return { bossCategories: categories, bossDrops: BOSS_DROPS, eventBossVisibility: visibility, summonEnabled: visibility.summonEnabled };
 }
 
 // ============================================================
@@ -1421,6 +1449,10 @@ async function checkAttendanceEligibility(supabase: ReturnType<typeof db>, bosse
   let maintAnchor: number | null = null;
   let maintEventId: string | null = null;
   (evRows || []).forEach(r => {
+    // Summoned events are never matched by boss name — members pick them
+    // explicitly (see checkSummonEligibility). Without this skip, a summon
+    // would hijack the real boss's "latest anchor" and vice versa.
+    if (isSummonEventId(r.event_id)) return;
     const startMs = new Date(r.scheduled_at as string).getTime();
     const endMs = startMs + (Number(r.duration_minutes) || 0) * 60000;
     if (r.boss === 'Maintenance') {
@@ -1497,11 +1529,56 @@ async function checkAttendanceEligibility(supabase: ReturnType<typeof db>, bosse
   return blocked.length ? { ok: false, blocked } : { ok: true, eventIdByBoss };
 }
 
-async function submitAttendance(supabase: ReturnType<typeof db>, email: string, charId: string, bosses: string[]) {
+// Validates the exact summoned events a member ticked on the Attendance
+// page: each must exist, be a summonable boss, and be inside its 1h window.
+async function checkSummonEligibility(supabase: ReturnType<typeof db>, eventIds: string[], nowMs: number): Promise<{ ok: true; entries: Array<{ eventId: string; boss: string }> } | { ok: false; message: string }> {
+  const ids = [...new Set(eventIds)];
+  if (ids.some(id => !isSummonEventId(id))) return { ok: false, message: 'Invalid summoned event. Nothing in this submission was recorded.' };
+  const { data } = await supabase.from('events').select('event_id, boss, scheduled_at').in('event_id', ids);
+  const byId: Record<string, { boss: string; startMs: number }> = {};
+  (data || []).forEach(r => { byId[r.event_id as string] = { boss: r.boss as string, startMs: new Date(r.scheduled_at as string).getTime() }; });
+  const entries: Array<{ eventId: string; boss: string }> = [];
+  const closed: string[] = [];
+  for (const id of ids) {
+    const ev = byId[id];
+    if (!ev || !Number.isFinite(ev.startMs) || !SUMMONABLE_BOSSES.has(ev.boss)) { closed.push('an unknown summon'); continue; }
+    if (nowMs < ev.startMs || nowMs > ev.startMs + SUMMON_WINDOW_MS) { closed.push(`summoned ${ev.boss}`); continue; }
+    entries.push({ eventId: id, boss: ev.boss });
+  }
+  if (closed.length) {
+    return { ok: false, message: `Attendance for ${closed.join(', ')} is closed — summoned bosses only accept attendance for 1 hour after they're summoned. Nothing in this submission was recorded.` };
+  }
+  return { ok: true, entries };
+}
+
+// Summoned events whose 1h attendance window is open right now — powers the
+// "Summoned" picker on the Attendance page.
+async function getActiveSummons(supabase: ReturnType<typeof db>, email: string) {
+  if (!email) return { error: 'No email provided' };
+  const nowMs = Date.now();
+  const { data, error } = await supabase.from('events')
+    .select('event_id, boss, scheduled_at, created_by')
+    .like('event_id', SUMMON_ID_PREFIX + '%')
+    .gte('scheduled_at', new Date(nowMs - SUMMON_WINDOW_MS).toISOString())
+    .lte('scheduled_at', new Date(nowMs).toISOString())
+    .order('scheduled_at', { ascending: true });
+  if (error) throw error;
+  const displayByEmail = await resolveDisplayNames(supabase, (data || []).map(r => r.created_by as string));
+  return (data || []).map(r => ({
+    id: r.event_id, boss: r.boss, scheduledAt: r.scheduled_at,
+    expiresAt: new Date(new Date(r.scheduled_at as string).getTime() + SUMMON_WINDOW_MS).toISOString(),
+    points: Math.round((BOSS_POINTS[r.boss as string] || 0) * SUMMON_POINT_MULTIPLIER),
+    createdBy: displayByEmail[r.created_by as string]?.display || 'Unknown Member',
+  }));
+}
+
+async function submitAttendance(supabase: ReturnType<typeof db>, email: string, charId: string, bosses: string[], summonedEventIds: string[] = []) {
   if (await isRestricted(supabase, email)) {
     return { success: false, message: 'Your account is restricted from submitting attendance. Contact an admin if you believe this is a mistake.' };
   }
-  if (!bosses || !bosses.length) return { success: false, message: 'No bosses selected.' };
+  bosses = Array.isArray(bosses) ? bosses : [];
+  const summonIds = (Array.isArray(summonedEventIds) ? summonedEventIds : []).filter(x => typeof x === 'string').slice(0, 20);
+  if (!bosses.length && !summonIds.length) return { success: false, message: 'No bosses selected.' };
 
   const { data: char } = await supabase.from('characters').select('ign, points, level, char_class').eq('char_id', charId).maybeSingle();
   if (!char) return { success: false, message: 'Invalid character.' };
@@ -1509,12 +1586,21 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
 
   const now = new Date();
 
+  // Summoned events the member ticked (validated first — same all-or-nothing
+  // rule as the schedule gate below).
+  let summonEntries: Array<{ eventId: string; boss: string }> = [];
+  if (summonIds.length) {
+    const se = await checkSummonEligibility(supabase, summonIds, now.getTime());
+    if (!se.ok) return { success: false, message: se.message };
+    summonEntries = se.entries;
+  }
+
   // All-or-nothing level gate: every boss has a minimum character level
   // (a few, like Platanista, vary by class). Same as the schedule gate
   // below — one under-leveled boss in the batch rejects the WHOLE
   // submission rather than silently dropping just that boss.
   const charLevel = Number(char.level) || 0;
-  const underleveled = bosses.filter(b => charLevel < levelReqForBoss(b, char.char_class || ''));
+  const underleveled = [...new Set([...bosses, ...summonEntries.map(e => e.boss)])].filter(b => charLevel < levelReqForBoss(b, char.char_class || ''));
   if (underleveled.length) {
     const reqList = underleveled.map(b => `${b} (Lv.${levelReqForBoss(b, char.char_class || '')}+)`).join(', ');
     return {
@@ -1526,7 +1612,9 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   // All-or-nothing schedule gate: if ANY selected boss has no recent
   // scheduled event backing it, the WHOLE submission is rejected — not
   // just the offending boss — so a mixed batch can't partially land.
-  const eligibility = await checkAttendanceEligibility(supabase, bosses, now.getTime());
+  const eligibility = bosses.length
+    ? await checkAttendanceEligibility(supabase, bosses, now.getTime())
+    : { ok: true as const, eventIdByBoss: {} as Record<string, string> };
   if (!eligibility.ok) {
     return {
       success: false,
@@ -1553,10 +1641,21 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   const duplicateBosses = dedupeCheckBosses.filter(b => alreadySubmittedEventIds.has(eligibility.eventIdByBoss[b]));
   const newBosses = bosses.filter(b => !duplicateBosses.includes(b));
 
-  if (!newBosses.length) {
+  // Same per-event dedupe for summons: one submission per character per
+  // summoned event.
+  const summonIdList = summonEntries.map(e => e.eventId);
+  const { data: recentSummons } = summonIdList.length
+    ? await supabase.from('attendance').select('event_id').eq('char_id', charId).in('event_id', summonIdList)
+    : { data: [] as Array<{ event_id: string }> };
+  const alreadySummonIds = new Set((recentSummons || []).map(r => r.event_id));
+  const duplicateSummons = summonEntries.filter(e => alreadySummonIds.has(e.eventId));
+  const newSummons = summonEntries.filter(e => !alreadySummonIds.has(e.eventId));
+  const duplicateLabels = [...duplicateBosses, ...duplicateSummons.map(e => `${e.boss} (summoned)`)];
+
+  if (!newBosses.length && !newSummons.length) {
     return {
       success: false,
-      message: `Already recorded for ${duplicateBosses.join(', ')} in this window. If this is a genuine second kill, message an admin on Kakao with a screenshot of your attendance and they'll add it manually.`,
+      message: `Already recorded for ${duplicateLabels.join(', ')} in this window. If this is a genuine second kill, message an admin on Kakao with a screenshot of your attendance and they'll add it manually.`,
     };
   }
 
@@ -1569,6 +1668,11 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
     // getGroupedRuns instead, which is actually the right behavior for a
     // boss that legitimately spawns several times in quick succession.
     return { ts: nowIso, email, char_id: charId, ign: char.ign, boss, points: pts, run_id: '', event_id: eligibility.eventIdByBoss[boss] || '' };
+  });
+  newSummons.forEach(e => {
+    const pts = Math.round((BOSS_POINTS[e.boss] || 0) * SUMMON_POINT_MULTIPLIER);
+    totalPoints += pts;
+    rows.push({ ts: nowIso, email, char_id: charId, ign: char.ign, boss: e.boss, points: pts, run_id: '', event_id: e.eventId });
   });
 
   const { data: inserted, error: ae } = await supabase.from('attendance').insert(rows).select('id, boss, ts, event_id');
@@ -1594,10 +1698,10 @@ async function submitAttendance(supabase: ReturnType<typeof db>, email: string, 
   await linkLateSubmissions(supabase, charId, inserted || []);
 
   return {
-    success: true, count: newBosses.length, pointsEarned: totalPoints, ign: char.ign,
-    skipped: duplicateBosses.length ? duplicateBosses : undefined,
-    skippedMessage: duplicateBosses.length
-      ? `${duplicateBosses.join(', ')} already recorded in this window — if that's a genuine second kill, message an admin on Kakao with a screenshot and they'll add it manually.`
+    success: true, count: newBosses.length + newSummons.length, pointsEarned: totalPoints, ign: char.ign,
+    skipped: duplicateLabels.length ? duplicateLabels : undefined,
+    skippedMessage: duplicateLabels.length
+      ? `${duplicateLabels.join(', ')} already recorded in this window — if that's a genuine second kill, message an admin on Kakao with a screenshot and they'll add it manually.`
       : undefined,
   };
 }
@@ -1683,11 +1787,11 @@ async function getMyAttendance(supabase: ReturnType<typeof db>, email: string, c
   // whichever of the linked members happened to tap the boss in-app.
   const { data, error } = await supabase
     .from('attendance')
-    .select('ts, boss, points, run_id')
+    .select('ts, boss, points, run_id, event_id')
     .eq('char_id', charId)
     .order('ts', { ascending: false });
   if (error) throw error;
-  return (data || []).map(r => ({ timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id }));
+  return (data || []).map(r => ({ timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id, summoned: isSummonEventId(r.event_id) }));
 }
 
 // Admin-only: every attendance submission across the whole alliance, most
@@ -1705,11 +1809,11 @@ async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) 
   // truncated. Paginate through in pages of PAGE_SIZE until a short page
   // comes back.
   const PAGE_SIZE = 1000;
-  const rows: Array<{ id: string; ts: string; boss: string; points: number; run_id: string; char_id: string; ign: string; email: string }> = [];
+  const rows: Array<{ id: string; ts: string; boss: string; points: number; run_id: string; char_id: string; ign: string; email: string; event_id: string }> = [];
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await supabase
       .from('attendance')
-      .select('id, ts, boss, points, run_id, char_id, ign, email')
+      .select('id, ts, boss, points, run_id, char_id, ign, email, event_id')
       .order('ts', { ascending: false })
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
@@ -1718,7 +1822,7 @@ async function getAllAttendance(supabase: ReturnType<typeof db>, email: string) 
   }
   return rows.map(r => ({
     id: r.id, timestamp: r.ts || '', boss: r.boss, points: r.points, runId: r.run_id,
-    charId: r.char_id, ign: r.ign, email: r.email,
+    charId: r.char_id, ign: r.ign, email: r.email, summoned: isSummonEventId(r.event_id),
   }));
 }
 
@@ -2000,6 +2104,7 @@ async function getGroupedRuns(supabase: ReturnType<typeof db>, email: string, da
       runId:            saved ? saved.run_id : null,
       boss:             run.boss,
       eventId:          run.eventId || null,
+      summoned:         isSummonEventId(run.eventId),
       windowStart:      new Date(run.windowStart).toISOString(),
       windowEnd:        new Date(run.windowEnd).toISOString(),
       participants,
@@ -3555,7 +3660,7 @@ async function _fetchEventRows(supabase: ReturnType<typeof db>, cols: string, fr
 async function _shapeEvents(supabase: ReturnType<typeof db>, rows: Array<Record<string, any>>) {
   const displayByEmail = await resolveDisplayNames(supabase, rows.map(r => r.created_by));
   return rows.map(r => ({
-    id: r.event_id, boss: r.boss, scheduledAt: r.scheduled_at,
+    id: r.event_id, boss: r.boss, scheduledAt: r.scheduled_at, summoned: isSummonEventId(r.event_id),
     durationMinutes: r.duration_minutes, notes: r.notes || '',
     source: r.source, createdBy: displayByEmail[r.created_by]?.display || 'Unknown Member', createdAt: r.created_at,
   }));
@@ -3616,7 +3721,30 @@ async function createEvent(supabase: ReturnType<typeof db>, email: string, data:
   if (!boss || !scheduledAt) return { error: 'boss and scheduledAt are required.' };
   if (isNaN(new Date(scheduledAt).getTime())) return { error: 'Invalid scheduledAt.' };
 
-  const id = 'EVT_' + crypto.randomUUID();
+  // Summoned boss: only the SUMMONABLE_BOSSES, only while a Super Admin has
+  // the Summon toggle on, never scheduled in the future, and a second summon
+  // of the same boss within a few minutes needs an explicit "yes, separate
+  // summon" (confirmSeparate) so two members logging the SAME summon don't
+  // create duplicate events.
+  const summoned = data.summoned === true;
+  if (summoned) {
+    if (!SUMMONABLE_BOSSES.has(boss)) return { error: `${boss} can't be summoned.` };
+    if (!(await getEventBossVisibility(supabase)).summonEnabled) return { error: 'Summoned events are currently turned off.' };
+    const startMs = new Date(scheduledAt).getTime();
+    if (startMs > Date.now() + 10 * 60000) return { error: "A summon can't be scheduled in the future — set the time it was summoned." };
+    if (data.confirmSeparate !== true) {
+      const { data: near } = await supabase.from('events').select('event_id, scheduled_at')
+        .eq('boss', boss).like('event_id', SUMMON_ID_PREFIX + '%')
+        .gte('scheduled_at', new Date(startMs - SUMMON_DUPLICATE_GUARD_MS).toISOString())
+        .lte('scheduled_at', new Date(startMs + SUMMON_DUPLICATE_GUARD_MS).toISOString())
+        .limit(1);
+      if (near && near.length) {
+        return { error: `A summoned ${boss} was already created within 5 minutes of this time.`, needsConfirm: true, existingAt: near[0].scheduled_at };
+      }
+    }
+  }
+
+  const id = (summoned ? SUMMON_ID_PREFIX : 'EVT_') + crypto.randomUUID();
   const { error } = await supabase.from('events').insert({
     event_id: id, boss, scheduled_at: scheduledAt, duration_minutes: durationMinutes,
     notes, source: 'manual', created_by: email,
@@ -3629,6 +3757,10 @@ async function updateEvent(supabase: ReturnType<typeof db>, email: string, data:
   if (!(await isAdmin(supabase, email))) return { error: 'Unauthorized' };
   const eventId = data.eventId as string;
   if (!eventId) return { error: 'eventId required' };
+
+  if (isSummonEventId(eventId) && data.boss !== undefined && !SUMMONABLE_BOSSES.has((data.boss as string).trim())) {
+    return { error: 'A summoned event can only be one of the summonable bosses. Delete it and create a normal event instead.' };
+  }
 
   const fields: Record<string, unknown> = {};
   if (data.boss !== undefined) fields.boss = (data.boss as string).trim();

@@ -131,6 +131,13 @@ const CALENDAR_DOT_BOSS_OVERRIDES = {
   'Caligo': BOSS_HEADSHOTS['Caligo'],
 };
 
+// Bosses that can be player-summoned (event create/edit "Summon?" checkbox).
+// Must match SUMMONABLE_BOSSES in index.ts — the backend re-checks it.
+const SUMMONABLE_BOSSES = ['Illust', 'Barslaf', 'BIGMAMA', 'Ukpana', 'Darlene', 'Sephia', 'Faith', 'Billiard', 'Devilang'];
+function _summonBadge(on) {
+  return on ? ' <span style="font-size:.62rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#e6a842;border:1px solid #e6a842;border-radius:99px;padding:.05rem .4rem;vertical-align:middle;white-space:nowrap">Summoned</span>' : '';
+}
+
 // Respawn timer (ms) for bosses whose Create/Edit Event modal shows the
 // "Enter Death Time" helper field (see _evtBossChanged/_applyDeathTime).
 // Bosses with no entry here (Siege, Library Boss, Summer Sephia, Kooby
@@ -240,6 +247,7 @@ const Cache = {
     get_announcements:    2  * 60 * 1000,
     get_events:           60 * 1000,          // small windowed reads; creator's own writes bust it instantly
     get_schedule:         60 * 1000,
+    get_active_summons:   30 * 1000,        // open summon windows are 1h; creating/editing an event busts it
     war_get_queues:       60 * 1000,        // war data lives in a separate project
     war_get_summaries:    60 * 1000,
     DEFAULT:              3  * 60 * 1000,
@@ -1143,7 +1151,7 @@ function _homeShell(char, stats, att, events) {
               return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;${i < upcoming.length-1 ? 'border-bottom:1px solid var(--border);' : ''}cursor:pointer;" onclick="openEventDetails('${ev.id}')">
                 <div style="width:38px;height:38px;padding:5px;box-sizing:border-box;border-radius:10px;background:var(--bg-hover);border:1px solid var(--border-mid);flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">${thumb}</div>
                 <div style="flex:1;min-width:0;">
-                  <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${escHtml(ev.boss)}</div>
+                  <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${escHtml(ev.boss)}${_summonBadge(ev.summoned)}</div>
                   <div style="font-size:11px;color:var(--text-muted);">Spawns ${fmtTime(ev.scheduledAt)}</div>
                 </div>
                 <div style="font-size:13px;font-weight:700;color:var(--gold);flex-shrink:0;" data-countdown="${spawnMs}">${_fmtCountdown(spawnMs - Date.now())}</div>
@@ -1237,6 +1245,7 @@ function renderAttendance() {
         <span style="color:var(--text-secondary);font-size:.9rem">Playing as</span>
         <div id="attendance-char-switcher"></div>
       </div>
+      <div id="summon-section"></div>
       ${App.config.bossCategories.map(cat => {
         // For Raid Bosses, split into defined sub-rows
         if (cat.category === 'Raid Bosses') {
@@ -1303,22 +1312,71 @@ function renderAttendance() {
     const cb = label.querySelector('input');
     cb.addEventListener('change', () => { label.classList.toggle('selected', cb.checked); _updateAttSummary(); });
   });
+  _loadActiveSummons();
+}
+
+// Splits the ticked boxes into normal bosses (by name) and summoned events
+// (by event id) — a summon is always picked explicitly, never matched by boss
+// name, so a real spawn and a summon of the same boss can't be confused.
+function _selectedAttendance() {
+  const bosses = [], summons = [];
+  document.querySelectorAll('.boss-check input:checked').forEach(cb => {
+    if (cb.closest('.summon-check')) summons.push({ id: cb.value, boss: cb.dataset.boss, pts: Number(cb.dataset.pts) || 0 });
+    else bosses.push(cb.value);
+  });
+  return { bosses, summons };
+}
+
+// Shows a "Summoned Bosses" block at the top of Attendance only while at
+// least one summon's 1-hour window is open. Each summon is its own tickable
+// card labelled with the time it was summoned, so two quick summons of the
+// same boss are two clearly separate choices.
+function _loadActiveSummons() {
+  if (!document.getElementById('summon-section')) return;
+  API.read('get_active_summons').then(list => {
+    const sec = document.getElementById('summon-section');
+    if (!sec || !Array.isArray(list) || !list.length) return;
+    const now = Date.now();
+    sec.innerHTML = `
+      <div class="boss-category-header">✨ Summoned Bosses</div>
+      <p style="font-size:.78rem;color:var(--text-muted);margin:-.25rem 0 .75rem;line-height:1.5">Attendance for a summon is open for 1 hour. Tick the exact summon you were at — if the same boss was summoned more than once, tick every one you took part in.</p>
+      <div class="boss-grid" style="margin-bottom:1.75rem">${list.map(sm => {
+        const minsLeft = Math.max(0, Math.ceil((new Date(sm.expiresAt).getTime() - now) / 60000));
+        return `<label class="boss-check summon-check">
+          <input type="checkbox" value="${escHtml(sm.id)}" data-boss="${escHtml(sm.boss)}" data-pts="${Number(sm.points) || 0}">
+          <span class="boss-check-icon">✓</span>
+          ${BOSS_SPRITES[sm.boss]
+            ? `<img src="${BOSS_SPRITES[sm.boss]}" class="boss-check-sprite" alt="${escHtml(sm.boss)}" onerror="this.style.display='none'">`
+            : `<span class="boss-check-emoji">${_bossEmoji(sm.boss)}</span>`}
+          <span class="boss-check-info">
+            <span class="boss-check-name">${escHtml(sm.boss)}</span>
+            <span class="boss-check-pts">Summoned ${fmtTime(sm.scheduledAt)} · ${minsLeft}m left · ${Number(sm.points) ? '+' + Number(sm.points) + ' pts' : 'loot split only'}</span>
+          </span>
+        </label>`;
+      }).join('')}</div>`;
+    sec.querySelectorAll('.boss-check').forEach(label => {
+      const cb = label.querySelector('input');
+      cb.addEventListener('change', () => { label.classList.toggle('selected', cb.checked); _updateAttSummary(); });
+    });
+  }).catch(() => {});
 }
 
 function _updateAttSummary() {
-  const checked = [...document.querySelectorAll('.boss-check input:checked')];
+  const _s = _selectedAttendance();
+  const checked = [..._s.bosses, ..._s.summons];
   const bossMap = {}; App.config.bossCategories.forEach(c => c.bosses.forEach(b => { bossMap[b.name] = b.points; }));
-  const pts = checked.reduce((s, cb) => s + (bossMap[cb.value]||0), 0);
+  const pts = _s.bosses.reduce((s, b) => s + (bossMap[b]||0), 0) + _s.summons.reduce((s, x) => s + x.pts, 0);
   document.getElementById('sel-count').textContent = `${checked.length} selected`;
   document.getElementById('sel-pts').textContent   = checked.length > 0 ? `· +${pts} pts` : '';
 }
 
 function openAttendanceConfirm() {
-  const selected = [...document.querySelectorAll('.boss-check input:checked')].map(cb => cb.value);
+  const _sel = _selectedAttendance();
+  const selected = [..._sel.bosses, ..._sel.summons.map(x => `${x.boss} (Summoned)`)];
   if (!selected.length) { toast('Select at least one boss.', 'error'); return; }
   const char = getActiveChar();
   const bossMap = {}; App.config.bossCategories.forEach(c => c.bosses.forEach(b => { bossMap[b.name] = b.points; }));
-  const totalPts = selected.reduce((s, b) => s + (bossMap[b]||0), 0);
+  const totalPts = _sel.bosses.reduce((s, b) => s + (bossMap[b]||0), 0) + _sel.summons.reduce((s, x) => s + x.pts, 0);
 
   showModal(`
     <div class="modal-title">⚔ Confirm Attendance</div>
@@ -1346,13 +1404,14 @@ function openAttendanceConfirm() {
 }
 
 function submitAttendance() {
-  const selected = [...document.querySelectorAll('.boss-check input:checked')].map(cb => cb.value);
+  const _sel = _selectedAttendance();
+  const selected = [..._sel.bosses, ..._sel.summons.map(x => `${x.boss} (Summoned)`)];
   if (!selected.length) { toast('Select at least one boss.', 'error'); return; }
   const char = getActiveChar();
   const btn  = document.getElementById('confirm-att-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
 
-  API.write('submit_attendance', { charId: char.charId, bosses: selected },
+  API.write('submit_attendance', { charId: char.charId, bosses: _sel.bosses, summonedEventIds: _sel.summons.map(x => x.id) },
     ['get_my_attendance', 'get_leaderboard', 'get_grouped_runs', 'get_late_linked_attendance']
   ).then(res => {
     if (res.success) {
@@ -1613,7 +1672,7 @@ function _renderAttHistoryTable() {
         </tr></thead>
         <tbody>${sorted.map(a=>`<tr>
           <td>${escHtml(a.ign || '—')}</td>
-          <td>${escHtml(a.boss)}</td>
+          <td>${escHtml(a.boss)}${_summonBadge(a.summoned)}</td>
           <td style="color:var(--gold)">+${a.points}</td>
           <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
           <td style="font-size:.78rem;color:${a.runId ? 'var(--text-secondary)' : 'var(--danger)'}">${a.runId ? 'Linked' : 'Unconfirmed'}</td>
@@ -1626,7 +1685,7 @@ function _renderAttHistoryTable() {
           <th>Points</th><th>Timestamp</th>
         </tr></thead>
         <tbody>${sorted.map(a=>`<tr>
-          <td>${escHtml(a.boss)}</td>
+          <td>${escHtml(a.boss)}${_summonBadge(a.summoned)}</td>
           <td style="color:var(--gold)">+${a.points}</td>
           <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(a.timestamp)} ${fmtTime(a.timestamp)}</td>
         </tr>`).join('')}</tbody>
@@ -2090,7 +2149,7 @@ function _toggleEventBossVisibility(key, checked) {
   API.write('set_event_boss_visibility', { [key]: checked }, ['get_config']).then(res => {
     if (!res.success) {
       toast(res.error || 'Error', 'error');
-      const el = document.getElementById(key === 'summerSephia' ? 'event-boss-summer-sephia' : 'event-boss-kooby-dic');
+      const el = document.getElementById({ summerSephia: 'event-boss-summer-sephia', koobyDic: 'event-boss-kooby-dic', summonEnabled: 'event-summon-enabled' }[key]);
       if (el) el.checked = !checked;
       return;
     }
@@ -2240,6 +2299,16 @@ function renderSettings() {
         </div>
         <label class="notif-switch">
           <input type="checkbox" id="event-boss-kooby-dic" ${App.config.eventBossVisibility?.koobyDic ? 'checked' : ''} onchange="_toggleEventBossVisibility('koobyDic', this.checked)">
+          <span class="notif-switch-track"></span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Summon checkbox</div>
+          <div class="settings-row-desc">Shows "Summon?" when creating an event for a summonable boss. Turn off when the summoning event ends — summons already created keep their 1-hour attendance window.</div>
+        </div>
+        <label class="notif-switch">
+          <input type="checkbox" id="event-summon-enabled" ${App.config.summonEnabled ? 'checked' : ''} onchange="_toggleEventBossVisibility('summonEnabled', this.checked)">
           <span class="notif-switch-track"></span>
         </label>
       </div>
@@ -2506,7 +2575,7 @@ function _renderUpcomingList(events, now) {
       return `
       <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;cursor:pointer" onclick="openEventDetails('${ev.id}')">
         <div>
-          <div style="font-size:.92rem;color:var(--text-primary)">${live ? '🔴 LIVE — ' : ''}${escHtml(ev.boss)}</div>
+          <div style="font-size:.92rem;color:var(--text-primary)">${live ? '🔴 LIVE — ' : ''}${escHtml(ev.boss)}${_summonBadge(ev.summoned)}</div>
           <div style="font-size:.78rem;color:var(--text-secondary)">${fmtDate(ev.scheduledAt)} · ${fmtTime(ev.scheduledAt)}</div>
         </div>
         ${live
@@ -2807,7 +2876,7 @@ function _dayViewHtml(dateStr) {
           <div class="day-agenda-line"></div>
         </div>
         <div class="day-agenda-main">
-          <div class="day-agenda-title">${live ? '🔴 ' : ''}${escHtml(ev.boss)}</div>
+          <div class="day-agenda-title">${live ? '🔴 ' : ''}${escHtml(ev.boss)}${_summonBadge(ev.summoned)}</div>
           <div class="day-agenda-time">${fmtTime(ev.scheduledAt)} – ${fmtTime(new Date(end).toISOString())}</div>
         </div>
       </div>`;
@@ -2879,9 +2948,10 @@ function openEventDetails(eventId, dayViewDate) {
         🕐 ${until.live ? `<b>${until.text}</b>` : `Reminder: <b>${until.text}</b> until event`}
       </div>
       <div class="evt-details-card">
-        <div class="evt-details-card-title">${escHtml(ev.boss)}</div>
+        <div class="evt-details-card-title">${escHtml(ev.boss)}${_summonBadge(ev.summoned)}</div>
         <div class="evt-details-card-when">${fmtDate(ev.scheduledAt)} (${new Date(ev.scheduledAt).toLocaleDateString(undefined,{weekday:'short'})}) ${fmtTime(ev.scheduledAt)} ~ ${fmtTime(new Date(end).toISOString())}</div>
       </div>
+      ${ev.summoned ? `<div class="evt-details-notes">Summoned boss — attendance is open for 1 hour after it was summoned.</div>` : ''}
       ${ev.notes ? `<div class="evt-details-notes">${escHtml(ev.notes)}</div>` : ''}
       ${until.live && !App.user.isAdmin ? `<button class="btn btn-primary" style="margin-top:1rem;width:100%" onclick="closeModal();showView('attendance');document.querySelectorAll('.mob-nav-btn,.sidebar-link').forEach(b=>b.classList.remove('active'));">Submit Attendance</button>` : ''}
     </div>`, { fullscreenMobile: true });
@@ -2912,6 +2982,13 @@ function openCreateEventModal(prefillDate, returnDate) {
     <div class="form-group">
       <label class="form-label">Boss / Mini</label>
       ${_renderIconSelect('evt-boss', bosses, bosses[0], '_evtBossChanged()')}
+    </div>
+    <div class="form-group" id="evt-summon-group" style="display:none">
+      <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;margin:0">
+        <input type="checkbox" id="evt-summon" onchange="_summonToggled()" style="width:18px;height:18px;flex-shrink:0">
+        <span class="form-label" style="margin:0">Summon?</span>
+      </label>
+      <p style="font-size:.75rem;color:var(--text-muted);margin:.35rem 0 0">A player-summoned spawn. Sets Date/Time to right now, and attendance is open for 1 hour instead of 3.</p>
     </div>
     <div class="form-group" id="evt-death-group" style="display:none">
       <label class="form-label">Enter Death Time</label>
@@ -2974,6 +3051,17 @@ function _evtBossChanged() {
   const prefix    = isCreate ? 'evt' : 'evt-edit';
   const bossSel   = document.getElementById(`${prefix}-boss`);
   const endGroup  = document.getElementById(`${prefix}-end-time-group`);
+  // Summon? checkbox (create modal only): offered just for SUMMONABLE_BOSSES
+  // and only while a Super Admin has the Settings toggle on. Summon mode (or
+  // editing an already-summoned event) hides the respawn "Enter Death Time".
+  const summonGroup = document.getElementById('evt-summon-group');
+  const summonBox   = document.getElementById('evt-summon');
+  if (isCreate && summonGroup && bossSel) {
+    const can = !!App.config?.summonEnabled && SUMMONABLE_BOSSES.includes(bossSel.value);
+    summonGroup.style.display = can ? '' : 'none';
+    if (!can && summonBox) summonBox.checked = false;
+  }
+  const isSummonMode = isCreate ? !!summonBox?.checked : !!document.getElementById('evt-edit-summoned-flag');
   const timeLabel = document.getElementById(`${prefix}-time-label`);
   const deathGroup = document.getElementById(`${prefix}-death-group`);
   if (!bossSel) return;
@@ -2982,7 +3070,7 @@ function _evtBossChanged() {
   if (timeLabel) timeLabel.textContent  = isManual ? 'Start Time' : 'Time';
 
   if (deathGroup) {
-    const respawnMs = RESPAWN_MS[bossSel.value];
+    const respawnMs = isSummonMode ? 0 : RESPAWN_MS[bossSel.value];
     if (respawnMs) {
       deathGroup.style.display = '';
       const deathInput = document.getElementById(`${prefix}-death-time`);
@@ -3002,6 +3090,19 @@ function _evtBossChanged() {
       deathGroup.style.display = 'none';
     }
   }
+}
+
+// Summon? checkbox changed (create modal). Checking it drops the respawn
+// helper and sets Date/Time to right now (nothing is created until Create is
+// pressed); unchecking restores the normal Death Time flow.
+function _summonToggled() {
+  if (document.getElementById('evt-summon')?.checked) {
+    const now = new Date();
+    const d = document.getElementById('evt-date'), t = document.getElementById('evt-time');
+    if (d) d.value = _fmtDateOnly(now);
+    if (t) t.value = _fmtTimeOnly(now);
+  }
+  _evtBossChanged();
 }
 
 // ── Death Time <-> Scheduled Time linking ───────────────────────
@@ -3070,6 +3171,7 @@ function submitCreateEvent(returnDate) {
   const dateStr = document.getElementById('evt-date').value;
   const timeStr = document.getElementById('evt-time').value;
   const notes = document.getElementById('evt-notes').value.trim();
+  const summoned = !!document.getElementById('evt-summon')?.checked;
   const scheduledAt = _composeScheduledAtIso(dateStr, timeStr, 'local');
   if (!scheduledAt) { toast('Date and time are required.', 'error'); return; }
 
@@ -3080,15 +3182,24 @@ function submitCreateEvent(returnDate) {
   const btn = document.getElementById('evt-submit-btn');
   btn.disabled = true; btn.textContent = 'Creating…';
 
-  API.write('create_event', { boss, scheduledAt, durationMinutes, notes }, ['get_events', 'get_schedule']).then(res => {
+  // A second summon of the same boss within 5 minutes comes back as
+  // needsConfirm — ask whether it's genuinely a separate summon (two players
+  // summoning back to back) or just the same one being logged twice.
+  const send = confirmSeparate => API.write('create_event', { boss, scheduledAt, durationMinutes, notes, summoned, confirmSeparate }, ['get_events', 'get_schedule', 'get_active_summons']).then(res => {
+    if (res.needsConfirm) {
+      if (confirm(`A summoned ${boss} was already created at ${fmtTime(res.existingAt)}.\n\nPress OK only if this is a SEPARATE second summon. Press Cancel if it's the same one — it's already on the schedule.`)) return send(true);
+      btn.disabled = false; btn.textContent = '📅 Create';
+      return;
+    }
     if (res.success) {
-      toast('Event created.', 'success');
+      toast(summoned ? 'Summon created.' : 'Event created.', 'success');
       _afterEventWrite().then(() => {
         _renderCalendarGrid();
         if (returnDate) openDayView(returnDate); else closeModal();
       });
     } else { toast(res.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; }
   }).catch(() => { toast('Network error', 'error'); btn.disabled = false; btn.textContent = '📅 Create'; });
+  send(false);
 }
 
 // dayViewDate: 'YYYY-MM-DD' of the day-view this was opened from, if any —
@@ -3104,7 +3215,7 @@ function openEventModal(eventId, dayViewDate) {
 
   if (!App.user.isAdmin || ev.isRecurring) { openEventDetails(eventId, dayViewDate); return; }
 
-  const bosses = _eventBossOptions();
+  const bosses = ev.summoned ? SUMMONABLE_BOSSES.filter(b => _allBossNames().includes(b)) : _eventBossOptions();
   const start = new Date(ev.scheduledAt);
   const dateVal = `${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,'0')}-${String(start.getDate()).padStart(2,'0')}`;
   const timeVal = `${String(start.getHours()).padStart(2,'0')}:${String(start.getMinutes()).padStart(2,'0')}`;
@@ -3117,6 +3228,7 @@ function openEventModal(eventId, dayViewDate) {
       <label class="form-label">Boss / Mini</label>
       ${_renderIconSelect('evt-edit-boss', bosses, ev.boss, '_evtBossChanged()')}
     </div>
+    ${ev.summoned ? `<div id="evt-edit-summoned-flag" style="font-size:.78rem;color:#e6a842;margin:-.25rem 0 .75rem">✨ Summoned boss — attendance is open for 1 hour from the time below.</div>` : ''}
     <div class="form-group" id="evt-edit-death-group" style="display:none">
       <label class="form-label">Enter Death Time</label>
       <input type="datetime-local" class="form-input" id="evt-edit-death-time">
@@ -3168,7 +3280,7 @@ function submitEditEvent(eventId, dayViewDate) {
   const btn = document.getElementById('evt-edit-submit-btn');
   btn.disabled = true; btn.textContent = 'Saving…';
 
-  API.write('update_event', { eventId, boss, scheduledAt, durationMinutes, notes }, ['get_events', 'get_schedule']).then(res => {
+  API.write('update_event', { eventId, boss, scheduledAt, durationMinutes, notes }, ['get_events', 'get_schedule', 'get_active_summons']).then(res => {
     if (res.success) {
       toast('Event updated.', 'success');
       _afterEventWrite().then(() => {
@@ -3181,7 +3293,7 @@ function submitEditEvent(eventId, dayViewDate) {
 
 function deleteEvent(eventId, dayViewDate) {
   if (!confirm('Delete this event?')) return;
-  API.write('delete_event', { eventId }, ['get_events', 'get_schedule']).then(res => {
+  API.write('delete_event', { eventId }, ['get_events', 'get_schedule', 'get_active_summons']).then(res => {
     if (res.success) {
       toast('Event deleted.', 'success');
       _afterEventWrite().then(() => {
@@ -3264,7 +3376,7 @@ function _loadGroupedRuns(days) {
               : runs.map((r,i) => `
                 <tr onclick="openRunModal(${i})">
                   <td style="font-size:.8rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.windowStart)}<br><span style="font-size:.72rem">${fmtTime(r.windowStart)}</span></td>
-                  <td><span class="boss-row-name">${_bossThumbHtml(r.boss)}<strong>${r.boss}</strong></span></td>
+                  <td><span class="boss-row-name">${_bossThumbHtml(r.boss)}<strong>${r.boss}</strong>${_summonBadge(r.summoned)}</span></td>
                   <td style="font-size:.82rem;color:var(--text-secondary);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_fmtDropsCell(r.drops)}</td>
                   <td><span style="color:var(--gold)">${r.participantCount}</span> players</td>
                   <td><span class="status ${r.status==='Confirmed'?'status-confirmed':'status-pending'}">${r.status}</span></td>
@@ -3304,7 +3416,7 @@ function openRunModal(idx) {
   try { savedDrops = run.drops ? JSON.parse(run.drops) : []; } catch(e) {}
 
   showModal(`
-    <div class="modal-title" style="display:flex;align-items:center">${_bossThumbHtml(run.boss)} ${run.boss} — ${fmtDate(run.windowStart)} ${fmtTime(run.windowStart)}</div>
+    <div class="modal-title" style="display:flex;align-items:center">${_bossThumbHtml(run.boss)} ${run.boss}${_summonBadge(run.summoned)} — ${fmtDate(run.windowStart)} ${fmtTime(run.windowStart)}</div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
       <span style="font-size:.82rem;color:var(--text-secondary)">Window: ${fmtTime(run.windowStart)} – ${fmtTime(run.windowEnd)}</span>
       <span class="status ${run.status==='Confirmed'?'status-confirmed':'status-pending'}">${run.status}</span>
