@@ -4118,11 +4118,12 @@ function sellSelectedItems() {
 // ============================================================
 function renderDropHistory() {
   const el = document.getElementById('view-drop-history');
+  Object.keys(_saleEditCtx).forEach(k => { if (k[0] === 'd') delete _saleEditCtx[k]; });
   if (!App.user.isSuperAdmin) {
     el.innerHTML = `<div class="card"><div class="empty-state"><span class="empty-state-icon">🔒</span>Super admins only.</div></div>`;
     return;
   }
-  el.innerHTML = `<div class="section-title">📜 Drop History</div>${Skeleton.table('', [22,14,10,14,16,14,10], 8)}`;
+  el.innerHTML = `<div class="section-title">📜 Drop History</div>${Skeleton.table('', [22,14,10,14,16,14,10,8], 8)}`;
 
   API.read('get_drop_history').then(rows => {
     rows = rows || [];
@@ -4131,8 +4132,11 @@ function renderDropHistory() {
         ? `<div class="card"><div class="empty-state"><span class="empty-state-icon">📜</span>No sales recorded yet.</div></div>`
         : `<div class="table-scroll">
             <table class="data-table">
-              <thead><tr><th>Item</th><th>Boss</th><th>Qty Sold</th><th>Gold Total</th><th>Winner</th><th>Points Deducted</th><th>Sold At</th></tr></thead>
-              <tbody>${rows.map(r => `
+              <thead><tr><th>Item</th><th>Boss</th><th>Qty Sold</th><th>Gold Total</th><th>Winner</th><th>Points Deducted</th><th>Sold At</th><th></th></tr></thead>
+              <tbody>${rows.map((r, i) => {
+                _saleEditCtx['d' + i] = { scope: 'history', saleIds: r.saleIds || [], itemName: r.itemName, qty: Number(r.qty) || 0,
+                  goldPerItem: Number(r.goldPerItem) || 0, totalGold: Number(r.totalGold) || 0, stacks: (r.saleIds || []).length, mixedPrice: !!r.mixedPrice };
+                return `
                 <tr>
                   <td>${escHtml(r.itemName)}</td>
                   <td>${escHtml(r.boss)}</td>
@@ -4141,11 +4145,97 @@ function renderDropHistory() {
                   <td style="color:var(--text-secondary)">${r.winner ? escHtml(r.winner) : '—'}</td>
                   <td style="color:${r.pointsDeducted ? 'var(--danger)' : 'var(--text-muted)'}">${r.pointsDeducted ? '−'+r.pointsDeducted : '—'}</td>
                   <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(r.soldAt)} ${fmtTime(r.soldAt)}</td>
-                </tr>`).join('')}
+                  <td>${(r.saleIds || []).length ? _saleEditBtn('d' + i) : ''}</td>
+                </tr>`; }).join('')}
               </tbody>
             </table>
           </div>`);
   });
+}
+
+// ============================================================
+//  EDIT SOLD PRICE  (Super-admin) — used by Payouts + Drop History.
+//  Changes the gold-per-item of a sale; the server re-splits every
+//  affected payout (equal share among the people already in that sale).
+// ============================================================
+const _saleEditCtx = {};   // key ('p0', 'd3', …) → { scope, saleIds, itemName, qty, goldPerItem, totalGold, stacks, mixedPrice }
+let _saleEditKey = null;
+
+function _saleEditBtn(key) {
+  return `<button class="btn btn-sm btn-secondary" title="Edit sold price" onclick="event.stopPropagation();openEditSalePrice('${key}')">✏️ Edit</button>`;
+}
+
+function openEditSalePrice(key) {
+  const c = _saleEditCtx[key];
+  if (!c || !c.saleIds.length) { toast('Nothing to edit here.', 'error'); return; }
+  _saleEditKey = key;
+  showModal(`
+    <div class="modal-title">✏️ Edit Sold Price</div>
+    <div style="margin-bottom:1rem">
+      <div style="font-weight:600">${escHtml(c.itemName)} <span style="color:var(--text-muted);font-size:.85rem">×${c.qty}</span></div>
+      <div style="font-size:.8rem;color:var(--text-secondary);margin-top:.2rem">
+        Currently <span class="gold-amount">${c.goldPerItem.toLocaleString()}</span> each ·
+        <span class="gold-amount">${c.totalGold.toLocaleString()}</span> total${c.stacks > 1 ? ` · ${c.stacks} stacks` : ''}
+      </div>
+      ${c.mixedPrice ? `<div style="font-size:.78rem;color:var(--warn,#e6a842);margin-top:.35rem">⚠ These stacks were sold at different prices — saving sets them all to the new price.</div>` : ''}
+    </div>
+    <div class="form-group">
+      <label class="form-label">New gold per item</label>
+      <input class="form-input" id="sale-edit-price" type="text" inputmode="numeric" autocomplete="off"
+        value="${c.goldPerItem ? c.goldPerItem.toLocaleString() : ''}" oninput="_saleEditInput()" onkeydown="if(event.key==='Enter')saveSalePrice()">
+    </div>
+    <div id="sale-edit-preview" style="font-size:.85rem;margin-bottom:.75rem"></div>
+    <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:.25rem">
+      Everyone who was in ${c.stacks > 1 ? 'these sales' : 'this sale'} gets their split recalculated (equal shares, same as when it was sold). Their payout totals update right away.
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-success" id="sale-edit-save" onclick="saveSalePrice()">Save &amp; Recalculate</button>
+    </div>`);
+  _saleEditInput();
+  setTimeout(() => { const i = document.getElementById('sale-edit-price'); if (i) { i.focus(); i.select(); } }, 50);
+}
+
+function _saleEditParse() {
+  const input = document.getElementById('sale-edit-price');
+  const digits = input ? input.value.replace(/[^0-9]/g, '') : '';
+  return digits ? parseInt(digits, 10) : 0;
+}
+
+function _saleEditInput() {
+  const c = _saleEditCtx[_saleEditKey]; if (!c) return;
+  const input = document.getElementById('sale-edit-price');
+  const price = _saleEditParse();
+  input.value = price ? price.toLocaleString() : '';
+  const prev = document.getElementById('sale-edit-preview');
+  if (!price) { prev.innerHTML = ''; return; }
+  const total = price * c.qty, diff = total - c.totalGold;
+  const diffTxt = diff === 0 ? 'no change' : `${diff > 0 ? '+' : '−'}${Math.abs(diff).toLocaleString()}`;
+  const color = diff === 0 ? 'var(--text-muted)' : diff > 0 ? 'var(--success,#4caf7d)' : 'var(--danger)';
+  prev.innerHTML = `New total: <span class="gold-amount">${total.toLocaleString()}</span> <span style="color:${color};font-size:.8rem">(${diffTxt})</span>`;
+}
+
+function saveSalePrice() {
+  const c = _saleEditCtx[_saleEditKey]; if (!c) return;
+  const price = _saleEditParse();
+  if (!price || price <= 0) { toast('Enter a valid gold amount.', 'error'); return; }
+  if (price === c.goldPerItem && !c.mixedPrice) { toast('That is already the current price.', 'warn'); return; }
+
+  const btn = document.getElementById('sale-edit-save'); btn.disabled = true; btn.textContent = 'Recalculating…';
+  const resetBtn = () => { btn.disabled = false; btn.textContent = 'Save & Recalculate'; };
+
+  API.write('update_sale_price', { saleIds: c.saleIds, goldPerItem: price },
+    ['get_payouts_page', 'get_drop_history', 'get_my_payouts', 'get_char_profile']
+  ).then(res => {
+    if (!res || !res.success) { toast((res && res.error) || 'Error', 'error'); resetBtn(); return; }
+    closeModal();
+    let msg = `Price updated — ${res.payoutsUpdated} payout${res.payoutsUpdated === 1 ? '' : 's'} recalculated.`;
+    let type = 'success';
+    if (res.salesWithoutPayouts > 0) { msg += ` ${res.salesWithoutPayouts} sale(s) had no payouts to update (run wasn't confirmed when sold).`; type = 'warn'; }
+    if (res.paidAffected > 0) { msg += ` Heads up: ${res.paidAffected} character-month(s) were already marked Paid and now have a different total.`; type = 'warn'; }
+    toast(msg, type);
+    if (c.scope === 'history') renderDropHistory(); else loadPayoutsMonth(_currentMonth);
+  }).catch(() => { toast('Network error', 'error'); resetBtn(); });
 }
 
 // ============================================================
@@ -4184,6 +4274,8 @@ function switchMonth(m) { _currentMonth = m; loadPayoutsMonth(m); }
 function loadPayoutsMonth(month) {
   const el = document.getElementById('payouts-content');
   if (!el) return;
+  const salesWasOpen = !!el.querySelector('.collapsible-header.open');
+  Object.keys(_saleEditCtx).forEach(k => { if (k[0] === 'p') delete _saleEditCtx[k]; });
   el.innerHTML = Skeleton.cards('', 2) + Skeleton.table('', [30,15,12], 5);
 
   API.read('get_payouts_page', { month }).then(data => {
@@ -4201,13 +4293,17 @@ function loadPayoutsMonth(month) {
           <div class="table-scroll" style="margin-top:.75rem">
             ${!(data.monthSales||[]).length
               ? `<div class="empty-state" style="padding:1rem">No sales this month.</div>`
-              : `<table class="data-table"><thead><tr><th>Item Sold</th><th>Date Sold</th><th>Sold Amount</th><th>Winner</th></tr></thead>
-                  <tbody>${data.monthSales.map(s=>`<tr>
+              : `<table class="data-table"><thead><tr><th>Item Sold</th><th>Date Sold</th><th>Sold Amount</th><th>Winner</th><th></th></tr></thead>
+                  <tbody>${data.monthSales.map((s, i) => {
+                    _saleEditCtx['p' + i] = { scope: 'payouts', saleIds: [s.saleId], itemName: s.itemName, qty: Number(s.qty) || 1,
+                      goldPerItem: Number(s.goldPerItem) || 0, totalGold: Number(s.totalGold) || 0, stacks: 1, mixedPrice: false };
+                    return `<tr>
                     <td>${s.itemName} <span style="color:var(--text-muted);font-size:.78rem">×${s.qty}</span></td>
                     <td style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">${fmtDate(s.soldAt)}</td>
                     <td><span class="gold-amount">${Number(s.totalGold).toLocaleString()}</span></td>
                     <td style="color:var(--text-secondary)">${s.winner||'—'}</td>
-                  </tr>`).join('')}</tbody></table>`}
+                    <td>${_saleEditBtn('p' + i)}</td>
+                  </tr>`; }).join('')}</tbody></table>`}
           </div>
         </div>
       </div>
@@ -4222,6 +4318,7 @@ function loadPayoutsMonth(month) {
                 <td><input type="checkbox" class="paid-check" data-char-id="${c.charId}" data-month="${month}" ${c.paid?'checked':''} onchange="togglePaid(this)"></td>
               </tr>`).join('')}</tbody></table>`}
       </div>`;
+    if (salesWasOpen) { const h = el.querySelector('.collapsible-header'); if (h) toggleCollapsible(h); }
   });
 }
 
@@ -5062,6 +5159,19 @@ if ('serviceWorker' in navigator) {
 const WAR_PUBLIC = false;
 function _warVisible() { return WAR_PUBLIC || !!(App.user && App.user.isSuperAdmin); }
 const WAR_QUEUE_LABELS = { illust_weapon: 'Illust Weapon', passionate_cloak: 'Passionate Cloak', sephia_hat: 'Sephia Hat', barslaf_neck: 'Barslaf Neck' };
+// Item art shown beside each queue's name. Drop the files in /sprites/item sprites/
+// (same folder as ITEM_SPRITES); a missing file just hides the image.
+const WAR_QUEUE_ICONS = {
+  illust_weapon:   '/sprites/item sprites/Inquisition.webp',
+  passionate_cloak:'/sprites/item sprites/Passionate-Cloak.webp',
+  sephia_hat:      '/sprites/item sprites/Chasing-Helm.webp',
+  barslaf_neck:    '/sprites/item sprites/Broken-Necklace.webp',
+};
+function _warQueueIcon(key, size) {
+  const src = WAR_QUEUE_ICONS[key];
+  if (!src) return '';
+  return `<img src="${src}" alt="" class="war-queue-icon" style="width:${size || 28}px;height:${size || 28}px" onerror="this.style.display='none'">`;
+}
 const WAR_KIND_LABELS  = { award: 'Screenshot award', mass_award: 'Mass award', adjustment: 'Adjustment', reversal: 'Reversal', item_win: 'Item win' };
 let _warQueues = [];
 let _warCfg = null;
@@ -5109,7 +5219,7 @@ function _warPageHtml(queues) {
   const card = q => `
     <div style="flex:1;min-width:260px;background:var(--bg-raised);border:1px solid var(--border-mid);border-radius:var(--radius);padding:.9rem">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.5rem">
-        <div style="font-family:var(--font-display);color:var(--gold);font-size:1.05rem">${escHtml(q.label)}</div>
+        <div class="war-queue-title" style="font-family:var(--font-display);color:var(--gold);font-size:1.05rem">${_warQueueIcon(q.key, 40)}<span>${escHtml(q.label)}</span></div>
         <div style="font-size:.78rem;color:var(--text-muted)">${q.rows.length} in queue</div>
       </div>
       ${!q.rows.length ? `<div style="padding:.8rem 0;color:var(--text-muted);font-size:.85rem">Nobody in this queue.</div>` : `
@@ -5152,7 +5262,7 @@ function _warAppendProfile(charId) {
         <div class="stat-chip" style="flex:1;min-width:120px"><div class="stat-chip-label">War Points</div><div class="stat-chip-value">${Number(s.balance).toLocaleString()}</div></div>
         <div class="stat-chip" style="flex:1;min-width:120px"><div class="stat-chip-label">Lifetime War Points</div><div class="stat-chip-value">${Number(s.lifetime).toLocaleString()}</div></div>
       </div>
-      <div style="font-size:.8rem;color:var(--text-secondary);margin:-.75rem 0 1.25rem">${s.queue ? `⚔️ ${escHtml(WAR_QUEUE_LABELS[s.queue] || s.queue)} queue · rank #${s.rank}` : '⚔️ Finished all war queues'}</div>`;
+      <div style="font-size:.8rem;color:var(--text-secondary);margin:-.75rem 0 1.25rem">${s.queue ? `<span class="war-queue-title">${_warQueueIcon(s.queue, 24) || '⚔️'}<span>${escHtml(WAR_QUEUE_LABELS[s.queue] || s.queue)} queue · rank #${s.rank}</span></span>` : '⚔️ Finished all war queues'}</div>`;
   }).catch(() => {});
 }
 

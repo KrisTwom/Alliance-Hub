@@ -1036,3 +1036,6 @@ html[data-theme="light"] .boss-check.selected { background:rgba(47,111,224,0.16)
 .evt-details-card-title { font-size:1.15rem; font-weight:700; color:var(--text-primary); margin-bottom:.3rem; }
 .evt-details-card-when  { font-size:.85rem; color:var(--text-secondary); }
 .evt-details-notes { font-size:.9rem; color:var(--text-primary); white-space:pre-wrap; line-height:1.5; }
+/* ── War Points queue item art ─────────────────────────── */
+.war-queue-title { display:flex; align-items:center; gap:.55rem; }
+.war-queue-icon  { object-fit:contain; flex-shrink:0; background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:2px; }

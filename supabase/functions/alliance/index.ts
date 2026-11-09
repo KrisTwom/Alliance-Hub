@@ -873,6 +873,7 @@ Deno.serve(async (req) => {
       case 'get_late_linked_attendance': return ok(await getLateLinkedAttendance(supabase, email));
       case 'get_inventory':       return ok(await getInventory(supabase, email));
       case 'mark_items_sold':     return ok(await markItemsSold(supabase, email, data));
+      case 'update_sale_price':   return ok(await updateSalePrice(supabase, email, data));
       case 'get_drop_history':    return ok(await getDropHistory(supabase, email));
       case 'get_payouts_page':    return ok(await getPayoutsPage(supabase, email, data.month as string));
       case 'get_available_months':return ok(await getAvailableMonths(supabase, email));
@@ -3041,6 +3042,79 @@ async function markItemsSold(supabase: ReturnType<typeof db>, email: string, dat
 }
 
 // ============================================================
+//  EDIT SOLD PRICE (super-admin only)
+//  Changes the gold-per-item on one or more existing sales and re-splits
+//  every affected sale's payouts. The participant set is NOT recomputed:
+//  each sale keeps exactly the payout rows it was created with (so nobody
+//  is added or dropped retroactively), and every one of those rows gets
+//  floor(newTotal / rowCount) — the same equal-split rule markItemsSold uses.
+//  Payout `month` is left alone, so a sale never hops between months.
+// ============================================================
+async function updateSalePrice(supabase: ReturnType<typeof db>, email: string, data: Record<string, unknown>) {
+  if (!(await isSuperAdmin(supabase, email))) return { error: 'Unauthorized' };
+
+  const rawIds = Array.isArray(data.saleIds) ? data.saleIds : [];
+  const saleIds = [...new Set(rawIds.filter((x): x is string => typeof x === 'string' && x.length > 0))];
+  if (saleIds.length === 0) return { error: 'No sale selected.' };
+  if (saleIds.length > 500) return { error: 'Too many sales selected at once.' };
+
+  const goldPerItem = Number(data.goldPerItem);
+  if (!Number.isFinite(goldPerItem) || !Number.isInteger(goldPerItem) || goldPerItem <= 0) {
+    return { error: 'Enter a whole number of gold greater than 0.' };
+  }
+  if (goldPerItem > 1_000_000_000_000) return { error: 'That amount is too large.' };
+
+  // Load the sales (chunked so the IN() list never makes the URL huge).
+  const sales: Array<{ sale_id: string; qty: number; total_gold: number }> = [];
+  for (let i = 0; i < saleIds.length; i += 50) {
+    const { data: rows, error } = await supabase
+      .from('sales').select('sale_id, qty, total_gold').in('sale_id', saleIds.slice(i, i + 50));
+    if (error) throw error;
+    sales.push(...((rows || []) as typeof sales));
+  }
+  if (sales.length !== saleIds.length) return { error: 'One or more sales no longer exist. Refresh and try again.' };
+
+  let oldTotal = 0, newTotal = 0, payoutsUpdated = 0, salesWithoutPayouts = 0;
+  const touchedMonths = new Set<string>();
+  const touchedChars = new Set<string>();
+
+  for (const s of sales) {
+    const qty = Number(s.qty) || 1;
+    const saleTotal = goldPerItem * qty;
+    oldTotal += Number(s.total_gold) || 0;
+    newTotal += saleTotal;
+
+    const { error: ue } = await supabase.from('sales')
+      .update({ gold_per: goldPerItem, total_gold: saleTotal }).eq('sale_id', s.sale_id);
+    if (ue) throw ue;
+
+    const { data: pays, error: pe } = await supabase.from('payouts')
+      .select('payout_id, char_id, month').eq('sale_id', s.sale_id);
+    if (pe) throw pe;
+    if (!pays || pays.length === 0) { salesWithoutPayouts++; continue; }
+
+    const share = Math.floor(saleTotal / pays.length);
+    const { error: pue } = await supabase.from('payouts').update({ gold_share: share }).eq('sale_id', s.sale_id);
+    if (pue) throw pue;
+    payoutsUpdated += pays.length;
+    pays.forEach(p => { if (p.month) touchedMonths.add(p.month); if (p.char_id) touchedChars.add(p.char_id); });
+  }
+
+  // Warn (don't block) if any affected character is already marked Paid for
+  // an affected month — their total just changed after being settled.
+  let paidAffected = 0;
+  if (touchedMonths.size > 0 && touchedChars.size > 0) {
+    const { data: paidRows } = await supabase.from('paid')
+      .select('char_id, month, action, paid_at').in('month', [...touchedMonths]).order('paid_at', { ascending: true });
+    const last: Record<string, string> = {};
+    (paidRows || []).forEach(r => { last[`${r.char_id}|${r.month}`] = r.action; }); // last action wins
+    paidAffected = Object.entries(last).filter(([k, a]) => a === 'Paid' && touchedChars.has(k.split('|')[0])).length;
+  }
+
+  return { success: true, salesUpdated: sales.length, payoutsUpdated, salesWithoutPayouts, oldTotal, newTotal, paidAffected };
+}
+
+// ============================================================
 //  DROP HISTORY (super-admin only) — one row per bulk "Mark Selected
 //  Sold" action (grouped by batch_id), not one row per underlying
 //  inventory stack, since a single sell action is how these actually
@@ -3071,6 +3145,7 @@ async function getDropHistory(supabase: ReturnType<typeof db>, email: string) {
   const batches: Record<string, {
     batchId: string; boss: string; itemName: string; qty: number; totalGold: number;
     winner: string; soldAt: string; pointsDeducted: number;
+    saleIds: string[]; goldPerItem: number; mixedPrice: boolean;
   }> = {};
 
   (rows || []).forEach(r => {
@@ -3083,8 +3158,11 @@ async function getDropHistory(supabase: ReturnType<typeof db>, email: string) {
         batchId: key, boss: r.boss, itemName: r.item_name, qty: 0, totalGold: 0,
         winner: (r.winner_char_id && ignByCharId[r.winner_char_id]) || r.winner || '',
         soldAt: r.sold_at, pointsDeducted: r.batch_id ? (deductionByBatch[r.batch_id] || 0) : 0,
+        saleIds: [], goldPerItem: Number(r.gold_per) || 0, mixedPrice: false,
       };
     }
+    batches[key].saleIds.push(r.sale_id);
+    if ((Number(r.gold_per) || 0) !== batches[key].goldPerItem) batches[key].mixedPrice = true;
     batches[key].qty += Number(r.qty) || 0;
     batches[key].totalGold += Number(r.total_gold) || 0;
     if (new Date(r.sold_at).getTime() > new Date(batches[key].soldAt).getTime()) batches[key].soldAt = r.sold_at;
