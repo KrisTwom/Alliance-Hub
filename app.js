@@ -5165,7 +5165,7 @@ const WAR_QUEUE_ICONS = {
   illust_weapon:   '/sprites/item sprites/Inquisition.webp',
   passionate_cloak:'/sprites/item sprites/Passionate-Cloak.webp',
   sephia_hat:      '/sprites/item sprites/Chasing-Helm.webp',
-  barslaf_neck:    '/sprites/item sprites/Broken-Necklace.webp',
+  barslaf_neck:    '/sprites/item sprites/broken-necklace.webp',
 };
 function _warQueueIcon(key, size) {
   const src = WAR_QUEUE_ICONS[key];
