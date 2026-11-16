@@ -80,7 +80,7 @@ const BOSS_CATEGORIES = [
       { name: 'Darlene',    points: 4,  emoji: '🪴' },
       { name: 'Caligo',     points: 25, emoji: '🪴' },
       { name: 'Platanista', points: 20, emoji: '🐳' },
-      { name: 'Siege',      points: 10, emoji: '🏰' },
+      { name: 'Siege',      points: 50, emoji: '🏰' },
     ]
   },
   {
