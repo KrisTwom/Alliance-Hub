@@ -5172,7 +5172,7 @@ if ('serviceWorker' in navigator) {
 // ============================================================
 // Testing phase: only super admins see War Points. To release it to everyone,
 // set WAR_PUBLIC to true here AND set the WAR_PUBLIC secret to true on the server.
-const WAR_PUBLIC = true;
+const WAR_PUBLIC = false;
 function _warVisible() { return WAR_PUBLIC || !!(App.user && App.user.isSuperAdmin); }
 const WAR_QUEUE_LABELS = { illust_weapon: 'Illust Weapon', passionate_cloak: 'Passionate Cloak', sephia_hat: 'Sephia Hat', barslaf_neck: 'Barslaf Neck' };
 // Item art shown beside each queue's name. Drop the files in /sprites/item sprites/
