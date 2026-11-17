@@ -1901,7 +1901,7 @@ function openCharProfile(charId) {
 //  Data source is get_roster (already admin-gated, already returns
 //  every character with its points) flattened into one ign list.
 // ============================================================
-let _psChars = [];      // flat [{ign, points, charClass}] from get_roster
+let _psChars = [];      // flat [{ign, points, charClass, level}] from get_roster
 let _psRows = 0;        // number of input rows rendered so far (ids)
 let _psSelected = {};   // rowId -> { ign, points, charClass } chosen for that row
 
@@ -1930,7 +1930,7 @@ function openPointsSearcher() {
   API.read('get_roster').then(roster => {
     _psChars = [];
     (roster || []).forEach(member => (member.characters || []).forEach(c => {
-      if (c.ign) _psChars.push({ ign: c.ign, points: Number(c.points) || 0, charClass: c.charClass || '' });
+      if (c.ign) _psChars.push({ ign: c.ign, points: Number(c.points) || 0, charClass: c.charClass || '', level: c.level || '' });
     }));
   }).catch(() => toast('Could not load character list', 'error'));
 }
@@ -1960,10 +1960,10 @@ function _psOnType(id, val) {
   if (!box) return;
   const q = val.trim().toLowerCase();
   if (!q) { box.classList.add('hidden'); box.innerHTML = ''; return; }
-  const matches = _psChars.filter(c => c.ign.toLowerCase().includes(q)).slice(0, 8);
+  const matches = _rankIgnMatches(_psChars, q, 8);
   if (!matches.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.innerHTML = matches.map(c =>
-    `<div class="ps-suggest-item" onclick='_psSelect("${id}", ${JSON.stringify(c).replace(/'/g, "&#39;")})'>${escHtml(c.ign)} <span style="color:var(--text-muted);font-size:.78em">${_classEmoji(c.charClass)} ${escHtml(c.charClass||'')}</span></div>`
+    `<div class="ps-suggest-item" onclick='_psSelect("${id}", ${JSON.stringify(c).replace(/'/g, "&#39;")})'>${escHtml(c.ign)} <span style="color:var(--text-muted);font-size:.78em">${c.level ? 'Lv' + escHtml(String(c.level)) + ' · ' : ''}${_classEmoji(c.charClass)} ${escHtml(c.charClass||'')}</span></div>`
   ).join('');
   box.classList.remove('hidden');
 }
@@ -1987,7 +1987,7 @@ function _psRunSearch() {
   box.innerHTML = `<div class="card" style="padding:0;overflow:hidden">
     ${sorted.map((c, i) => `<div class="leaderboard-row">
       <span class="lb-rank">${i + 1}</span>
-      <div style="flex:1;min-width:0"><div class="lb-name">${escHtml(c.ign)}</div><div class="lb-class">${_classEmoji(c.charClass)} ${escHtml(c.charClass||'')}</div></div>
+      <div style="flex:1;min-width:0"><div class="lb-name">${escHtml(c.ign)}</div><div class="lb-class">${c.level ? 'Lv' + escHtml(String(c.level)) + ' · ' : ''}${_classEmoji(c.charClass)} ${escHtml(c.charClass||'')}</div></div>
       <div class="lb-points">${c.points.toLocaleString()} <span style="font-size:.7em;color:var(--gold-dim)">PTS</span></div>
     </div>`).join('')}
   </div>`;
@@ -3469,6 +3469,21 @@ function openRunModal(idx) {
 
 // Flattens get_roster (members -> characters) into a single searchable
 // list, cached on window so repeated keystrokes don't refetch.
+// Rank IGN search results: exact match first, then names that start with the
+// query, then names that merely contain it (shorter names first within a tier).
+// Without this, a one-letter IGN like "L" is buried under every name containing
+// "l" and falls off the end of the capped result list.
+function _rankIgnMatches(list, q, limit) {
+  const score = c => {
+    const n = String(c.ign || '').toLowerCase();
+    return n === q ? 0 : n.startsWith(q) ? 1 : 2;
+  };
+  return list
+    .filter(c => String(c.ign || '').toLowerCase().includes(q))
+    .sort((a, b) => score(a) - score(b) || String(a.ign).length - String(b.ign).length || String(a.ign).localeCompare(String(b.ign)))
+    .slice(0, limit);
+}
+
 function _allCharactersFlat() {
   if (window._allCharsFlat) return Promise.resolve(window._allCharsFlat);
   return API.read('get_roster').then(roster => {
@@ -3489,7 +3504,7 @@ function _filterAddParticipant(idx) {
   const existingIds = new Set(run.participants.map(p => p.charId));
 
   _allCharactersFlat().then(flat => {
-    const matches = flat.filter(c => !existingIds.has(c.charId) && c.ign.toLowerCase().includes(q)).slice(0, 8);
+    const matches = _rankIgnMatches(flat.filter(c => !existingIds.has(c.charId)), q, 8);
     if (!matches.length) { box.innerHTML = `<div style="padding:.6rem .75rem;font-size:.85rem;color:var(--text-muted)">No match</div>`; box.style.display = 'block'; return; }
     box.innerHTML = matches.map(c => `
       <div class="add-participant-row" style="padding:.5rem .75rem;font-size:.88rem;cursor:pointer;border-bottom:1px solid var(--border)" onclick="addRunParticipant(${idx}, '${c.charId}', '${String(c.ign).replace(/'/g,"\\'")}')">${escHtml(c.ign)}</div>`).join('');
@@ -4017,13 +4032,14 @@ function openItemModal(boss, itemName) {
     <div style="font-size:.8rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary);margin-bottom:.5rem">Drop History — select rows to sell</div>
     <div class="table-scroll" style="max-height:280px;overflow-y:auto">
       <table class="data-table">
-        <thead><tr><th></th><th>Dropped At</th><th>Qty</th><th>Participants</th><th>Status</th></tr></thead>
+        <thead><tr><th></th><th>Dropped At</th><th>Qty</th><th>Participants</th><th>Notes</th><th>Status</th></tr></thead>
         <tbody>${data.history.map(h=>`
           <tr data-inv-id="${h.invId}" data-status="${h.status}" onclick="toggleHistoryRow(this)">
             <td><input type="checkbox" class="hist-check" value="${h.invId}" ${h.status!=='Available'?'disabled':''} style="accent-color:var(--gold)"></td>
             <td style="font-size:.82rem;white-space:nowrap">${fmtDate(h.droppedAt)} ${fmtTime(h.droppedAt)}</td>
             <td style="color:var(--gold)">${h.qty}</td>
             <td>${h.participantCount} players</td>
+            <td class="inv-note-cell">${h.notes ? escHtml(h.notes) : '<span style="color:var(--text-muted)">—</span>'}</td>
             <td><span class="status ${h.status==='Available'?'status-available':'status-sold'}">${h.status}</span></td>
           </tr>`).join('')}
         </tbody>
@@ -4056,7 +4072,7 @@ function _sellOnWinnerType(val) {
   const q = val.trim().toLowerCase();
   if (!q) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   _allCharactersFlat().then(flat => {
-    const matches = flat.filter(c => c.ign.toLowerCase().includes(q)).slice(0, 8);
+    const matches = _rankIgnMatches(flat, q, 8);
     if (!matches.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
     box.innerHTML = matches.map(c =>
       `<div class="ps-suggest-item" onclick='_sellSelectWinner(${JSON.stringify(c).replace(/'/g, "&#39;")})'>${escHtml(c.ign)}</div>`
@@ -4586,7 +4602,7 @@ function _renderCharPicker(query) {
   const list = window._allCharsCache || [];
   if (!list.length) { results.innerHTML = `<div style="font-size:.8rem;color:var(--text-secondary)">Loading…</div>`; return; }
   const q = (query || '').trim().toLowerCase();
-  const matches = (q ? list.filter(c => (c.ign || '').toLowerCase().includes(q)) : list).slice(0, 25);
+  const matches = q ? _rankIgnMatches(list, q, 25) : list.slice(0, 25);
   const selected = document.getElementById('char-picker-selected')?.value;
   results.innerHTML = matches.length ? matches.map(c => `
     <div onclick="_selectPickedChar('${c.charId}')" style="cursor:pointer;padding:.5rem .7rem;border-radius:8px;border:1px solid ${selected===c.charId?'var(--gold)':'var(--border)'};background:${selected===c.charId?'var(--bg-raised)':'transparent'};font-size:.85rem">
@@ -5165,7 +5181,7 @@ const WAR_QUEUE_ICONS = {
   illust_weapon:   '/sprites/item sprites/Inquisition.webp',
   passionate_cloak:'/sprites/item sprites/Passionate-Cloak.webp',
   sephia_hat:      '/sprites/item sprites/Chasing-Helm.webp',
-  barslaf_neck:    '/sprites/item sprites/broken-necklace.webp',
+  barslaf_neck:    '/sprites/item sprites/Broken-Necklace.webp',
 };
 function _warQueueIcon(key, size) {
   const src = WAR_QUEUE_ICONS[key];
@@ -5290,10 +5306,11 @@ function _warEnrollSearch() {
   const enrolled = new Set(_warQueues.flatMap(x => x.rows.map(r => r.char_id)));
   _allCharactersFlat().then(flat => {
     const seen = new Set(); // a shared character appears once per member in the roster
-    const m = flat.filter(c => {
-      if (enrolled.has(c.charId) || seen.has(c.charId) || !String(c.ign).toLowerCase().includes(q)) return false;
+    const eligible = flat.filter(c => {
+      if (enrolled.has(c.charId) || seen.has(c.charId)) return false;
       seen.add(c.charId); return true;
-    }).slice(0, 8);
+    });
+    const m = _rankIgnMatches(eligible, q, 8);
     box.innerHTML = m.length ? m.map((c, i) => `<div style="padding:.5rem .75rem;cursor:pointer;border-bottom:1px solid var(--border)" data-i="${i}">${escHtml(c.ign)}</div>`).join('')
       : `<div style="padding:.5rem .75rem;color:var(--text-muted)">No match (or already enrolled)</div>`;
     box.querySelectorAll('[data-i]').forEach(d => d.onclick = () => {
